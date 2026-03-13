@@ -1,0 +1,7 @@
+awscli
+mkdocs
+pip
+pytest
+python-dotenv
+ruff
+-e .
