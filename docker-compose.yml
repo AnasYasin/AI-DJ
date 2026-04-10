@@ -1,0 +1,65 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI DJ — Docker Compose
+#
+# Services:
+#   mlflow    — experiment tracking UI at http://localhost:5000
+#   chromadb  — vector store HTTP API at http://localhost:8000
+#   trainer   — one-off training container (run manually, not always-on)
+#
+# Usage:
+#   Start tracking services:    docker-compose up mlflow chromadb
+#   Run training:               docker-compose run --rm trainer python src/models/train_model.py
+#   Stop everything:            docker-compose down
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── MLflow tracking server ──────────────────────────────────────────────────
+  # Stores runs in a local SQLite file (mlflow.db) and artifacts in ./mlruns/.
+  # For production you would swap SQLite for PostgreSQL and S3 for artifacts,
+  # but for a portfolio demo local is fine and free.
+  mlflow:
+    build: .
+    command: >
+      mlflow server
+        --host 0.0.0.0
+        --port 5000
+        --backend-store-uri sqlite:///mlflow.db
+        --default-artifact-root /app/mlruns
+    ports:
+      - "5000:5000"
+    volumes:
+      # Persist runs and artifacts across container restarts
+      - ./mlruns:/app/mlruns
+      - ./mlflow.db:/app/mlflow.db
+
+  # ── ChromaDB vector store ───────────────────────────────────────────────────
+  # Stores CLAP embeddings and enables nearest-neighbor search.
+  # Data is persisted to ./data/processed/chromadb/ on the host.
+  chromadb:
+    image: chromadb/chroma:0.5.3
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/processed/chromadb:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+
+  # ── Training container ──────────────────────────────────────────────────────
+  # Not started automatically. Run manually:
+  #   docker-compose run --rm trainer python src/features/build_features.py
+  #   docker-compose run --rm trainer python src/models/train_model.py
+  trainer:
+    build: .
+    command: echo "Trainer ready. Run: docker-compose run --rm trainer python <script>"
+    volumes:
+      # Mount data and models directories so output persists on the host
+      - ./data:/app/data
+      - ./models:/app/models
+    env_file:
+      - .env
+    depends_on:
+      - mlflow
+      - chromadb
