@@ -35,4 +35,5 @@ testpaths = ["tests"]
 asyncio_mode = "auto"   # makes pytest-asyncio work without @pytest.mark.asyncio on every test
 markers = [
     "integration: marks tests that call real external APIs (deselect with -m 'not integration')",
+    "slow: marks tests that load large ML models (deselect with -m 'not slow')",
 ]

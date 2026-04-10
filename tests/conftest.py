@@ -9,18 +9,32 @@ import pytest
 @pytest.fixture
 def tmp_audio_file(tmp_path):
     """
-    Creates a 5-second 440Hz sine wave WAV file in a temp directory.
-    Used as a stand-in for a real MP3 preview in unit tests.
-    This avoids needing real audio files in the test suite.
+    Creates a 5-second WAV with a 120 BPM kick-drum pulse + 440Hz tone.
+
+    Why not a pure sine wave: librosa.beat_track detects rhythm from amplitude
+    changes. A flat sine wave has no amplitude variation so beat_track returns
+    0.0 BPM — correct behaviour but useless for testing the extractor.
+
+    This fixture adds a sharp amplitude spike every 0.5 seconds (120 BPM),
+    which gives librosa enough rhythmic structure to detect a tempo > 0.
     """
     import soundfile as sf
 
     sr = 22050
-    duration = 5  # seconds
+    duration = 5
     t = np.linspace(0, duration, sr * duration)
-    # 440Hz = concert A. Using sine wave = simplest possible audio signal.
-    audio = (np.sin(2 * np.pi * 440 * t) * 0.5).astype(np.float32)
 
+    # Base tone: 440Hz sine wave
+    audio = (np.sin(2 * np.pi * 440 * t) * 0.3).astype(np.float32)
+
+    # Add a sharp kick pulse every 0.5 seconds (= 120 BPM)
+    # Each pulse is a 10ms burst of high amplitude — simulates a kick drum hit
+    beat_interval = int(sr * 0.5)   # samples between beats
+    pulse_len = int(sr * 0.01)      # 10ms pulse width
+    for onset in range(0, len(audio) - pulse_len, beat_interval):
+        audio[onset: onset + pulse_len] += 0.7
+
+    audio = np.clip(audio, -1.0, 1.0)  # prevent clipping above ±1
     path = tmp_path / "test_audio.wav"
     sf.write(str(path), audio, sr)
     return str(path)

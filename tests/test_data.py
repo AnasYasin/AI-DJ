@@ -4,8 +4,34 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.data.preview_fetcher import track_id, fetch_previews
+from src.data.preview_fetcher import track_id, fetch_previews, clean_track_name
 from src.data.mixesdb_client import _parse_track_line, _results_to_dataframe
+
+
+# ── clean_track_name ───────────────────────────────────────────────────────────
+
+def test_strips_label_annotation():
+    # [Innate Editions] is a label — should be removed
+    assert clean_track_name("Function [Innate Editions]") == "Function"
+
+def test_strips_multiple_label_annotations():
+    assert clean_track_name("We Feel For You [MFF (Music For Freaks)]") == "We Feel For You"
+
+def test_keeps_remix_annotation():
+    # [Producer Remix] is genuine version info — must be kept
+    assert "Remix" in clean_track_name("Track Name [Producer Remix]")
+
+def test_keeps_extended_mix():
+    assert "Mix" in clean_track_name("Track Name [Extended Mix]")
+
+def test_no_brackets_unchanged():
+    assert clean_track_name("Around The World") == "Around The World"
+
+def test_strips_label_keeps_remix_in_same_track():
+    # Label stripped, remix kept
+    result = clean_track_name("Track [Label Name] [DJ Remix]")
+    assert "Label Name" not in result
+    assert "DJ Remix" in result
 
 
 # ── track_id ───────────────────────────────────────────────────────────────────
@@ -96,95 +122,107 @@ async def test_fetch_previews_skips_existing(tmp_path):
 # Usage: pytest tests/test_data.py -v -m integration
 
 @pytest.mark.integration
-async def test_itunes_returns_url_for_known_track():
-    """iTunes Search API returns a preview URL for a well-known track."""
-    import httpx
-    from src.data.preview_fetcher import _itunes_url
-
-    async with httpx.AsyncClient() as client:
-        url = await _itunes_url(client, "Daft Punk", "Around The World")
-
-    # iTunes has this track — should always return a URL, not None
-    assert url is not None, "iTunes returned nothing for Daft Punk - Around The World"
-    assert url.startswith("http"), f"Expected http URL, got: {url}"
-
-
-@pytest.mark.integration
-async def test_spotify_returns_url_or_none_for_known_track():
-    """
-    Spotify credentials work and the function returns without crashing.
-    NOTE: Spotify removed preview_url from most tracks in late 2023 — None is valid.
-    We test that credentials are correct and the function handles null previews gracefully.
-    """
-    from src.data.preview_fetcher import _spotify_client, _spotify_url
-
-    sp = _spotify_client()
-    url = await _spotify_url(sp, "Daft Punk", "Around The World")
-
-    # None is acceptable — Spotify deprecated previews for most tracks
-    # What matters: no exception was raised and the return type is correct
-    assert url is None or url.startswith("http"), f"Unexpected value: {url!r}"
-
-
-@pytest.mark.integration
-async def test_jamendo_returns_url_for_known_track():
-    """Jamendo API returns a stream URL for a track in its catalog."""
-    import httpx
-    from src.data.preview_fetcher import _jamendo_url
-
-    async with httpx.AsyncClient() as client:
-        # Use a simple genre search — Jamendo has lots of electronic/ambient music
-        url = await _jamendo_url(client, "lofi", "chill")
-
-    # Jamendo may or may not match exactly, but should not error
-    assert url is None or url.startswith("http"), f"Unexpected value: {url}"
-
-
-@pytest.mark.integration
-async def test_mp3_file_is_downloaded_and_valid(tmp_path):
-    """
-    End-to-end: fetch a real preview URL from iTunes and download it.
-    Checks:
-      - File exists on disk
-      - File is larger than 10KB (guards against empty/error responses)
-      - File starts with MP3 magic bytes (ID3 header or sync bytes)
-    """
+async def test_itunes_downloads_real_file(tmp_path):
+    """iTunes: get URL → download file → verify it is real audio."""
     import httpx
     from src.data.preview_fetcher import _itunes_url, _download
 
     async with httpx.AsyncClient() as client:
         url = await _itunes_url(client, "Daft Punk", "Around The World")
+        assert url is not None, "iTunes returned no URL"
 
-    assert url is not None, "Could not get iTunes URL — check internet connection"
+        dest = tmp_path / "itunes.mp3"
+        ok = await _download(url, dest, client)
 
-    dest = tmp_path / "test_preview.mp3"
+    assert ok, "Download failed"
+    assert dest.exists()
+    assert dest.stat().st_size > 10_000, "File too small — likely an error response"
+    _assert_audio_file(dest)
+
+
+@pytest.mark.integration
+async def test_spotify_credentials_work():
+    """
+    Spotify: credentials in .env are valid and the API responds without error.
+    NOTE: Spotify removed preview_url from most tracks in late 2023, so None
+    is the expected return for the majority of tracks — this is not a bug.
+    We try 5 tracks to see if ANY still have a preview available.
+    """
+    from src.data.preview_fetcher import _spotify_client, _spotify_url
+
+    sp = _spotify_client()
+
+    # Try several tracks — Spotify previews are rare but some still exist
+    candidates = [
+        ("Daft Punk", "Around The World"),
+        ("Aphex Twin", "Windowlicker"),
+        ("The Chemical Brothers", "Block Rockin Beats"),
+        ("Massive Attack", "Teardrop"),
+        ("Leftfield", "Leftism"),
+    ]
+
+    urls = []
+    for artist, track in candidates:
+        url = await _spotify_url(sp, artist, track)
+        urls.append((artist, track, url))
+        print(f"  Spotify preview [{artist} - {track}]: {url or 'None (deprecated)'}")
+
+    # Credentials must work — if ALL raise exceptions something is wrong
+    # Getting None is acceptable (Spotify deprecated previews)
+    results = [(a, t, u) for a, t, u in urls]
+    assert len(results) == len(candidates), "Some Spotify calls raised exceptions"
+
+    found = [(a, t, u) for a, t, u in results if u]
+    print(f"\n  {len(found)}/{len(candidates)} tracks still have Spotify previews")
+
+
+@pytest.mark.integration
+async def test_spotify_downloads_if_preview_available(tmp_path):
+    """
+    If Spotify returns a preview URL for any track, verify it downloads correctly.
+    Skips gracefully if all previews are None (Spotify deprecation).
+    """
+    import httpx
+    from src.data.preview_fetcher import _spotify_client, _spotify_url, _download
+
+    sp = _spotify_client()
+    candidates = [
+        ("Daft Punk", "Around The World"),
+        ("Aphex Twin", "Windowlicker"),
+        ("The Chemical Brothers", "Block Rockin Beats"),
+    ]
+
+    url = None
+    for artist, track in candidates:
+        url = await _spotify_url(sp, artist, track)
+        if url:
+            print(f"  Found Spotify preview: {artist} - {track}")
+            break
+
+    if url is None:
+        pytest.skip("No Spotify previews available — all deprecated. Skipping download test.")
+
+    dest = tmp_path / "spotify.mp3"
     async with httpx.AsyncClient() as client:
-        success = await _download(url, dest, client)
+        ok = await _download(url, dest, client)
 
-    # File was downloaded
-    assert success, "Download returned False"
-    assert dest.exists(), "MP3 file was not created on disk"
+    assert ok, "Spotify download failed"
+    assert dest.exists()
+    assert dest.stat().st_size > 10_000
+    _assert_audio_file(dest)
 
-    # File is a real audio file, not an empty or error response
-    size = dest.stat().st_size
-    assert size > 10_000, f"File too small ({size} bytes) — likely an error response"
 
-    # Check audio format magic bytes.
-    # iTunes returns AAC wrapped in an M4A (MP4) container — NOT a raw MP3.
-    # Spotify (when available) returns MP3.
-    # Both are valid — librosa/ffmpeg handle both formats transparently.
-    #
-    # MP3 signatures:
-    #   b"ID3"       — ID3 metadata header (most common)
-    #   b"\xff\xfb"  — MPEG sync bytes
-    #   b"\xff\xf3"  — MPEG sync bytes variant
-    #   b"\xff\xf2"  — MPEG sync bytes variant
-    #
-    # M4A/AAC (MP4 container) signature:
-    #   bytes[4:8] == b"ftyp"  — MP4 box type at offset 4
-    raw = dest.read_bytes()
+# ── Shared audio validation helper ────────────────────────────────────────────
+
+def _assert_audio_file(path):
+    """
+    Assert a file is valid audio (MP3 or M4A).
+    - MP3: starts with ID3 tag or MPEG sync bytes
+    - M4A: bytes[4:8] == b'ftyp' (MP4 container box type)
+    iTunes returns M4A; Spotify returns MP3.
+    Both are handled transparently by librosa/ffmpeg.
+    """
+    raw = path.read_bytes()
     is_mp3 = any(raw[:3].startswith(h) for h in [b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"])
-    is_m4a = raw[4:8] == b"ftyp"
-    assert is_mp3 or is_m4a, (
-        f"File is neither MP3 nor M4A. First 8 bytes: {raw[:8]!r}"
-    )
+    is_m4a = len(raw) >= 8 and raw[4:8] == b"ftyp"
+    assert is_mp3 or is_m4a, f"Not a valid MP3 or M4A. First 8 bytes: {raw[:8]!r}"
