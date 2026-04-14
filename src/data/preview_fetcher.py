@@ -10,7 +10,8 @@ Jamendo contains only Creative Commons music. Searching it for commercial
 MixesDB tracks returns completely unrelated audio — wrong training data.
 Jamendo is used in Project 2 (API) where users select tracks directly by ID.
 
-Downloads each preview to data/raw/previews/{track_id}.mp3
+Downloads each preview to data/raw/previews/{track_id}.{ext}
+where ext is detected from magic bytes: .m4a for iTunes (AAC), .mp3 for Spotify.
 Writes a manifest to data/raw/preview_manifest.csv with columns:
   track_id, artist, track_name, source, local_path
 
@@ -126,22 +127,42 @@ async def _itunes_url(client: httpx.AsyncClient, artist: str, track: str) -> str
 
 # ── Download ───────────────────────────────────────────────────────────────────
 
-async def _download(url: str, dest: Path, client: httpx.AsyncClient) -> bool:
-    """Download audio from url and save to dest. Returns True on success."""
+def _audio_ext(content: bytes) -> str:
+    """Detect actual audio container from magic bytes.
+    iTunes returns M4A (AAC in MP4 container): bytes[4:8] == b'ftyp'.
+    Spotify returns MP3. Default to .mp3 for anything else.
+    """
+    return ".m4a" if len(content) >= 8 and content[4:8] == b"ftyp" else ".mp3"
+
+
+def _find_cached(tid: str) -> Path | None:
+    """Return an existing cached preview for this track_id, checking both extensions."""
+    for ext in (".m4a", ".mp3"):
+        p = PREVIEWS_DIR / f"{tid}{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+async def _download(url: str, tid: str, client: httpx.AsyncClient) -> Path | None:
+    """Download audio, detect format from magic bytes, save with correct extension.
+    Returns the saved Path on success, None on failure.
+    """
     try:
         resp = await client.get(url, follow_redirects=True, timeout=30)
         if resp.status_code == 200 and len(resp.content) > 10_000:
+            dest = PREVIEWS_DIR / f"{tid}{_audio_ext(resp.content)}"
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(resp.content)
-            return True
+            return dest
     except Exception as e:
         log.debug("Download failed for %s: %s", url, e)
-    return False
+    return None
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
-async def fetch_previews(tracklist_path: str = "data/interim/romanFlugel.csv") -> pd.DataFrame:
+async def fetch_previews(tracklist_path: str = "data/interim/tracklist.csv") -> pd.DataFrame:
     """
     Read tracklist CSV, fetch a 30s preview for every unique track.
     Tries Spotify first, falls back to iTunes.
@@ -154,15 +175,20 @@ async def fetch_previews(tracklist_path: str = "data/interim/romanFlugel.csv") -
     sp = _spotify_client()
     rows = []
 
+    total = len(unique)
+    found_count = 0
+    # Progress summary every ~1% of total — ~100 lines regardless of dataset size.
+    PROGRESS_EVERY = max(10, total // 100)
     async with httpx.AsyncClient() as http:
-        for _, row in unique.iterrows():
+        for i, (_, row) in enumerate(unique.iterrows(), 1):
             artist, track_name = row["artist_name"], row["track_name"]
             tid = track_id(artist, track_name)
-            dest = PREVIEWS_DIR / f"{tid}.mp3"
 
-            if dest.exists():
-                log.info("[cached]  %s - %s", artist, track_name)
-                rows.append(_row(tid, artist, track_name, "cached", dest))
+            cached = _find_cached(tid)
+            if cached:
+                found_count += 1
+                log.info("[%d/%d] [cached]    %s - %s", i, total, artist, track_name)
+                rows.append(_row(tid, artist, track_name, "cached", cached))
                 continue
 
             url, source = None, "not_found"
@@ -175,12 +201,19 @@ async def fetch_previews(tracklist_path: str = "data/interim/romanFlugel.csv") -
                     source = src_name
                     break
 
-            if url and await _download(url, dest, http):
-                log.info("[%s]  %s - %s", source, artist, track_name)
-                rows.append(_row(tid, artist, track_name, source, dest))
+            saved = await _download(url, tid, http) if url else None
+            if saved:
+                found_count += 1
+                log.info("[%d/%d] [%-8s]  %s - %s", i, total, source, artist, track_name)
+                rows.append(_row(tid, artist, track_name, source, saved))
             else:
-                log.warning("[not found]  %s - %s", artist, track_name)
+                log.warning("[%d/%d] [not found] %s - %s", i, total, artist, track_name)
                 rows.append(_row(tid, artist, track_name, "not_found", None))
+
+            # Progress summary every PROGRESS_EVERY tracks (~1% of dataset)
+            if i % PROGRESS_EVERY == 0:
+                pct = found_count / i * 100
+                log.info("--- progress: %d/%d tracks, %.0f%% found so far ---", i, total, pct)
 
     manifest = pd.DataFrame(rows)
     MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -210,4 +243,17 @@ def _log_source_breakdown(manifest: pd.DataFrame) -> None:
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    asyncio.run(fetch_previews("data/interim/romanFlugel.csv"))
+    from pathlib import Path
+    _fmt = "%(asctime)s %(levelname)s %(message)s"
+    _log_path = Path("logs/preview_fetcher.log")
+    _log_path.parent.mkdir(exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format=_fmt,
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(_log_path, encoding="utf-8"),
+        ],
+    )
+    log.info("Logging to %s", _log_path)
+    asyncio.run(fetch_previews("data/interim/tracklist.csv"))

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """MixesDB scraper: collect mix URLs from DJ category pages, then scrape tracklists."""
 import asyncio
+import hashlib
 import logging
 import random
 import re
@@ -57,24 +58,31 @@ async def extract_tracklist(page) -> dict:
     return {"title": title, "tracklist": tracklist, "track_count": len(tracklist), "success": bool(tracklist)}
 
 
-async def scrape_multiple_mixes(urls: list[str], browser=None) -> list[dict]:
-    """Scrape tracklists from a list of mix URLs. Reuses browser if provided."""
+async def scrape_multiple_mixes(url_metas: list[dict], browser=None) -> list[dict]:
+    """
+    Scrape tracklists from a list of mix URLs. Reuses browser if provided.
+
+    url_metas: list of dicts with keys: url, dj_name, genre
+    """
     own_browser = browser is None
     if own_browser:
         browser = await nd.start(headless=False)
 
     results = []
     try:
-        for i, url in enumerate(urls, 1):
-            log.info("[%d/%d] %s", i, len(urls), url)
+        for i, meta in enumerate(url_metas, 1):
+            url = meta["url"]
+            log.info("[%d/%d] %s", i, len(url_metas), url)
             page = await browser.get(url, new_tab=True)
             await asyncio.sleep(random.uniform(7, 13))
             data = await extract_tracklist(page)
             await _close(page)
-            data["url"] = url
+            data["url"]     = url
+            data["dj_name"] = meta["dj_name"]
+            data["genre"]   = meta["genre"]
             results.append(data)
             log.info("  → %d tracks", data["track_count"])
-            if i < len(urls):
+            if i < len(url_metas):
                 await asyncio.sleep(random.uniform(12, 30))
     except Exception:
         log.exception("Error during mix scraping")
@@ -88,20 +96,23 @@ async def scrape_multiple_mixes(urls: list[str], browser=None) -> list[dict]:
     return results
 
 
-async def scrape_mixes_from_djs(dj_urls: list[str]) -> list[dict]:
+async def scrape_mixes_from_djs(dj_config: list[dict]) -> list[dict]:
     """
     Main entry point. Two-step process:
       1. Visit each DJ category page → collect mix URLs
       2. Visit each mix URL → scrape tracklist
     Saves output to data/interim/tracklist.csv.
+
+    dj_config: list of dicts with keys: url (DJ category page), genre
+      e.g. [{"url": "https://www.mixesdb.com/w/Category:Charlotte_de_Witte", "genre": "techno"}]
     """
     browser = await nd.start(headless=False)
     try:
-        mix_urls = await _collect_mix_urls(browser, dj_urls)
-        if not mix_urls:
+        url_metas = await _collect_mix_urls(browser, dj_config)
+        if not url_metas:
             log.warning("No mix URLs found.")
             return []
-        return await scrape_multiple_mixes(mix_urls, browser=browser)
+        return await scrape_multiple_mixes(url_metas, browser=browser)
     finally:
         browser.stop()
         await asyncio.sleep(0.5)
@@ -109,25 +120,31 @@ async def scrape_mixes_from_djs(dj_urls: list[str]) -> list[dict]:
 
 # ── Private helpers ────────────────────────────────────────────────────────────
 
-async def _collect_mix_urls(browser, dj_urls: list[str]) -> list[str]:
-    """Step 1: collect all mix page URLs across the given DJ category pages."""
-    all_urls, seen = [], set()
-    for i, dj_url in enumerate(dj_urls, 1):
-        log.info("[%d/%d] Scraping DJ page: %s", i, len(dj_urls), _dj_name(dj_url))
+async def _collect_mix_urls(browser, dj_config: list[dict]) -> list[dict]:
+    """
+    Step 1: collect all mix page URLs across the given DJ category pages.
+    Returns list of dicts: {url, dj_name, genre} — one entry per mix page found.
+    """
+    all_metas, seen = [], set()
+    for i, cfg in enumerate(dj_config, 1):
+        dj_url  = cfg["url"]
+        genre   = cfg["genre"]
+        name    = _dj_name(dj_url)
+        log.info("[%d/%d] Scraping DJ page: %s (%s)", i, len(dj_config), name, genre)
         try:
             page = await browser.get(dj_url, new_tab=True)
             await asyncio.sleep(random.uniform(4, 8))
             for url in await extract_mix_urls_from_dj_page(page):
                 if url not in seen:
                     seen.add(url)
-                    all_urls.append(url)
+                    all_metas.append({"url": url, "dj_name": name, "genre": genre})
             await _close(page)
         except Exception:
             log.exception("Failed to scrape DJ page %s", dj_url)
-        if i < len(dj_urls):
+        if i < len(dj_config):
             await asyncio.sleep(random.uniform(5, 12))
-    log.info("Collected %d mix URLs total", len(all_urls))
-    return all_urls
+    log.info("Collected %d mix URLs total", len(all_metas))
+    return all_metas
 
 
 def _parse_tracklist_section(full_text: str) -> list[str]:
@@ -167,17 +184,37 @@ def _parse_track_line(line: str) -> dict | None:
     if " - " not in rest:
         return None
     artist, track = rest.split(" - ", 1)
-    return {"artist_name": artist.strip() or None, "track_name": track.strip() or None, "starting_time": starting_time}
+    a, t = artist.strip(), track.strip()
+    return {
+        "track_id":    hashlib.md5(f"{a}|{t}".lower().encode()).hexdigest()[:12],
+        "artist_name": a or None,
+        "track_name":  t or None,
+        "starting_time": starting_time,
+    }
 
 
 def _results_to_dataframe(results: list[dict]) -> pd.DataFrame:
     rows = [
-        {"mix_id": mix_id, "url": d["url"], **parsed}
-        for mix_id, d in enumerate(results)
+        {
+            # Stable URL hash — unique across DJs, reproducible on re-runs
+            "mix_id":    hashlib.md5(d["url"].encode()).hexdigest()[:10],
+            "mix_title": d.get("title", ""),
+            "dj_name":   d.get("dj_name", ""),
+            "genre":     d.get("genre", ""),
+            **parsed,
+        }
+        for d in results
         for line in d.get("tracklist", [])
         if (parsed := _parse_track_line(line))
     ]
-    return pd.DataFrame(rows, columns=["mix_id", "url", "starting_time", "track_name", "artist_name"])
+    df = pd.DataFrame(
+        rows,
+        columns=["mix_id", "mix_title", "dj_name", "genre",
+                 "track_id", "starting_time", "track_name", "artist_name"],
+    )
+    df["play_type"]      = "sequential"  # MixesDB has no simultaneous play concept
+    df["overlay_parent"] = None
+    return df
 
 
 def _dj_name(url: str) -> str:
@@ -207,6 +244,13 @@ def _save(results: list[dict]) -> None:
         log.warning("No tracks parsed — skipping CSV save")
         return
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if OUTPUT_PATH.exists():
+        existing = pd.read_csv(OUTPUT_PATH)
+        # Drop any rows for mix_ids we just re-scraped, then append fresh data.
+        # This makes the scraper idempotent: re-running a DJ updates their rows
+        # without duplicating or losing other DJs already in the file.
+        existing = existing[~existing["mix_id"].isin(df["mix_id"])]
+        df = pd.concat([existing, df], ignore_index=True)
     df.to_csv(OUTPUT_PATH, index=False)
     log.info("Saved %d rows → %s", len(df), OUTPUT_PATH)
 
@@ -214,7 +258,13 @@ def _save(results: list[dict]) -> None:
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    DJ_URLS = [
-        "https://www.mixesdb.com/w/Category:Roman_Fl%C3%BCgel",
+    DJ_CONFIG = [
+        # {"url": "https://www.mixesdb.com/w/Category:Roman_Fl%C3%BCgel",      "genre": "minimal techno"},
+        # Add more DJs here — genre is manual (MixesDB page tags are inconsistent):
+        {"url": "https://www.mixesdb.com/w/Category:Charlotte_de_Witte",   "genre": "techno"},
+        # {"url": "https://www.mixesdb.com/w/Category:Dixon",                "genre": "deep house"},
+        # {"url": "https://www.mixesdb.com/w/Category:Ricardo_Villalobos",   "genre": "minimal techno"},
+        # {"url": "https://www.mixesdb.com/w/Category:Paul_van_Dyk",         "genre": "trance"},
+        # {"url": "https://www.mixesdb.com/w/Category:Goldie",               "genre": "drum and bass"},
     ]
-    asyncio.run(scrape_mixes_from_djs(DJ_URLS))
+    asyncio.run(scrape_mixes_from_djs(DJ_CONFIG))
