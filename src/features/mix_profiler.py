@@ -18,6 +18,7 @@ Run:
   conda activate djtest
   python src/features/mix_profiler.py
 """
+
 import logging
 from pathlib import Path
 
@@ -29,18 +30,19 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-TRACKLIST_PATH   = Path("data/interim/tracklist.csv")
-FEATURES_PATH    = Path("data/processed/features.parquet")
+TRACKLIST_PATH = Path("data/interim/tracklist.csv")
+FEATURES_PATH = Path("data/processed/features.parquet")
 MIX_METADATA_PATH = Path("data/processed/mix_metadata.csv")
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
-SPEARMAN_RISING   =  0.6   # r > this  → escalating
-SPEARMAN_FALLING  = -0.6   # r < this  → chill-down
-PLATEAU_MAX_RANGE =  0.15  # max(energy) - min(energy) < this → plateau
-MIN_TRACKS        =  3     # skip mixes with fewer than this many tracks with features
+SPEARMAN_RISING = 0.6  # r > this  → escalating
+SPEARMAN_FALLING = -0.6  # r < this  → chill-down
+PLATEAU_MAX_RANGE = 0.15  # max(energy) - min(energy) < this → plateau
+MIN_TRACKS = 3  # skip mixes with fewer than this many tracks with features
 
 
 # ── Core algorithm ────────────────────────────────────────────────────────────
+
 
 def _time_gap(t_a: float, t_b: float) -> float:
     """Minutes between two starting_time values with hour rollover (0-59 min)."""
@@ -88,14 +90,14 @@ def _energy_curve_shape(energies: list[float]) -> str:
 
     # ── peak-drop: energy peaks in middle 40% of the mix ────────────────────
     peak_idx = int(np.argmax(e))
-    mid_lo   = int(0.30 * n)
-    mid_hi   = int(0.70 * n)
+    mid_lo = int(0.30 * n)
+    mid_hi = int(0.70 * n)
     if mid_lo <= peak_idx <= mid_hi:
         return "peak-drop"
 
     # ── wave: ≥ 2 direction reversals ────────────────────────────────────────
-    diffs     = np.diff(e)
-    signs     = np.sign(diffs[diffs != 0])   # ignore flat steps
+    diffs = np.diff(e)
+    signs = np.sign(diffs[diffs != 0])  # ignore flat steps
     reversals = int(np.sum(np.diff(signs) != 0))
     if reversals >= 2:
         return "wave"
@@ -106,9 +108,10 @@ def _energy_curve_shape(energies: list[float]) -> str:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 def compute_mix_metadata(
     tracklist_path: Path = TRACKLIST_PATH,
-    features_path:  Path = FEATURES_PATH,
+    features_path: Path = FEATURES_PATH,
 ) -> pd.DataFrame:
     """
     Build one row per mix_id with its energy curve shape.
@@ -121,7 +124,7 @@ def compute_mix_metadata(
         DataFrame with columns: mix_id, dj_name, energy_curve_shape
     """
     tracklist = pd.read_csv(tracklist_path)
-    features  = pd.read_parquet(features_path, columns=["track_id", "energy_mean"])
+    features = pd.read_parquet(features_path, columns=["track_id", "energy_mean"])
 
     feat_idx = features.set_index("track_id")["energy_mean"]
 
@@ -136,26 +139,24 @@ def compute_mix_metadata(
 
     for mix_id, group in seq.groupby("mix_id"):
         dj_name = group["dj_name"].iloc[0] if "dj_name" in group.columns else ""
-        group   = _sort_by_time(group)
+        group = _sort_by_time(group)
 
         # Keep only tracks that have feature data
         track_ids = group["track_id"].tolist() if "track_id" in group.columns else []
-        energies  = [
-            feat_idx[tid]
-            for tid in track_ids
-            if tid in feat_idx.index
-        ]
+        energies = [feat_idx[tid] for tid in track_ids if tid in feat_idx.index]
 
         if len(energies) < MIN_TRACKS:
             skipped += 1
             continue
 
         shape = _energy_curve_shape(energies)
-        records.append({
-            "mix_id":             mix_id,
-            "dj_name":            dj_name,
-            "energy_curve_shape": shape,
-        })
+        records.append(
+            {
+                "mix_id": mix_id,
+                "dj_name": dj_name,
+                "energy_curve_shape": shape,
+            }
+        )
 
     df = pd.DataFrame(records, columns=["mix_id", "dj_name", "energy_curve_shape"])
 

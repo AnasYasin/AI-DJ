@@ -2,6 +2,7 @@
 Shared pytest fixtures used across all test files.
 conftest.py is automatically loaded by pytest — no import needed in test files.
 """
+
 import numpy as np
 import pytest
 
@@ -29,10 +30,10 @@ def tmp_audio_file(tmp_path):
 
     # Add a sharp kick pulse every 0.5 seconds (= 120 BPM)
     # Each pulse is a 10ms burst of high amplitude — simulates a kick drum hit
-    beat_interval = int(sr * 0.5)   # samples between beats
-    pulse_len = int(sr * 0.01)      # 10ms pulse width
+    beat_interval = int(sr * 0.5)  # samples between beats
+    pulse_len = int(sr * 0.01)  # 10ms pulse width
     for onset in range(0, len(audio) - pulse_len, beat_interval):
-        audio[onset: onset + pulse_len] += 0.7
+        audio[onset : onset + pulse_len] += 0.7
 
     audio = np.clip(audio, -1.0, 1.0)  # prevent clipping above ±1
     path = tmp_path / "test_audio.wav"

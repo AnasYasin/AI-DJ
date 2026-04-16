@@ -23,6 +23,7 @@ Batched:    inserts in chunks of BATCH_SIZE (ChromaDB recommends ≤ 5000 per ca
 
 Output: data/processed/chromadb/  (ChromaDB persistent store)
 """
+
 import logging
 from pathlib import Path
 import time
@@ -34,20 +35,25 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 FEATURES_PATH = Path("data/processed/features.parquet")
-CHROMA_PATH   = Path("data/processed/chromadb")
+CHROMA_PATH = Path("data/processed/chromadb")
 COLLECTION_NAME = "tracks"
 BATCH_SIZE = 500
 
 # Librosa feature columns stored as metadata (everything except track_id and embedding)
 _LIBROSA_COLS = [
-    "bpm", "key", "loudness_lufs",
-    "energy_mean", "energy_std",
-    "spectral_centroid", "onset_strength",
+    "bpm",
+    "key",
+    "loudness_lufs",
+    "energy_mean",
+    "energy_std",
+    "spectral_centroid",
+    "onset_strength",
     *[f"mfcc_{i}" for i in range(13)],
 ]
 
 
 # ── Client factory ─────────────────────────────────────────────────────────────
+
 
 def get_client(path: str | Path = CHROMA_PATH) -> chromadb.PersistentClient:
     """
@@ -72,9 +78,10 @@ def get_collection(client: chromadb.ClientAPI) -> chromadb.Collection:
 
 # ── Population ─────────────────────────────────────────────────────────────────
 
+
 def populate(
     features_path: str | Path = FEATURES_PATH,
-    chroma_path:   str | Path = CHROMA_PATH,
+    chroma_path: str | Path = CHROMA_PATH,
 ) -> int:
     """
     Read features.parquet and upsert all tracks into ChromaDB.
@@ -90,20 +97,20 @@ def populate(
     df = pd.read_parquet(features_path)
     log.info("Loaded %d tracks from %s", len(df), features_path)
 
-    client     = get_client(chroma_path)
+    client = get_client(chroma_path)
     collection = get_collection(client)
 
     # ── Skip already-inserted tracks (idempotency) ─────────────────────────
     existing_count = collection.count()
     if existing_count > 0:
-        existing_ids = set(
-            collection.get(include=[])["ids"]
-        )
+        existing_ids = set(collection.get(include=[])["ids"])
         before = len(df)
         df = df[~df["track_id"].isin(existing_ids)]
         log.info(
             "Collection already has %d tracks. Skipping %d duplicates. Inserting %d new.",
-            existing_count, before - len(df), len(df),
+            existing_count,
+            before - len(df),
+            len(df),
         )
     else:
         log.info("Collection is empty. Inserting all %d tracks.", len(df))
@@ -116,19 +123,21 @@ def populate(
         raise ValueError("features.parquet missing 'embedding' column")
 
     # ── Batch insert ───────────────────────────────────────────────────────
-    total    = len(df)
+    total = len(df)
     inserted = 0
-    t_start  = time.time()
+    t_start = time.time()
 
     for batch_start in range(0, total, BATCH_SIZE):
         chunk = df.iloc[batch_start : batch_start + BATCH_SIZE]
 
-        ids        = chunk["track_id"].tolist()
+        ids = chunk["track_id"].tolist()
         embeddings = [e.tolist() if hasattr(e, "tolist") else list(e) for e in chunk["embedding"]]
-        metadatas  = _build_metadatas(chunk)
+        metadatas = _build_metadatas(chunk)
 
         has_labels = "artist" in chunk.columns and "track_name" in chunk.columns
-        documents  = (chunk["artist"] + " - " + chunk["track_name"]).tolist() if has_labels else None
+        documents = (
+            (chunk["artist"] + " - " + chunk["track_name"]).tolist() if has_labels else None
+        )
 
         collection.add(
             ids=ids,
@@ -137,20 +146,26 @@ def populate(
             documents=documents,
         )
 
-        inserted   += len(chunk)
-        batch_num   = batch_start // BATCH_SIZE + 1
+        inserted += len(chunk)
+        batch_num = batch_start // BATCH_SIZE + 1
         total_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
-        elapsed     = time.time() - t_start
-        rate        = inserted / elapsed if elapsed > 0 else 0
+        elapsed = time.time() - t_start
+        rate = inserted / elapsed if elapsed > 0 else 0
         log.info(
             "Batch %d/%d — inserted %d/%d tracks (%.1f tracks/s)",
-            batch_num, total_batches, inserted, total, rate,
+            batch_num,
+            total_batches,
+            inserted,
+            total,
+            rate,
         )
 
     final_count = collection.count()
     log.info(
         "Done. Collection '%s' now has %d tracks. (%.1fs total)",
-        COLLECTION_NAME, final_count, time.time() - t_start,
+        COLLECTION_NAME,
+        final_count,
+        time.time() - t_start,
     )
     return final_count
 
@@ -174,7 +189,7 @@ def _build_metadatas(chunk: pd.DataFrame) -> list[dict]:
                 meta[col] = str(val) if val is not None else "unknown"
             else:
                 v = float(val)
-                meta[col] = 0.0 if (v != v) else v   # NaN check: NaN != NaN
+                meta[col] = 0.0 if (v != v) else v  # NaN check: NaN != NaN
         metas.append(meta)
     return metas
 
@@ -194,11 +209,12 @@ def _build_metadatas(chunk: pd.DataFrame) -> list[dict]:
 # These defaults were chosen based on within-genre electronic music.
 # Tune via min_distance / max_distance args if you add very different genres.
 
-HARD_NEG_MIN_DISTANCE = 0.10   # below this → likely false negative, skip
-HARD_NEG_MAX_DISTANCE = 0.60   # above this → too easy, skip
+HARD_NEG_MIN_DISTANCE = 0.10  # below this → likely false negative, skip
+HARD_NEG_MAX_DISTANCE = 0.60  # above this → too easy, skip
 
 
 # ── Nearest-neighbour query helper (used by training loop in Phase 5) ──────────
+
 
 def query_hard_negatives(
     collection: chromadb.Collection,
@@ -250,10 +266,10 @@ def query_hard_negatives(
         include=["metadatas", "distances", "documents"],
     )
 
-    ids       = results["ids"][0]
+    ids = results["ids"][0]
     distances = results["distances"][0]
-    metas     = results["metadatas"][0]
-    docs      = results["documents"][0]
+    metas = results["metadatas"][0]
+    docs = results["documents"][0]
 
     # Apply: exclude known positives, then apply distance window
     filtered = [
@@ -267,7 +283,7 @@ def query_hard_negatives(
 
     f_ids, f_dist, f_metas, f_docs = zip(*filtered)
     return {
-        "ids":       [list(f_ids)],
+        "ids": [list(f_ids)],
         "distances": [list(f_dist)],
         "metadatas": [list(f_metas)],
         "documents": [list(f_docs)],
@@ -277,7 +293,7 @@ def query_hard_negatives(
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    _fmt      = "%(asctime)s %(levelname)s %(message)s"
+    _fmt = "%(asctime)s %(levelname)s %(message)s"
     _log_path = Path("logs/vector_store.log")
     _log_path.parent.mkdir(exist_ok=True)
     logging.basicConfig(

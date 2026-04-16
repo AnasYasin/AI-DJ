@@ -31,6 +31,7 @@ Run:
   conda activate djtest
   python src/features/transition_labeler.py
 """
+
 import hashlib
 import logging
 from pathlib import Path
@@ -42,35 +43,35 @@ log = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
-FEATURES_PATH     = Path("data/processed/features.parquet")
-LABELS_PATH       = Path("data/processed/transition_labels.csv")
-TRACKLIST_PATH    = Path("data/interim/tracklist.csv")
+FEATURES_PATH = Path("data/processed/features.parquet")
+LABELS_PATH = Path("data/processed/transition_labels.csv")
+TRACKLIST_PATH = Path("data/interim/tracklist.csv")
 MIX_METADATA_PATH = Path("data/processed/mix_metadata.csv")
 
 # ── Classification thresholds ─────────────────────────────────────────────────
 # All constants are tunable — rationale in CLAUDE.md and module docstring.
 
 # BPM ratio = bpm_b / bpm_a
-BPM_RATIO_TIGHT = 0.03   # |1 - ratio| < this → tight  (~3-4 BPM at 120)
-BPM_RATIO_LOOSE = 0.07   # |1 - ratio| < this → loose  (~8 BPM at 120)
+BPM_RATIO_TIGHT = 0.03  # |1 - ratio| < this → tight  (~3-4 BPM at 120)
+BPM_RATIO_LOOSE = 0.07  # |1 - ratio| < this → loose  (~8 BPM at 120)
 
 # Energy delta = energy_mean_b - energy_mean_a  (normalised RMS, ~0–1)
-ENERGY_RISE_MIN =  0.08   # positive delta above this  → rising energy
-ENERGY_FALL_MIN = -0.08   # negative delta below this  → falling energy
-ENERGY_SLAM_MIN =  0.15   # spike above this + tight BPM → slam candidate
-ENERGY_MELT_MAX =  0.05   # |delta| below this         → melt candidate
+ENERGY_RISE_MIN = 0.08  # positive delta above this  → rising energy
+ENERGY_FALL_MIN = -0.08  # negative delta below this  → falling energy
+ENERGY_SLAM_MIN = 0.15  # spike above this + tight BPM → slam candidate
+ENERGY_MELT_MAX = 0.05  # |delta| below this         → melt candidate
 
 # Camelot wheel harmonic distance  (0 = same key, 6 = maximally incompatible)
-HARM_PERFECT    = 1   # ≤ 1 step   → very compatible
-HARM_COMPATIBLE = 2   # ≤ 2 steps  → workable
-HARM_CLASH      = 5   # ≥ 5 steps  → harsh clash
+HARM_PERFECT = 1  # ≤ 1 step   → very compatible
+HARM_COMPATIBLE = 2  # ≤ 2 steps  → workable
+HARM_CLASH = 5  # ≥ 5 steps  → harsh clash
 
 # Loudness delta = loudness_lufs_b - loudness_lufs_a  (dBLUFS)
-LOUD_MELT_MAX   = 3.0   # |delta| below this → melt candidate
+LOUD_MELT_MAX = 3.0  # |delta| below this → melt candidate
 
 # Onset strength (librosa mean): proxy for rhythmic punchiness / danceability
 # Typical dance-music range: 0.2–0.7; 0.35 separates punchy from mellow.
-ONSET_HIGH_MIN  = 0.35   # both tracks need onset_strength > this for wave
+ONSET_HIGH_MIN = 0.35  # both tracks need onset_strength > this for wave
 
 # Time gap between consecutive mix entries (minutes)
 # starting_time rolls over each hour; pairs with gap > this are skipped.
@@ -79,12 +80,30 @@ TIME_GAP_MAX_MIN = 15.0
 # ── Camelot wheel ─────────────────────────────────────────────────────────────
 # Mirrors train_model.py — duplicated to avoid coupling features ↔ models.
 _CAMELOT = {
-    "C": 8,  "Cm": 5,  "C#": 3,  "C#m": 12,
-    "D": 10, "Dm": 7,  "D#": 5,  "D#m": 2,
-    "E": 12, "Em": 9,  "F": 7,   "Fm": 4,
-    "F#": 2, "F#m": 11,"G": 9,   "Gm": 6,
-    "G#": 4, "G#m": 1, "A": 11,  "Am": 8,
-    "A#": 6, "A#m": 3, "B": 1,   "Bm": 10,
+    "C": 8,
+    "Cm": 5,
+    "C#": 3,
+    "C#m": 12,
+    "D": 10,
+    "Dm": 7,
+    "D#": 5,
+    "D#m": 2,
+    "E": 12,
+    "Em": 9,
+    "F": 7,
+    "Fm": 4,
+    "F#": 2,
+    "F#m": 11,
+    "G": 9,
+    "Gm": 6,
+    "G#": 4,
+    "G#m": 1,
+    "A": 11,
+    "Am": 8,
+    "A#": 6,
+    "A#m": 3,
+    "B": 1,
+    "Bm": 10,
 }
 
 
@@ -108,6 +127,7 @@ def _track_id(artist: str, track: str) -> str:
 
 # ── Feature computation ───────────────────────────────────────────────────────
 
+
 def _pair_features(row_a: pd.Series, row_b: pd.Series, time_gap: float) -> dict:
     """
     Compute the delta features for a consecutive track pair.
@@ -121,26 +141,27 @@ def _pair_features(row_a: pd.Series, row_b: pd.Series, time_gap: float) -> dict:
         Dict with keys: bpm_ratio, energy_delta, loudness_delta,
                         harm_dist, onset_a, onset_b, time_gap_norm.
     """
-    bpm_ratio     = float(row_b["bpm"]) / max(float(row_a["bpm"]), 1.0)
-    energy_delta  = float(row_b["energy_mean"]) - float(row_a["energy_mean"])
+    bpm_ratio = float(row_b["bpm"]) / max(float(row_a["bpm"]), 1.0)
+    energy_delta = float(row_b["energy_mean"]) - float(row_a["energy_mean"])
     loudness_delta = float(row_b["loudness_lufs"]) - float(row_a["loudness_lufs"])
-    harm_dist     = _harmonic_dist(str(row_a["key"]), str(row_b["key"]))
-    onset_a       = float(row_a.get("onset_strength", 0.0))
-    onset_b       = float(row_b.get("onset_strength", 0.0))
+    harm_dist = _harmonic_dist(str(row_a["key"]), str(row_b["key"]))
+    onset_a = float(row_a.get("onset_strength", 0.0))
+    onset_b = float(row_b.get("onset_strength", 0.0))
     time_gap_norm = float(np.clip(time_gap / TIME_GAP_MAX_MIN, 0.0, 1.0))
 
     return {
-        "bpm_ratio":      bpm_ratio,
-        "energy_delta":   energy_delta,
+        "bpm_ratio": bpm_ratio,
+        "energy_delta": energy_delta,
         "loudness_delta": loudness_delta,
-        "harm_dist":      harm_dist,
-        "onset_a":        onset_a,
-        "onset_b":        onset_b,
-        "time_gap_norm":  time_gap_norm,
+        "harm_dist": harm_dist,
+        "onset_a": onset_a,
+        "onset_b": onset_b,
+        "time_gap_norm": time_gap_norm,
     }
 
 
 # ── Classification ────────────────────────────────────────────────────────────
+
 
 def _classify(feats: dict) -> tuple[str, float]:
     """
@@ -149,14 +170,14 @@ def _classify(feats: dict) -> tuple[str, float]:
     Priority: slam → rise → fade → melt → wave → blend
     Returns (label, confidence) where confidence ∈ (0, 1].
     """
-    ed   = feats["energy_delta"]
-    hd   = feats["harm_dist"]
-    br   = feats["bpm_ratio"]
-    ld   = feats["loudness_delta"]
-    oa   = feats["onset_a"]
-    ob   = feats["onset_b"]
+    ed = feats["energy_delta"]
+    hd = feats["harm_dist"]
+    br = feats["bpm_ratio"]
+    ld = feats["loudness_delta"]
+    oa = feats["onset_a"]
+    ob = feats["onset_b"]
 
-    bpm_dev   = abs(1.0 - br)
+    bpm_dev = abs(1.0 - br)
     bpm_tight = bpm_dev < BPM_RATIO_TIGHT
     bpm_loose = bpm_dev < BPM_RATIO_LOOSE
 
@@ -182,10 +203,7 @@ def _classify(feats: dict) -> tuple[str, float]:
     # Research: requires BPM within ~3%, same or adjacent Camelot position,
     # energy delta < 0.05 and loudness delta < 3 dBLUFS.
     is_melt = (
-        bpm_tight
-        and hd <= HARM_PERFECT
-        and abs(ed) < ENERGY_MELT_MAX
-        and abs(ld) < LOUD_MELT_MAX
+        bpm_tight and hd <= HARM_PERFECT and abs(ed) < ENERGY_MELT_MAX and abs(ld) < LOUD_MELT_MAX
     )
 
     # ── wave ──
@@ -193,11 +211,7 @@ def _classify(feats: dict) -> tuple[str, float]:
     # Research: high danceability (onset_strength proxy > 0.35) on both tracks
     # enables short rhythmic in/out mixing.
     is_wave = (
-        bpm_tight
-        and oa > ONSET_HIGH_MIN
-        and ob > ONSET_HIGH_MIN
-        and not is_rise
-        and not is_fade
+        bpm_tight and oa > ONSET_HIGH_MIN and ob > ONSET_HIGH_MIN and not is_rise and not is_fade
     )
 
     # Priority assignment
@@ -225,18 +239,18 @@ def _confidence(label: str, feats: dict) -> float:
     Scores are additive bonuses on top of a per-class base score.
     Higher score = the features match the rule more clearly.
     """
-    ed  = feats["energy_delta"]
-    hd  = feats["harm_dist"]
-    br  = feats["bpm_ratio"]
-    ld  = abs(feats["loudness_delta"])
+    ed = feats["energy_delta"]
+    hd = feats["harm_dist"]
+    br = feats["bpm_ratio"]
+    ld = abs(feats["loudness_delta"])
     bpm_dev = abs(1.0 - br)
 
     if label == "slam":
         score = 0.65
         if ed > 0.20:
-            score += 0.15   # very large spike
+            score += 0.15  # very large spike
         if hd >= HARM_CLASH:
-            score += 0.10   # confirmed key clash
+            score += 0.10  # confirmed key clash
         if bpm_dev < BPM_RATIO_TIGHT:
             score += 0.05
 
@@ -260,11 +274,11 @@ def _confidence(label: str, feats: dict) -> float:
     elif label == "melt":
         score = 0.65
         if hd == 0:
-            score += 0.15   # same key
+            score += 0.15  # same key
         elif hd <= 1:
-            score += 0.08   # adjacent key
+            score += 0.08  # adjacent key
         if bpm_dev < 0.01:
-            score += 0.10   # essentially same BPM
+            score += 0.10  # essentially same BPM
         if abs(ed) < 0.02:
             score += 0.05
         if ld < 1.5:
@@ -284,6 +298,7 @@ def _confidence(label: str, feats: dict) -> float:
 
 
 # ── Pair building from mix CSVs ───────────────────────────────────────────────
+
 
 def _time_gap(t_a: float, t_b: float) -> float:
     """
@@ -321,8 +336,8 @@ def label_transitions(
           n_tracks_in_mix, mix_energy_curve_shape,
           label, confidence, bpm_ratio, energy_delta, harm_dist, time_gap_norm
     """
-    feat_idx  = features.set_index("track_id")
-    feat_ids  = set(feat_idx.index)
+    feat_idx = features.set_index("track_id")
+    feat_ids = set(feat_idx.index)
 
     # Load energy curve shapes if available
     curve_shapes: dict[str, str] = {}
@@ -352,7 +367,12 @@ def label_transitions(
             # Use track_id column if present, else compute from artist/track
             if "track_id" in group.columns:
                 entries = [
-                    (row["track_id"], float(row["starting_time"]) if pd.notna(row["starting_time"]) else float("nan"))
+                    (
+                        row["track_id"],
+                        float(row["starting_time"])
+                        if pd.notna(row["starting_time"])
+                        else float("nan"),
+                    )
                     for _, row in group.iterrows()
                     if row["track_id"] in feat_ids
                 ]
@@ -361,10 +381,17 @@ def label_transitions(
                 for _, row in group.iterrows():
                     tid = _track_id(str(row["artist_name"]), str(row["track_name"]))
                     if tid in feat_ids:
-                        entries.append((tid, float(row["starting_time"]) if pd.notna(row["starting_time"]) else float("nan")))
+                        entries.append(
+                            (
+                                tid,
+                                float(row["starting_time"])
+                                if pd.notna(row["starting_time"])
+                                else float("nan"),
+                            )
+                        )
 
-            n_tracks      = len(entries)
-            curve_shape   = curve_shapes.get(str(mix_id), "unknown")
+            n_tracks = len(entries)
+            curve_shape = curve_shapes.get(str(mix_id), "unknown")
 
             for i in range(n_tracks - 1):
                 tid_a, t_a = entries[i]
@@ -378,28 +405,34 @@ def label_transitions(
                     if gap > TIME_GAP_MAX_MIN:
                         log.debug(
                             "Skipping pair %s→%s in mix %s: gap %.1f min > %.0f min",
-                            tid_a, tid_b, mix_id, gap, TIME_GAP_MAX_MIN,
+                            tid_a,
+                            tid_b,
+                            mix_id,
+                            gap,
+                            TIME_GAP_MAX_MIN,
                         )
                         continue
 
                 feats = _pair_features(feat_idx.loc[tid_a], feat_idx.loc[tid_b], gap)
                 label, confidence = _classify(feats)
 
-                records.append({
-                    "mix_id":                mix_id,
-                    "from_track_id":         tid_a,
-                    "to_track_id":           tid_b,
-                    "from_position":         i,
-                    "to_position":           i + 1,
-                    "n_tracks_in_mix":       n_tracks,
-                    "mix_energy_curve_shape": curve_shape,
-                    "label":                 label,
-                    "confidence":            confidence,
-                    "bpm_ratio":             round(feats["bpm_ratio"], 4),
-                    "energy_delta":          round(feats["energy_delta"], 4),
-                    "harm_dist":             feats["harm_dist"],
-                    "time_gap_norm":         round(feats["time_gap_norm"], 4),
-                })
+                records.append(
+                    {
+                        "mix_id": mix_id,
+                        "from_track_id": tid_a,
+                        "to_track_id": tid_b,
+                        "from_position": i,
+                        "to_position": i + 1,
+                        "n_tracks_in_mix": n_tracks,
+                        "mix_energy_curve_shape": curve_shape,
+                        "label": label,
+                        "confidence": confidence,
+                        "bpm_ratio": round(feats["bpm_ratio"], 4),
+                        "energy_delta": round(feats["energy_delta"], 4),
+                        "harm_dist": feats["harm_dist"],
+                        "time_gap_norm": round(feats["time_gap_norm"], 4),
+                    }
+                )
 
     result = pd.DataFrame(records)
     if not result.empty:
@@ -412,6 +445,7 @@ def label_transitions(
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")

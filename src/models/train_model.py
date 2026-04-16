@@ -34,6 +34,7 @@ Run:
   conda activate djtest
   python src/models/train_model.py
 """
+
 import hashlib
 import logging
 from pathlib import Path
@@ -72,53 +73,71 @@ log = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
-FEATURES_PATH    = Path("data/processed/features.parquet")
-LABELS_PATH      = Path("data/processed/transition_labels.csv")
-MODELS_DIR       = Path("models")
-ENCODER_PATH     = MODELS_DIR / "contrastive_encoder.pt"
-CLASSIFIER_PATH  = MODELS_DIR / "transition_classifier.pt"
+FEATURES_PATH = Path("data/processed/features.parquet")
+LABELS_PATH = Path("data/processed/transition_labels.csv")
+MODELS_DIR = Path("models")
+ENCODER_PATH = MODELS_DIR / "contrastive_encoder.pt"
+CLASSIFIER_PATH = MODELS_DIR / "transition_classifier.pt"
 
 # ── Hyperparameters ────────────────────────────────────────────────────────────
 # Centralised here so MLflow/W&B can log them all at once.
 
 HPARAMS = {
     # Contrastive encoder
-    "encoder_input_dim":   775,   # 768 MERT + 7 librosa (bpm, key×3, energy, onset, lufs)
-    "encoder_hidden_dim":  256,
-    "encoder_output_dim":  128,
-    "temperature":         0.07,    # NT-Xent temperature (lower = sharper contrast)
-    "encoder_lr":          3e-4,
-    "encoder_epochs":      50,
-    "encoder_batch_size":  128,
-    "hard_neg_per_anchor": 5,       # how many hard negatives to fetch per anchor
-    "hard_neg_min_dist":   HARD_NEG_MIN_DISTANCE,
-    "hard_neg_max_dist":   HARD_NEG_MAX_DISTANCE,
+    "encoder_input_dim": 775,  # 768 MERT + 7 librosa (bpm, key×3, energy, onset, lufs)
+    "encoder_hidden_dim": 256,
+    "encoder_output_dim": 128,
+    "temperature": 0.07,  # NT-Xent temperature (lower = sharper contrast)
+    "encoder_lr": 3e-4,
+    "encoder_epochs": 50,
+    "encoder_batch_size": 128,
+    "hard_neg_per_anchor": 5,  # how many hard negatives to fetch per anchor
+    "hard_neg_min_dist": HARD_NEG_MIN_DISTANCE,
+    "hard_neg_max_dist": HARD_NEG_MAX_DISTANCE,
     # Transition classifier
-    "cls_lr":              1e-3,
-    "cls_epochs":          30,
-    "cls_batch_size":      64,
-    "cls_dropout":         0.3,
+    "cls_lr": 1e-3,
+    "cls_epochs": 30,
+    "cls_batch_size": 64,
+    "cls_dropout": 0.3,
     # Shared
-    "weight_decay":        1e-4,
-    "val_split":           0.2,     # fraction of mixes held out for validation
-    "random_seed":         42,
+    "weight_decay": 1e-4,
+    "val_split": 0.2,  # fraction of mixes held out for validation
+    "random_seed": 42,
 }
 
 TRANSITION_CLASSES = ["slam", "melt", "blend", "rise", "fade", "wave"]
 
 # Transition feature normalisation constants
-HARM_DIST_MAX         = 6.0   # max Camelot wheel distance; divides harm_dist → [0, 1]
-TIME_GAP_NORM_DEFAULT = 0.5   # fallback when time_gap_norm is absent from labels
+HARM_DIST_MAX = 6.0  # max Camelot wheel distance; divides harm_dist → [0, 1]
+TIME_GAP_NORM_DEFAULT = 0.5  # fallback when time_gap_norm is absent from labels
 
 # Camelot wheel distances for harmonic compatibility scoring.
 # Each key maps to its Camelot number (1-12). Same number or ±1 = compatible.
 _CAMELOT = {
-    "C": 8, "Cm": 5, "C#": 3, "C#m": 12,
-    "D": 10, "Dm": 7, "D#": 5, "D#m": 2,
-    "E": 12, "Em": 9, "F": 7, "Fm": 4,
-    "F#": 2, "F#m": 11, "G": 9, "Gm": 6,
-    "G#": 4, "G#m": 1, "A": 11, "Am": 8,
-    "A#": 6, "A#m": 3, "B": 1, "Bm": 10,
+    "C": 8,
+    "Cm": 5,
+    "C#": 3,
+    "C#m": 12,
+    "D": 10,
+    "Dm": 7,
+    "D#": 5,
+    "D#m": 2,
+    "E": 12,
+    "Em": 9,
+    "F": 7,
+    "Fm": 4,
+    "F#": 2,
+    "F#m": 11,
+    "G": 9,
+    "Gm": 6,
+    "G#": 4,
+    "G#m": 1,
+    "A": 11,
+    "Am": 8,
+    "A#": 6,
+    "A#m": 3,
+    "B": 1,
+    "Bm": 10,
 }
 
 
@@ -175,24 +194,26 @@ def _prepare_encoder_inputs(features: pd.DataFrame) -> tuple[np.ndarray, dict[st
 
         emb = np.asarray(row["embedding"], dtype=np.float32)
 
-        bpm_norm  = float(row["bpm"]) / 200.0
-        camelot   = _CAMELOT.get(str(row["key"]), 1)
-        angle     = 2 * np.pi * camelot / 12
-        key_sin   = float(np.sin(angle))
-        key_cos   = float(np.cos(angle))
-        key_mode  = 0.0 if str(row["key"]).endswith("m") else 1.0   # minor=0, major=1
-        energy    = float(row["energy_mean"])
+        bpm_norm = float(row["bpm"]) / 200.0
+        camelot = _CAMELOT.get(str(row["key"]), 1)
+        angle = 2 * np.pi * camelot / 12
+        key_sin = float(np.sin(angle))
+        key_cos = float(np.cos(angle))
+        key_mode = 0.0 if str(row["key"]).endswith("m") else 1.0  # minor=0, major=1
+        energy = float(row["energy_mean"])
         onset_norm = min(float(row["onset_strength"]) / 5.0, 1.0)
-        lufs_norm  = float(np.clip((float(row["loudness_lufs"]) + 40.0) / 40.0, 0.0, 1.0))
+        lufs_norm = float(np.clip((float(row["loudness_lufs"]) + 40.0) / 40.0, 0.0, 1.0))
 
-        extra = np.array([bpm_norm, key_sin, key_cos, key_mode, energy, onset_norm, lufs_norm],
-                         dtype=np.float32)
+        extra = np.array(
+            [bpm_norm, key_sin, key_cos, key_mode, energy, onset_norm, lufs_norm], dtype=np.float32
+        )
         matrix[idx] = np.concatenate([emb, extra])
 
     return matrix, tid_to_idx
 
 
 # ── Pair building ──────────────────────────────────────────────────────────────
+
 
 def _track_id(artist: str, track: str) -> str:
     """Same deterministic ID as preview_fetcher.py."""
@@ -254,12 +275,14 @@ def build_consecutive_pairs(
     train_mixes, val_mixes = mix_ids[:split], mix_ids[split:]
 
     train_pairs = [p for mid in train_mixes for p in all_pairs[mid]]
-    val_pairs   = [p for mid in val_mixes   for p in all_pairs[mid]]
+    val_pairs = [p for mid in val_mixes for p in all_pairs[mid]]
 
     log.info(
         "Pairs — train: %d (%d mixes), val: %d (%d mixes)",
-        len(train_pairs), len(train_mixes),
-        len(val_pairs),   len(val_mixes),
+        len(train_pairs),
+        len(train_mixes),
+        len(val_pairs),
+        len(val_mixes),
     )
     return train_pairs, val_pairs
 
@@ -277,6 +300,7 @@ def build_positive_index(pairs: list[tuple]) -> dict[str, set[str]]:
 
 
 # ── Datasets ───────────────────────────────────────────────────────────────────
+
 
 class ContrastiveDataset(Dataset):
     """
@@ -298,10 +322,10 @@ class ContrastiveDataset(Dataset):
         collection: chromadb.Collection,
         hard_neg_per_anchor: int = 5,
     ):
-        self.pairs        = pairs
-        self.pos_index    = positive_index
-        self.collection   = collection
-        self.n_hard       = hard_neg_per_anchor
+        self.pairs = pairs
+        self.pos_index = positive_index
+        self.collection = collection
+        self.n_hard = hard_neg_per_anchor
 
         # Augmented inputs for encoder training (MERT + librosa features)
         self.input_matrix, self.tid_to_idx = _prepare_encoder_inputs(features)
@@ -339,18 +363,23 @@ class ContrastiveDataset(Dataset):
             neg_ids = results["ids"][0]
             if neg_ids:
                 neg_embs = np.stack(
-                    [self.input_matrix[self.tid_to_idx[nid]]
-                     for nid in neg_ids if nid in self.tid_to_idx]
+                    [
+                        self.input_matrix[self.tid_to_idx[nid]]
+                        for nid in neg_ids
+                        if nid in self.tid_to_idx
+                    ]
                 )
                 # Pad or trim to exactly n_hard rows
                 if len(neg_embs) < self.n_hard:
                     pad = np.zeros((self.n_hard - len(neg_embs), enc_dim), dtype=np.float32)
                     neg_embs = np.vstack([neg_embs, pad])
-                self.hard_neg_cache[tid] = neg_embs[:self.n_hard]
+                self.hard_neg_cache[tid] = neg_embs[: self.n_hard]
                 found += 1
         log.info(
             "Hard negative mining done: %d/%d anchors got negatives (%.1fs)",
-            found, len(unique_anchors), time.time() - t0,
+            found,
+            len(unique_anchors),
+            time.time() - t0,
         )
 
     def __len__(self) -> int:
@@ -365,11 +394,13 @@ class ContrastiveDataset(Dataset):
             z = torch.zeros(enc_dim)
             return z, z, torch.zeros(self.n_hard, enc_dim)
 
-        anchor   = torch.tensor(self.input_matrix[self.tid_to_idx[tid_a]])
+        anchor = torch.tensor(self.input_matrix[self.tid_to_idx[tid_a]])
         positive = torch.tensor(self.input_matrix[self.tid_to_idx[tid_b]])
 
         enc_dim = self.input_matrix.shape[1]
-        hard_neg_arr = self.hard_neg_cache.get(tid_a, np.zeros((self.n_hard, enc_dim), dtype=np.float32))
+        hard_neg_arr = self.hard_neg_cache.get(
+            tid_a, np.zeros((self.n_hard, enc_dim), dtype=np.float32)
+        )
         hard_negs = torch.tensor(hard_neg_arr)
 
         return anchor, positive, hard_negs
@@ -388,7 +419,9 @@ class TransitionDataset(Dataset):
         produced by the contrastive encoder. Run this AFTER encoder training.
     """
 
-    def __init__(self, labels_df: pd.DataFrame, features: pd.DataFrame, label_encoder: LabelEncoder):
+    def __init__(
+        self, labels_df: pd.DataFrame, features: pd.DataFrame, label_encoder: LabelEncoder
+    ):
         self.label_enc = label_encoder
         feat_idx = features.set_index("track_id")
         rows = []
@@ -403,14 +436,14 @@ class TransitionDataset(Dataset):
             emb_a = np.array(fa["embedding_proj"], dtype=np.float32)
             emb_b = np.array(fb["embedding_proj"], dtype=np.float32)
 
-            bpm_ratio    = float(fb["bpm"]) / max(float(fa["bpm"]), 1.0)
+            bpm_ratio = float(fb["bpm"]) / max(float(fa["bpm"]), 1.0)
             energy_delta = float(fb["energy_mean"]) - float(fa["energy_mean"])
-            harm_dist    = _harmonic_dist(str(fa["key"]), str(fb["key"])) / HARM_DIST_MAX
+            harm_dist = _harmonic_dist(str(fa["key"]), str(fb["key"])) / HARM_DIST_MAX
             _tg = row.get("time_gap_norm", TIME_GAP_NORM_DEFAULT)
             time_gap = TIME_GAP_NORM_DEFAULT if pd.isna(_tg) else float(_tg)
 
             delta = np.array([bpm_ratio, energy_delta, harm_dist, time_gap], dtype=np.float32)
-            vec   = np.concatenate([emb_a, emb_b, delta])  # (260,)
+            vec = np.concatenate([emb_a, emb_b, delta])  # (260,)
             label = label_encoder.transform([row["label"]])[0]
             rows.append((vec, label))
 
@@ -425,6 +458,7 @@ class TransitionDataset(Dataset):
 
 
 # ── Models ─────────────────────────────────────────────────────────────────────
+
 
 class ContrastiveEncoder(nn.Module):
     """
@@ -480,6 +514,7 @@ class TransitionClassifier(nn.Module):
 
 # ── NT-Xent Loss ───────────────────────────────────────────────────────────────
 
+
 class NTXentLoss(nn.Module):
     """
     Normalised Temperature-scaled Cross Entropy (SimCLR loss) with hard negatives.
@@ -502,8 +537,8 @@ class NTXentLoss(nn.Module):
 
     def forward(
         self,
-        anchors:   torch.Tensor,   # (B, D) — L2 normalised
-        positives: torch.Tensor,   # (B, D) — L2 normalised
+        anchors: torch.Tensor,  # (B, D) — L2 normalised
+        positives: torch.Tensor,  # (B, D) — L2 normalised
         hard_negs: torch.Tensor | None = None,  # (B, K, D) — L2 normalised
     ) -> torch.Tensor:
         B = anchors.size(0)
@@ -528,7 +563,7 @@ class NTXentLoss(nn.Module):
             # sim(a_i, h_ik): (B, K) via batched dot product
             hard_sim = torch.bmm(anchors.unsqueeze(1), hard_negs.transpose(1, 2))
             hard_sim = hard_sim.squeeze(1) / self.temperature  # (B, K)
-            logits = torch.cat([logits, hard_sim], dim=1)      # (B, 1+B+K)
+            logits = torch.cat([logits, hard_sim], dim=1)  # (B, 1+B+K)
 
         # Target: position 0 is always the positive pair
         targets = torch.zeros(B, dtype=torch.long, device=anchors.device)
@@ -536,6 +571,7 @@ class NTXentLoss(nn.Module):
 
 
 # ── Metrics ────────────────────────────────────────────────────────────────────
+
 
 def compute_contrastive_metrics(
     encoder: ContrastiveEncoder,
@@ -591,7 +627,7 @@ def compute_contrastive_metrics(
 
     # ── Uniformity ─────────────────────────────────────────────────────────────
     # Sample up to 1000 embeddings to keep it fast
-    sample = proj[:min(1000, len(proj))]
+    sample = proj[: min(1000, len(proj))]
     sq_dists = torch.cdist(sample, sample, p=2) ** 2
     uniformity = torch.log(torch.exp(-2 * sq_dists).mean()).item()
 
@@ -605,8 +641,8 @@ def compute_contrastive_metrics(
     for tid_a, tid_b in valid_pairs:
         if tid_a not in proj_idx or tid_b not in proj_idx:
             continue
-        q = proj_idx[tid_a]                              # (128,)
-        sims = torch.mv(all_proj, q)                     # (N,) cosine sim (unit sphere)
+        q = proj_idx[tid_a]  # (128,)
+        sims = torch.mv(all_proj, q)  # (N,) cosine sim (unit sphere)
         # Exclude self (tid_a)
         self_idx = val_ids.index(tid_a)
         sims[self_idx] = -2.0
@@ -629,14 +665,14 @@ def compute_contrastive_metrics(
 
     n = len(valid_pairs)
     return {
-        "val/alignment":        alignment,
-        "val/uniformity":       uniformity,
-        "val/top1_retrieval":   top1  / n,
-        "val/top5_retrieval":   top5  / n,
-        "val/top10_retrieval":  top10 / n,
-        "val/mean_pos_sim":     float(np.mean(pos_sims)),
-        "val/mean_neg_sim":     float(np.mean(neg_sims_list)) if neg_sims_list else 0.0,
-        "val/emb_variance":     proj.var(dim=0).mean().item(),
+        "val/alignment": alignment,
+        "val/uniformity": uniformity,
+        "val/top1_retrieval": top1 / n,
+        "val/top5_retrieval": top5 / n,
+        "val/top10_retrieval": top10 / n,
+        "val/mean_pos_sim": float(np.mean(pos_sims)),
+        "val/mean_neg_sim": float(np.mean(neg_sims_list)) if neg_sims_list else 0.0,
+        "val/emb_variance": proj.var(dim=0).mean().item(),
     }
 
 
@@ -667,16 +703,17 @@ def compute_classifier_metrics(
         for vecs, labels in loader:
             vecs, labels = vecs.to(device), labels.to(device)
             logits = model(vecs)
-            probs  = F.softmax(logits, dim=1)
-            preds  = probs.argmax(dim=1)
-            confs  = probs.max(dim=1).values
+            probs = F.softmax(logits, dim=1)
+            preds = probs.argmax(dim=1)
+            confs = probs.max(dim=1).values
 
             all_preds.extend(preds.cpu().tolist())
             all_labels.extend(labels.cpu().tolist())
             all_confs.extend(confs.cpu().tolist())
 
     report = classification_report(
-        all_labels, all_preds,
+        all_labels,
+        all_preds,
         target_names=TRANSITION_CLASSES,
         output_dict=True,
         zero_division=0,
@@ -691,9 +728,9 @@ def compute_classifier_metrics(
     )
 
     metrics = {
-        "val/cls_accuracy":    accuracy_score(all_labels, all_preds),
-        "val/macro_f1":        f1_score(all_labels, all_preds, average="macro",    zero_division=0),
-        "val/weighted_f1":     f1_score(all_labels, all_preds, average="weighted", zero_division=0),
+        "val/cls_accuracy": accuracy_score(all_labels, all_preds),
+        "val/macro_f1": f1_score(all_labels, all_preds, average="macro", zero_division=0),
+        "val/weighted_f1": f1_score(all_labels, all_preds, average="weighted", zero_division=0),
         "val/mean_confidence": float(np.mean(all_confs)),
         "val/confusion_matrix": cm_table,
         **{f"val/f1_{cls}": v for cls, v in per_class_f1.items()},
@@ -703,14 +740,15 @@ def compute_classifier_metrics(
 
 # ── Training loops ─────────────────────────────────────────────────────────────
 
+
 def train_contrastive(
-    encoder:    ContrastiveEncoder,
-    criterion:  NTXentLoss,
-    train_ds:   ContrastiveDataset,
-    val_pairs:  list[tuple],
-    features:   pd.DataFrame,
-    device:     torch.device,
-    hparams:    dict,
+    encoder: ContrastiveEncoder,
+    criterion: NTXentLoss,
+    train_ds: ContrastiveDataset,
+    val_pairs: list[tuple],
+    features: pd.DataFrame,
+    device: torch.device,
+    hparams: dict,
 ) -> ContrastiveEncoder:
     """
     Train the contrastive encoder for `encoder_epochs` epochs.
@@ -752,7 +790,7 @@ def train_contrastive(
         grad_norms = []
 
         for batch_idx, (anchors, positives, hard_negs) in enumerate(loader):
-            anchors   = anchors.to(device)
+            anchors = anchors.to(device)
             positives = positives.to(device)
             hard_negs = hard_negs.to(device)
 
@@ -774,11 +812,13 @@ def train_contrastive(
             grad_norms.append(grad_norm.item())
 
             # W&B: log every batch for smooth loss curves
-            wandb.log({
-                "train/loss":      loss.item(),
-                "train/grad_norm": grad_norm.item(),
-                "train/lr":        scheduler.get_last_lr()[0],
-            })
+            wandb.log(
+                {
+                    "train/loss": loss.item(),
+                    "train/grad_norm": grad_norm.item(),
+                    "train/lr": scheduler.get_last_lr()[0],
+                }
+            )
 
         scheduler.step()
 
@@ -786,8 +826,8 @@ def train_contrastive(
         avg_grad = float(np.mean(grad_norms))
 
         # MLflow: log epoch-level summary
-        mlflow.log_metric("train/epoch_loss", avg_loss,  step=epoch)
-        mlflow.log_metric("train/grad_norm",  avg_grad,  step=epoch)
+        mlflow.log_metric("train/epoch_loss", avg_loss, step=epoch)
+        mlflow.log_metric("train/grad_norm", avg_grad, step=epoch)
 
         # Validation metrics every epoch
         val_metrics = compute_contrastive_metrics(encoder, val_pairs, features, device)
@@ -798,7 +838,10 @@ def train_contrastive(
         top1 = val_metrics.get("val/top1_retrieval", 0.0)
         log.info(
             "[Encoder] epoch %d/%d  loss=%.4f  top1=%.3f  alignment=%.4f  uniformity=%.4f",
-            epoch, hparams["encoder_epochs"], avg_loss, top1,
+            epoch,
+            hparams["encoder_epochs"],
+            avg_loss,
+            top1,
             val_metrics.get("val/alignment", 0),
             val_metrics.get("val/uniformity", 0),
         )
@@ -815,10 +858,10 @@ def train_contrastive(
 
 def train_classifier(
     classifier: TransitionClassifier,
-    train_ds:   TransitionDataset,
-    val_ds:     TransitionDataset,
-    device:     torch.device,
-    hparams:    dict,
+    train_ds: TransitionDataset,
+    val_ds: TransitionDataset,
+    device: torch.device,
+    hparams: dict,
 ) -> TransitionClassifier:
     """
     Train the 6-class transition classifier.
@@ -828,10 +871,12 @@ def train_classifier(
     ignore them in favour of the majority class (melt/blend).
     """
     train_loader = DataLoader(train_ds, batch_size=hparams["cls_batch_size"], shuffle=True)
-    val_loader   = DataLoader(val_ds,   batch_size=hparams["cls_batch_size"])
+    val_loader = DataLoader(val_ds, batch_size=hparams["cls_batch_size"])
 
     # Compute class weights from training set label distribution
-    label_counts = np.bincount([lbl for _, lbl in train_ds.data], minlength=len(TRANSITION_CLASSES))
+    label_counts = np.bincount(
+        [lbl for _, lbl in train_ds.data], minlength=len(TRANSITION_CLASSES)
+    )
     weights = 1.0 / (label_counts + 1e-6)
     weights /= weights.sum()
     class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
@@ -852,7 +897,7 @@ def train_classifier(
         for vecs, labels in train_loader:
             vecs, labels = vecs.to(device), labels.to(device)
             logits = classifier(vecs)
-            loss   = criterion(logits, labels)
+            loss = criterion(logits, labels)
 
             optimizer.zero_grad()
             loss.backward()
@@ -865,7 +910,7 @@ def train_classifier(
         mlflow.log_metric("train/cls_epoch_loss", avg_loss, step=epoch)
 
         val_metrics = compute_classifier_metrics(classifier, val_loader, device)
-        macro_f1    = val_metrics.get("val/macro_f1", 0.0)
+        macro_f1 = val_metrics.get("val/macro_f1", 0.0)
 
         # W&B: log all metrics; confusion matrix is a Table (rendered interactively)
         wandb.log({"epoch": epoch, **val_metrics})
@@ -875,7 +920,9 @@ def train_classifier(
 
         log.info(
             "[Classifier] epoch %d/%d  loss=%.4f  acc=%.3f  macro_f1=%.3f",
-            epoch, hparams["cls_epochs"], avg_loss,
+            epoch,
+            hparams["cls_epochs"],
+            avg_loss,
             val_metrics.get("val/cls_accuracy", 0),
             macro_f1,
         )
@@ -892,9 +939,10 @@ def train_classifier(
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
+
 def train(
-    mix_csvs:  list[str | Path] | None = None,
-    hparams:   dict | None = None,
+    mix_csvs: list[str | Path] | None = None,
+    hparams: dict | None = None,
 ) -> None:
     """
     Full training pipeline: encoder → classifier.
@@ -928,7 +976,7 @@ def train(
     positive_index = build_positive_index(train_pairs + val_pairs)
 
     # ── ChromaDB ───────────────────────────────────────────────────────────────
-    client     = get_client(CHROMA_PATH)
+    client = get_client(CHROMA_PATH)
     collection = get_collection(client)
     log.info("ChromaDB collection '%s': %d tracks", COLLECTION_NAME, collection.count())
 
@@ -1008,7 +1056,7 @@ def train(
             )
 
             cls_train_ds = TransitionDataset(train_lbl, features, le)
-            cls_val_ds   = TransitionDataset(val_lbl,   features, le)
+            cls_val_ds = TransitionDataset(val_lbl, features, le)
 
             classifier = TransitionClassifier(
                 input_dim=260,
@@ -1029,7 +1077,7 @@ def train(
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    _fmt      = "%(asctime)s %(levelname)s %(message)s"
+    _fmt = "%(asctime)s %(levelname)s %(message)s"
     _log_path = Path("logs/train_model.log")
     _log_path.parent.mkdir(exist_ok=True)
     logging.basicConfig(

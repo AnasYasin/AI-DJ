@@ -17,6 +17,7 @@ Writes a manifest to data/raw/preview_manifest.csv with columns:
 
 Idempotent: already-downloaded tracks are skipped on re-runs.
 """
+
 import asyncio
 import hashlib
 import logging
@@ -40,7 +41,17 @@ MANIFEST_PATH = Path("data/raw/preview_manifest.csv")
 # ── Track name cleaning ────────────────────────────────────────────────────────
 
 # Words inside brackets that indicate a genuine remix/version — keep these
-_VERSION_KEYWORDS = {"remix", "mix", "edit", "version", "dub", "instrumental", "reprise", "remaster"}
+_VERSION_KEYWORDS = {
+    "remix",
+    "mix",
+    "edit",
+    "version",
+    "dub",
+    "instrumental",
+    "reprise",
+    "remaster",
+}
+
 
 def clean_track_name(track: str) -> str:
     """
@@ -56,6 +67,7 @@ def clean_track_name(track: str) -> str:
 
     Rule: strip bracket content UNLESS it contains a version keyword.
     """
+
     def should_keep(bracket_content: str) -> bool:
         words = bracket_content.lower().split()
         return any(w in _VERSION_KEYWORDS for w in words)
@@ -70,6 +82,7 @@ def clean_track_name(track: str) -> str:
 
 # ── Track ID ───────────────────────────────────────────────────────────────────
 
+
 def track_id(artist: str, track: str) -> str:
     """
     Deterministic 12-char ID from artist + track name.
@@ -81,11 +94,14 @@ def track_id(artist: str, track: str) -> str:
 
 # ── Source fetchers ────────────────────────────────────────────────────────────
 
+
 def _spotify_client() -> spotipy.Spotify:
-    return spotipy.Spotify(auth_manager=SpotifyClientCredentials(
-        client_id=os.getenv("SPOTIFY_CLIENT_ID"),
-        client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"),
-    ))
+    return spotipy.Spotify(
+        auth_manager=SpotifyClientCredentials(
+            client_id=os.getenv("SPOTIFY_CLIENT_ID"),
+            client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"),
+        )
+    )
 
 
 async def _spotify_url(sp: spotipy.Spotify, artist: str, track: str) -> str | None:
@@ -94,7 +110,9 @@ async def _spotify_url(sp: spotipy.Spotify, artist: str, track: str) -> str | No
     NOTE: Spotify removed preview_url from most tracks in late 2023 — None is common.
     """
     try:
-        results = sp.search(q=f"artist:{artist} track:{clean_track_name(track)}", type="track", limit=1)
+        results = sp.search(
+            q=f"artist:{artist} track:{clean_track_name(track)}", type="track", limit=1
+        )
         items = results["tracks"]["items"]
         if not items:
             return None
@@ -126,6 +144,7 @@ async def _itunes_url(client: httpx.AsyncClient, artist: str, track: str) -> str
 
 
 # ── Download ───────────────────────────────────────────────────────────────────
+
 
 def _audio_ext(content: bytes) -> str:
     """Detect actual audio container from magic bytes.
@@ -162,6 +181,7 @@ async def _download(url: str, tid: str, client: httpx.AsyncClient) -> Path | Non
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
+
 async def fetch_previews(tracklist_path: str = "data/interim/tracklist.csv") -> pd.DataFrame:
     """
     Read tracklist CSV, fetch a 30s preview for every unique track.
@@ -194,7 +214,7 @@ async def fetch_previews(tracklist_path: str = "data/interim/tracklist.csv") -> 
             url, source = None, "not_found"
             for src_name, fetcher in [
                 ("spotify", lambda: _spotify_url(sp, artist, track_name)),
-                ("itunes",  lambda: _itunes_url(http, artist, track_name)),
+                ("itunes", lambda: _itunes_url(http, artist, track_name)),
             ]:
                 url = await fetcher()
                 if url:
@@ -244,6 +264,7 @@ def _log_source_breakdown(manifest: pd.DataFrame) -> None:
 
 if __name__ == "__main__":
     from pathlib import Path
+
     _fmt = "%(asctime)s %(levelname)s %(message)s"
     _log_path = Path("logs/preview_fetcher.log")
     _log_path.parent.mkdir(exist_ok=True)

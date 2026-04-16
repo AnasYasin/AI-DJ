@@ -12,6 +12,7 @@ Run:
   conda activate djtest
   python src/data/validate_previews.py
 """
+
 import asyncio
 import logging
 from pathlib import Path
@@ -42,23 +43,25 @@ async def validate_and_fix() -> None:
         return
 
     manifest = pd.read_csv(MANIFEST_PATH)
-    total     = len(manifest)
-    corrupt   = 0
-    fixed     = 0
-    removed   = 0
+    total = len(manifest)
+    corrupt = 0
+    fixed = 0
+    removed = 0
 
     async with httpx.AsyncClient() as http:
         for idx, row in manifest.iterrows():
             path = Path(str(row["local_path"])) if pd.notna(row.get("local_path")) else None
 
             if not path or not path.exists():
-                continue   # already not_found — skip
+                continue  # already not_found — skip
 
             if is_valid(path):
-                continue   # file is fine
+                continue  # file is fine
 
             corrupt += 1
-            artist     = str(row["artist_name"]) if "artist_name" in row else str(row.get("artist", ""))
+            artist = (
+                str(row["artist_name"]) if "artist_name" in row else str(row.get("artist", ""))
+            )
             track_name = str(row["track_name"])
             log.warning("Corrupt: %s - %s (%s)", artist, track_name, path.name)
 
@@ -68,7 +71,7 @@ async def validate_and_fix() -> None:
 
             # Try iTunes re-download
             clean = clean_track_name(track_name)
-            url   = await _itunes_url(http, artist, clean)
+            url = await _itunes_url(http, artist, clean)
 
             if url and await _download(url, path, http):
                 if is_valid(path):
@@ -81,7 +84,7 @@ async def validate_and_fix() -> None:
                     path.unlink(missing_ok=True)
 
             # Could not fix — mark as not_found
-            manifest.at[idx, "source"]     = "not_found"
+            manifest.at[idx, "source"] = "not_found"
             manifest.at[idx, "local_path"] = None
             removed += 1
             log.warning("  Marked as not_found")
@@ -89,7 +92,11 @@ async def validate_and_fix() -> None:
     manifest.to_csv(MANIFEST_PATH, index=False)
     log.info(
         "Done. %d/%d files checked — %d corrupt, %d re-downloaded, %d removed.",
-        total, total, corrupt, fixed, removed,
+        total,
+        total,
+        corrupt,
+        fixed,
+        removed,
     )
 
 

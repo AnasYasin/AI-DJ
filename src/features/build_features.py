@@ -27,6 +27,7 @@ Output: data/processed/features.parquet
 
 Idempotent: re-running appends only new tracks, skips already-processed ones.
 """
+
 import logging
 from pathlib import Path
 import signal
@@ -42,10 +43,10 @@ from transformers import AutoModel, Wav2Vec2FeatureExtractor
 
 log = logging.getLogger(__name__)
 
-MANIFEST_PATH   = Path("data/raw/preview_manifest.csv")
-FEATURES_PATH   = Path("data/processed/features.parquet")
+MANIFEST_PATH = Path("data/raw/preview_manifest.csv")
+FEATURES_PATH = Path("data/processed/features.parquet")
 MERT_MODEL_NAME = "m-a-p/MERT-v1-95M"
-LOAD_TIMEOUT_S  = 30   # max seconds to spend loading a single audio file
+LOAD_TIMEOUT_S = 30  # max seconds to spend loading a single audio file
 
 
 def _load_audio(path: str, sr: int) -> tuple:
@@ -53,6 +54,7 @@ def _load_audio(path: str, sr: int) -> tuple:
     Load audio with a hard timeout. Raises TimeoutError if librosa.load
     hangs on a corrupt file (e.g. illegal MP3 headers causing infinite resync).
     """
+
     def _handler(signum, frame):
         raise TimeoutError(f"librosa.load timed out after {LOAD_TIMEOUT_S}s: {path}")
 
@@ -61,7 +63,8 @@ def _load_audio(path: str, sr: int) -> tuple:
     try:
         return librosa.load(path, sr=sr, mono=True)
     finally:
-        signal.alarm(0)   # cancel alarm
+        signal.alarm(0)  # cancel alarm
+
 
 # Maps chroma index (0=C, 1=C#, ..., 11=B) to note name
 _CHROMA_TO_NOTE = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
@@ -69,10 +72,8 @@ _CHROMA_TO_NOTE = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "
 # Krumhansl-Schmuckler key profiles (major and minor) — 12 values each,
 # starting from C. These encode how characteristic each pitch class is for
 # that key, derived from music-theoretic and listener perception studies.
-_KS_MAJOR = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
-                       2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
-_KS_MINOR = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
-                       2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+_KS_MAJOR = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+_KS_MINOR = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
 
 
 def _detect_key(chroma_mean: np.ndarray) -> str:
@@ -94,14 +95,15 @@ def _detect_key(chroma_mean: np.ndarray) -> str:
         score_minor = np.corrcoef(chroma_mean, minor_profile)[0, 1]
         if score_major > best_score:
             best_score = score_major
-            best_key = _CHROMA_TO_NOTE[root]          # e.g. "D"
+            best_key = _CHROMA_TO_NOTE[root]  # e.g. "D"
         if score_minor > best_score:
             best_score = score_minor
-            best_key = _CHROMA_TO_NOTE[root] + "m"    # e.g. "Dm"
+            best_key = _CHROMA_TO_NOTE[root] + "m"  # e.g. "Dm"
     return best_key
 
 
 # ── MERT Embedder ──────────────────────────────────────────────────────────────
+
 
 class MERTEmbedder:
     """
@@ -143,9 +145,7 @@ class MERTEmbedder:
         """
         try:
             audio, _ = _load_audio(audio_path, self.SAMPLE_RATE)
-            inputs = self.processor(
-                audio, sampling_rate=self.SAMPLE_RATE, return_tensors="pt"
-            )
+            inputs = self.processor(audio, sampling_rate=self.SAMPLE_RATE, return_tensors="pt")
             with torch.no_grad():
                 outputs = self.model(**inputs, output_hidden_states=True)
             # last_hidden_state: (1, time_steps, 768) → mean over time → (768,)
@@ -157,6 +157,7 @@ class MERTEmbedder:
 
 
 # ── Librosa Feature Extractor ──────────────────────────────────────────────────
+
 
 class LibrosaExtractor:
     """
@@ -206,14 +207,14 @@ class LibrosaExtractor:
             # ── Key ────────────────────────────────────────────────────────────
             # Krumhansl-Schmuckler: correlate mean chroma against 24 key profiles.
             # Returns e.g. "Am" or "D" (major has no suffix, minor has "m").
-            chroma = librosa.feature.chroma_cqt(y=y, sr=sr)        # (12, n_frames)
+            chroma = librosa.feature.chroma_cqt(y=y, sr=sr)  # (12, n_frames)
             key = _detect_key(chroma.mean(axis=1))
 
             # ── Loudness (LUFS) ─────────────────────────────────────────────────
             # pyloudnorm implements ITU-R BS.1770-4. Needs stereo input (N, 2).
             # We load mono then duplicate the channel — result is identical to
             # true mono LUFS measurement (BS.1770 sums channels before K-weighting).
-            y_stereo = np.stack([y, y], axis=1)                     # (n_samples, 2)
+            y_stereo = np.stack([y, y], axis=1)  # (n_samples, 2)
             meter = pyln.Meter(sr)
             lufs = meter.integrated_loudness(y_stereo)
             # pyln returns -inf for silence; clamp to a floor of -70 LUFS
@@ -222,7 +223,7 @@ class LibrosaExtractor:
 
             # ── Energy ─────────────────────────────────────────────────────────
             # rms returns (1, n_frames); [0] gives the 1-D array
-            rms = librosa.feature.rms(y=y)[0]                       # (n_frames,)
+            rms = librosa.feature.rms(y=y)[0]  # (n_frames,)
 
             # ── Brightness ─────────────────────────────────────────────────────
             centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
@@ -232,8 +233,8 @@ class LibrosaExtractor:
 
             # ── Timbre (MFCC) ──────────────────────────────────────────────────
             # mfcc returns (n_mfcc, n_frames); mean over time → (13,)
-            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)     # (13, n_frames)
-            mfcc_means = mfcc.mean(axis=1)                           # (13,)
+            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)  # (13, n_frames)
+            mfcc_means = mfcc.mean(axis=1)  # (13,)
 
             return {
                 "bpm": float(bpm),
@@ -252,6 +253,7 @@ class LibrosaExtractor:
 
 
 # ── Main pipeline ──────────────────────────────────────────────────────────────
+
 
 def build_features(manifest_path: str = str(MANIFEST_PATH)) -> pd.DataFrame:
     """
@@ -319,37 +321,53 @@ def build_features(manifest_path: str = str(MANIFEST_PATH)) -> pd.DataFrame:
             skipped += 1
             continue
 
-        rows.append({
-            "track_id":  row["track_id"],
-            "embedding": emb_vec.tolist(),   # 768-dim MERT vector
-            **librosa_feats,
-        })
+        rows.append(
+            {
+                "track_id": row["track_id"],
+                "embedding": emb_vec.tolist(),  # 768-dim MERT vector
+                **librosa_feats,
+            }
+        )
 
         # ── ETA + checkpoint every CHECKPOINT_EVERY tracks ─────────────────
         if i % CHECKPOINT_EVERY == 0 or i == total:
             elapsed = time.time() - t_start
-            rate = i / elapsed                          # tracks/sec
+            rate = i / elapsed  # tracks/sec
             remaining = (total - i) / rate if rate > 0 else 0
             hrs, mins = divmod(int(remaining), 3600)
             mins //= 60
             log.info(
                 "--- checkpoint %d/%d | %.2f sec/track | ETA %dh %02dm | skipped %d ---",
-                i, total, elapsed / i, hrs, mins, skipped,
+                i,
+                total,
+                elapsed / i,
+                hrs,
+                mins,
+                skipped,
             )
             # Flush to disk — if the process dies, we restart from here
             new_df = pd.DataFrame(rows)
-            all_so_far = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+            all_so_far = (
+                pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+            )
             all_so_far.to_parquet(FEATURES_PATH, index=False)
             log.info("  Checkpoint saved → %s (%d tracks total)", FEATURES_PATH, len(all_so_far))
 
     new_df = pd.DataFrame(rows)
-    all_features = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+    all_features = (
+        pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+    )
 
     all_features.to_parquet(FEATURES_PATH, index=False)
     n_lib = len(all_features.columns) - 2  # track_id + embedding
     elapsed_total = time.time() - t_start
-    log.info("Saved %d tracks → %s  (%.0f min total, %d skipped)",
-             len(all_features), FEATURES_PATH, elapsed_total / 60, skipped)
+    log.info(
+        "Saved %d tracks → %s  (%.0f min total, %d skipped)",
+        len(all_features),
+        FEATURES_PATH,
+        elapsed_total / 60,
+        skipped,
+    )
     log.info("Columns: %d  (embedding[768] + %d librosa)", len(all_features.columns), n_lib)
     return all_features
 
@@ -358,6 +376,7 @@ def build_features(manifest_path: str = str(MANIFEST_PATH)) -> pd.DataFrame:
 
 if __name__ == "__main__":
     import logging
+
     _fmt = "%(asctime)s %(levelname)s %(message)s"
     _log_path = Path("logs/build_features.log")
     _log_path.parent.mkdir(exist_ok=True)
@@ -365,8 +384,8 @@ if __name__ == "__main__":
         level=logging.INFO,
         format=_fmt,
         handlers=[
-            logging.StreamHandler(),                          # stdout (live)
-            logging.FileHandler(_log_path, encoding="utf-8"), # persistent log
+            logging.StreamHandler(),  # stdout (live)
+            logging.FileHandler(_log_path, encoding="utf-8"),  # persistent log
         ],
     )
     log.info("Logging to %s", _log_path)

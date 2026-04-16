@@ -4,6 +4,7 @@ Tests for src/features/vector_store.py
 Uses chromadb.EphemeralClient so nothing is written to disk.
 No model loading, no real audio — pure logic tests.
 """
+
 import chromadb
 import numpy as np
 import pandas as pd
@@ -21,22 +22,25 @@ from src.features.vector_store import (
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
+
 def _fake_df(n: int = 3) -> pd.DataFrame:
     """Return a minimal features DataFrame with n tracks."""
-    return pd.DataFrame({
-        "track_id":   [f"track_{i:03d}" for i in range(n)],
-        "artist":     [f"Artist {i}"    for i in range(n)],
-        "track_name": [f"Track {i}"     for i in range(n)],
-        "embedding":  [np.random.rand(768).tolist() for _ in range(n)],
-        "bpm":        [128.0 + i        for i in range(n)],
-        "key":        (["Am", "Fm", "C"] * ((n // 3) + 1))[:n],
-        "loudness_lufs":    [-14.0] * n,
-        "energy_mean":      [0.1]   * n,
-        "energy_std":       [0.02]  * n,
-        "spectral_centroid":[3000.] * n,
-        "onset_strength":   [0.5]   * n,
-        **{f"mfcc_{i}": [float(i)] * n for i in range(13)},
-    })
+    return pd.DataFrame(
+        {
+            "track_id": [f"track_{i:03d}" for i in range(n)],
+            "artist": [f"Artist {i}" for i in range(n)],
+            "track_name": [f"Track {i}" for i in range(n)],
+            "embedding": [np.random.rand(768).tolist() for _ in range(n)],
+            "bpm": [128.0 + i for i in range(n)],
+            "key": (["Am", "Fm", "C"] * ((n // 3) + 1))[:n],
+            "loudness_lufs": [-14.0] * n,
+            "energy_mean": [0.1] * n,
+            "energy_std": [0.02] * n,
+            "spectral_centroid": [3000.0] * n,
+            "onset_strength": [0.5] * n,
+            **{f"mfcc_{i}": [float(i)] * n for i in range(13)},
+        }
+    )
 
 
 @pytest.fixture
@@ -52,7 +56,7 @@ def ephemeral_collection():
 @pytest.fixture
 def populated_collection(ephemeral_collection):
     """Collection pre-populated with 3 fake tracks."""
-    df  = _fake_df(3)
+    df = _fake_df(3)
     emb = [e if isinstance(e, list) else list(e) for e in df["embedding"]]
     ephemeral_collection.add(
         ids=df["track_id"].tolist(),
@@ -64,6 +68,7 @@ def populated_collection(ephemeral_collection):
 
 
 # ── get_collection ─────────────────────────────────────────────────────────────
+
 
 def test_get_collection_creates_collection():
     client = chromadb.EphemeralClient()
@@ -86,6 +91,7 @@ def test_get_collection_uses_cosine():
 
 # ── _build_metadatas ───────────────────────────────────────────────────────────
 
+
 def test_build_metadatas_returns_one_dict_per_row():
     df = _fake_df(3)
     metas = _build_metadatas(df)
@@ -93,21 +99,30 @@ def test_build_metadatas_returns_one_dict_per_row():
 
 
 def test_build_metadatas_has_expected_keys():
-    df    = _fake_df(1)
-    meta  = _build_metadatas(df)[0]
-    for key in ["bpm", "key", "loudness_lufs", "energy_mean", "energy_std",
-                "spectral_centroid", "onset_strength", "mfcc_0", "mfcc_12"]:
+    df = _fake_df(1)
+    meta = _build_metadatas(df)[0]
+    for key in [
+        "bpm",
+        "key",
+        "loudness_lufs",
+        "energy_mean",
+        "energy_std",
+        "spectral_centroid",
+        "onset_strength",
+        "mfcc_0",
+        "mfcc_12",
+    ]:
         assert key in meta, f"Missing metadata key: {key}"
 
 
 def test_build_metadatas_key_is_string():
-    df   = _fake_df(1)
+    df = _fake_df(1)
     meta = _build_metadatas(df)[0]
     assert isinstance(meta["key"], str)
 
 
 def test_build_metadatas_numerics_are_float():
-    df   = _fake_df(1)
+    df = _fake_df(1)
     meta = _build_metadatas(df)[0]
     assert isinstance(meta["bpm"], float)
     assert isinstance(meta["mfcc_0"], float)
@@ -121,6 +136,7 @@ def test_build_metadatas_nan_replaced_with_zero():
 
 
 # ── populate ───────────────────────────────────────────────────────────────────
+
 
 def test_populate_inserts_all_tracks(tmp_path, monkeypatch):
     df = _fake_df(3)
@@ -171,29 +187,30 @@ def test_populate_stores_correct_document(tmp_path):
     populate(features_path=parquet_path, chroma_path=chroma_path)
 
     client = chromadb.PersistentClient(path=str(chroma_path))
-    col    = client.get_collection(COLLECTION_NAME)
+    col = client.get_collection(COLLECTION_NAME)
     result = col.get(ids=["track_000"], include=["documents"])
     assert result["documents"][0] == "Artist 0 - Track 0"
 
 
 # ── query_hard_negatives ──────────────────────────────────────────────────────────────
 
+
 def test_query_hard_negatives_returns_n_results(populated_collection):
     query_vec = np.random.rand(768).tolist()
-    results   = query_hard_negatives(populated_collection, query_vec, n_results=2)
+    results = query_hard_negatives(populated_collection, query_vec, n_results=2)
     assert len(results["ids"][0]) == 2
 
 
 def test_query_hard_negatives_accepts_numpy_array(populated_collection):
     query_vec = np.random.rand(768)
-    results   = query_hard_negatives(populated_collection, query_vec, n_results=1)
+    results = query_hard_negatives(populated_collection, query_vec, n_results=1)
     assert len(results["ids"][0]) == 1
 
 
 def test_query_hard_negatives_excludes_specified_ids(populated_collection):
-    query_vec   = np.random.rand(768).tolist()
+    query_vec = np.random.rand(768).tolist()
     all_results = query_hard_negatives(populated_collection, query_vec, n_results=3)
-    exclude_id  = all_results["ids"][0][0]
+    exclude_id = all_results["ids"][0][0]
 
     filtered = query_hard_negatives(
         populated_collection, query_vec, n_results=2, exclude_ids=[exclude_id]
@@ -210,12 +227,13 @@ def test_query_hard_negatives_distances_are_in_valid_range(populated_collection)
 
 def test_query_hard_negatives_returns_metadata(populated_collection):
     results = query_hard_negatives(populated_collection, np.random.rand(768).tolist(), n_results=1)
-    meta    = results["metadatas"][0][0]
+    meta = results["metadatas"][0][0]
     assert "bpm" in meta
     assert "key" in meta
 
 
 # ── Semi-hard negative mining (distance window) ────────────────────────────────
+
 
 def test_query_hard_negatives_respects_min_distance(populated_collection):
     """No result should have distance < min_distance."""
@@ -228,6 +246,7 @@ def test_query_hard_negatives_respects_min_distance(populated_collection):
     )
     for d in results["distances"][0]:
         assert d >= 0.0
+
 
 def test_query_hard_negatives_respects_max_distance(populated_collection):
     """No result should have distance > max_distance."""
@@ -269,7 +288,7 @@ def test_query_hard_negatives_defaults_use_semi_hard_constants(populated_collect
         populated_collection,
         np.random.rand(768).tolist(),
         n_results=3,
-        min_distance=0.0,    # widen for test — ensures we get results
+        min_distance=0.0,  # widen for test — ensures we get results
         max_distance=2.0,
     )
     for d in results["distances"][0]:
@@ -278,6 +297,6 @@ def test_query_hard_negatives_defaults_use_semi_hard_constants(populated_collect
 
 def test_hard_neg_constants_are_sensible():
     """Sanity-check the module-level distance window constants."""
-    assert 0.0 < HARD_NEG_MIN_DISTANCE < 0.3,  "min_distance too large or zero"
-    assert 0.3 < HARD_NEG_MAX_DISTANCE < 1.5,  "max_distance out of sensible range"
+    assert 0.0 < HARD_NEG_MIN_DISTANCE < 0.3, "min_distance too large or zero"
+    assert 0.3 < HARD_NEG_MAX_DISTANCE < 1.5, "max_distance out of sensible range"
     assert HARD_NEG_MIN_DISTANCE < HARD_NEG_MAX_DISTANCE
