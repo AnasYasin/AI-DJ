@@ -1,61 +1,36 @@
-# AI-DJ
+# AI DJ
 
-<a target="_blank" href="https://cookiecutter-data-science.drivendata.org/">
-    <img src="https://img.shields.io/badge/CCDS-Project%20template-328F97?logo=cookiecutter" />
-</a>
+Generates a real mixed audio file (.mp3) from a natural language prompt.
 
-AI powerd DJ style track mixing platform.
+> "high energy techno set for 2 hours" → mixed .mp3
 
-## Project Organization
+## How it works
 
+1. Scrape DJ mixes from 1001tracklists to extract tracklists
+2. Fetch 30s audio previews (iTunes) and extract MERT embeddings + librosa features
+3. Store embeddings in ChromaDB for nearest-neighbour search
+4. Generate heuristic transition labels (slam / rise / fade / melt / wave / blend)
+5. Train a contrastive encoder that learns track mixability, and a transition classifier
+6. At inference: parse user prompt (Claude API) → select tracks from Jamendo → detect cue points → render .mp3 with BPM sync + bar-aligned crossfades + EQ blending
+
+## Stack
+
+- **Embeddings**: MERT-v1-95M (frozen) + librosa
+- **Vector store**: ChromaDB (HNSW)
+- **Training**: NT-Xent contrastive loss, MLflow + W&B
+- **Orchestration**: Airflow
+- **Audio rendering**: pyrubberband (BPM sync), scipy (EQ filters), pydub
+
+## Running the pipeline
+
+```bash
+# 1. Scrape tracklists (requires real browser — run on host)
+conda activate djtest
+python src/data/tracklists1001_client.py
+
+# 2. Start services
+docker compose up mlflow chromadb airflow
+
+# 3. Trigger the DAG
+# Airflow UI → http://localhost:8080 → ai_dj_data_pipeline → Trigger
 ```
-├── LICENSE            <- Open-source license if one is chosen
-├── Makefile           <- Makefile with convenience commands like `make data` or `make train`
-├── README.md          <- The top-level README for developers using this project.
-├── data
-│   ├── external       <- Data from third party sources.
-│   ├── interim        <- Intermediate data that has been transformed.
-│   ├── processed      <- The final, canonical data sets for modeling.
-│   └── raw            <- The original, immutable data dump.
-│
-├── docs               <- A default mkdocs project; see www.mkdocs.org for details
-│
-├── models             <- Trained and serialized models, model predictions, or model summaries
-│
-├── notebooks          <- Jupyter notebooks. Naming convention is a number (for ordering),
-│                         the creator's initials, and a short `-` delimited description, e.g.
-│                         `1.0-jqp-initial-data-exploration`.
-│
-├── pyproject.toml     <- Project configuration file with package metadata for 
-│                         ai_dj and configuration for tools like black
-│
-├── references         <- Data dictionaries, manuals, and all other explanatory materials.
-│
-├── reports            <- Generated analysis as HTML, PDF, LaTeX, etc.
-│   └── figures        <- Generated graphics and figures to be used in reporting
-│
-├── requirements.txt   <- The requirements file for reproducing the analysis environment, e.g.
-│                         generated with `pip freeze > requirements.txt`
-│
-├── setup.cfg          <- Configuration file for flake8
-│
-└── ai_dj   <- Source code for use in this project.
-    │
-    ├── __init__.py             <- Makes ai_dj a Python module
-    │
-    ├── config.py               <- Store useful variables and configuration
-    │
-    ├── dataset.py              <- Scripts to download or generate data
-    │
-    ├── features.py             <- Code to create features for modeling
-    │
-    ├── modeling                
-    │   ├── __init__.py 
-    │   ├── predict.py          <- Code to run model inference with trained models          
-    │   └── train.py            <- Code to train models
-    │
-    └── plots.py                <- Code to create visualizations
-```
-
---------
-

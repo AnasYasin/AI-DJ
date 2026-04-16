@@ -5,28 +5,36 @@ build-backend = "flit_core.buildapi"
 [project]
 name = "ai_dj"
 version = "0.0.1"
-description = "AI powerd DJ style track mixing platform."
+description = "AI powered DJ style track mixing platform."
 authors = [
   { name = "Anas Yasin" },
 ]
-
 readme = "README.md"
 classifiers = [
     "Programming Language :: Python :: 3",
-    
 ]
 requires-python = "~=3.10.0"
 
-
+# ── Ruff (linter + formatter) ──────────────────────────────────────────────────
 [tool.ruff]
 line-length = 99
-src = ["ai_dj"]
-include = ["pyproject.toml", "ai_dj/**/*.py"]
+# Point at the actual source directory
+src = ["src"]
+include = ["pyproject.toml", "src/**/*.py", "tests/**/*.py", "dags/**/*.py"]
 
 [tool.ruff.lint]
-extend-select = ["I"]  # Add import sorting
+extend-select = ["I"]   # I = isort (import sorting)
 
 [tool.ruff.lint.isort]
-known-first-party = ["ai_dj"]
+known-first-party = ["src"]
 force-sort-within-sections = true
 
+# ── Pytest ─────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]      # adds project root to sys.path so `from src.xxx import` works in CI
+asyncio_mode = "auto"   # makes pytest-asyncio work without @pytest.mark.asyncio on every test
+markers = [
+    "integration: marks tests that call real external APIs (deselect with -m 'not integration')",
+    "slow: marks tests that load large ML models (deselect with -m 'not slow')",
+]
