@@ -1,10 +1,16 @@
 """Tests for feature extraction: CLAPEmbedder and LibrosaExtractor."""
+from unittest.mock import MagicMock
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.features.build_features import MERTEmbedder, LibrosaExtractor, build_features, _CHROMA_TO_NOTE
-
+from src.features.build_features import (
+    _CHROMA_TO_NOTE,
+    LibrosaExtractor,
+    MERTEmbedder,
+    build_features,
+)
 
 # ── LibrosaExtractor ───────────────────────────────────────────────────────────
 # Uses tmp_audio_file fixture from conftest.py (5s sine wave WAV).
@@ -89,8 +95,7 @@ def test_build_features_creates_parquet(tmp_path, monkeypatch):
 
     assert features_path.exists(), "features.parquet was not created"
     assert len(result) == 1
-    assert "emb_0" in result.columns
-    assert "emb_767" in result.columns
+    assert "embedding" in result.columns
     assert "bpm" in result.columns
     assert result.iloc[0]["bpm"] == 128.0
     assert result.iloc[0]["key"] == "Am"
@@ -143,6 +148,9 @@ def _patch_extractors(monkeypatch, features_path):
         "spectral_centroid": 3000.0, "onset_strength": 0.5,
         **{f"mfcc_{i}": float(i) for i in range(13)},
     }
+    fake_muta = MagicMock()
+    fake_muta.info.length = 5.0
+    monkeypatch.setattr("src.features.build_features.MutaFile", lambda p: fake_muta)
     monkeypatch.setattr("src.features.build_features.MERTEmbedder.embed",
                         lambda self, p: np.random.rand(768).astype(np.float32))
     monkeypatch.setattr("src.features.build_features.LibrosaExtractor.extract",

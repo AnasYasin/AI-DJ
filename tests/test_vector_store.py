@@ -4,31 +4,30 @@ Tests for src/features/vector_store.py
 Uses chromadb.EphemeralClient so nothing is written to disk.
 No model loading, no real audio — pure logic tests.
 """
+import chromadb
 import numpy as np
 import pandas as pd
 import pytest
-import chromadb
 
 from src.features.vector_store import (
+    COLLECTION_NAME,
+    HARD_NEG_MAX_DISTANCE,
+    HARD_NEG_MIN_DISTANCE,
+    _build_metadatas,
     get_collection,
     populate,
     query_hard_negatives,
-    _build_metadatas,
-    COLLECTION_NAME,
-    HARD_NEG_MIN_DISTANCE,
-    HARD_NEG_MAX_DISTANCE,
 )
-
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def _fake_df(n: int = 3) -> pd.DataFrame:
     """Return a minimal features DataFrame with n tracks."""
-    emb_cols = {f"emb_{i}": np.random.rand(n).tolist() for i in range(768)}
     return pd.DataFrame({
         "track_id":   [f"track_{i:03d}" for i in range(n)],
         "artist":     [f"Artist {i}"    for i in range(n)],
         "track_name": [f"Track {i}"     for i in range(n)],
+        "embedding":  [np.random.rand(768).tolist() for _ in range(n)],
         "bpm":        [128.0 + i        for i in range(n)],
         "key":        (["Am", "Fm", "C"] * ((n // 3) + 1))[:n],
         "loudness_lufs":    [-14.0] * n,
@@ -37,7 +36,6 @@ def _fake_df(n: int = 3) -> pd.DataFrame:
         "spectral_centroid":[3000.] * n,
         "onset_strength":   [0.5]   * n,
         **{f"mfcc_{i}": [float(i)] * n for i in range(13)},
-        **emb_cols,
     })
 
 
@@ -55,7 +53,7 @@ def ephemeral_collection():
 def populated_collection(ephemeral_collection):
     """Collection pre-populated with 3 fake tracks."""
     df  = _fake_df(3)
-    emb = [df[[f"emb_{i}" for i in range(768)]].iloc[j].tolist() for j in range(3)]
+    emb = [e if isinstance(e, list) else list(e) for e in df["embedding"]]
     ephemeral_collection.add(
         ids=df["track_id"].tolist(),
         embeddings=emb,

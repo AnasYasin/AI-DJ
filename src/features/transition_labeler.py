@@ -233,35 +233,47 @@ def _confidence(label: str, feats: dict) -> float:
 
     if label == "slam":
         score = 0.65
-        if ed > 0.20:          score += 0.15   # very large spike
-        if hd >= HARM_CLASH:   score += 0.10   # confirmed key clash
-        if bpm_dev < BPM_RATIO_TIGHT: score += 0.05
+        if ed > 0.20:
+            score += 0.15   # very large spike
+        if hd >= HARM_CLASH:
+            score += 0.10   # confirmed key clash
+        if bpm_dev < BPM_RATIO_TIGHT:
+            score += 0.05
 
     elif label == "rise":
         score = 0.60
         # Proportional bonus: the further above the threshold, the clearer the rise
         overshoot = min((ed - ENERGY_RISE_MIN) / ENERGY_RISE_MIN, 1.0)
         score += 0.20 * overshoot
-        if hd <= HARM_PERFECT: score += 0.10
-        if bpm_dev < BPM_RATIO_TIGHT: score += 0.05
+        if hd <= HARM_PERFECT:
+            score += 0.10
+        if bpm_dev < BPM_RATIO_TIGHT:
+            score += 0.05
 
     elif label == "fade":
         score = 0.60
         overshoot = min((abs(ed) - abs(ENERGY_FALL_MIN)) / abs(ENERGY_FALL_MIN), 1.0)
         score += 0.20 * overshoot
-        if hd <= HARM_PERFECT: score += 0.05
+        if hd <= HARM_PERFECT:
+            score += 0.05
 
     elif label == "melt":
         score = 0.65
-        if hd == 0:            score += 0.15   # same key
-        elif hd <= 1:          score += 0.08   # adjacent key
-        if bpm_dev < 0.01:     score += 0.10   # essentially same BPM
-        if abs(ed) < 0.02:     score += 0.05
-        if ld < 1.5:           score += 0.05
+        if hd == 0:
+            score += 0.15   # same key
+        elif hd <= 1:
+            score += 0.08   # adjacent key
+        if bpm_dev < 0.01:
+            score += 0.10   # essentially same BPM
+        if abs(ed) < 0.02:
+            score += 0.05
+        if ld < 1.5:
+            score += 0.05
 
     elif label == "wave":
         score = 0.60
-        if bpm_dev < 0.015:    score += 0.10
+        if bpm_dev < 0.015:
+            score += 0.10
         if feats["onset_a"] > 0.50 and feats["onset_b"] > 0.50:
             score += 0.10
 

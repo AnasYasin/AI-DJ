@@ -36,19 +36,14 @@ Run:
 """
 import hashlib
 import logging
-import os
-import time
 from pathlib import Path
+import time
 
 import chromadb
 import mlflow
 import mlflow.pytorch
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import wandb
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -57,7 +52,11 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
+import wandb
 
 from src.features.vector_store import (
     CHROMA_PATH,
@@ -616,9 +615,12 @@ def compute_contrastive_metrics(
 
         pos_sims.append(sims[pos_rank].item())
         rank = ranked.index(pos_rank) + 1
-        if rank <= 1:  top1  += 1
-        if rank <= 5:  top5  += 1
-        if rank <= 10: top10 += 1
+        if rank <= 1:
+            top1 += 1
+        if rank <= 5:
+            top5 += 1
+        if rank <= 10:
+            top10 += 1
 
         # Random non-pair similarity
         rand_idx = np.random.randint(0, len(val_ids))

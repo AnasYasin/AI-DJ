@@ -28,16 +28,16 @@ Output: data/processed/features.parquet
 Idempotent: re-running appends only new tracks, skips already-processed ones.
 """
 import logging
+from pathlib import Path
 import signal
 import time
-from pathlib import Path
 
 import librosa
+from mutagen import File as MutaFile
 import numpy as np
 import pandas as pd
 import pyloudnorm as pyln
 import torch
-from mutagen import File as MutaFile
 from transformers import AutoModel, Wav2Vec2FeatureExtractor
 
 log = logging.getLogger(__name__)

@@ -1,12 +1,11 @@
 """Tests for data collection: mixesdb_client and preview_fetcher."""
-import pandas as pd
-import pytest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.data.preview_fetcher import track_id, fetch_previews, clean_track_name
-from src.data.mixesdb_client import _parse_track_line, _results_to_dataframe
+import pandas as pd
+import pytest
 
+from src.data.mixesdb_client import _parse_track_line, _results_to_dataframe
+from src.data.preview_fetcher import clean_track_name, fetch_previews, track_id
 
 # ── clean_track_name ───────────────────────────────────────────────────────────
 
@@ -76,17 +75,21 @@ def test_parse_track_line_returns_none_for_no_dash():
 
 def test_results_to_dataframe_shape():
     results = [
-        {"url": "http://example.com/mix1", "tracklist": [
+        {"url": "http://example.com/mix1", "title": "Mix 1", "dj_name": "DJ A", "genre": "techno", "tracklist": [
             "[10] Artist A - Track A [Label]",
             "[20] Artist B - Track B [Label]",
         ]},
-        {"url": "http://example.com/mix2", "tracklist": [
+        {"url": "http://example.com/mix2", "title": "Mix 2", "dj_name": "DJ B", "genre": "house", "tracklist": [
             "[5] Artist C - Track C [Label]",
         ]},
     ]
     df = _results_to_dataframe(results)
     assert len(df) == 3
-    assert list(df.columns) == ["mix_id", "url", "starting_time", "track_name", "artist_name"]
+    assert list(df.columns) == [
+        "mix_id", "mix_title", "dj_name", "genre",
+        "track_id", "starting_time", "track_name", "artist_name",
+        "play_type", "overlay_parent",
+    ]
 
 
 def test_results_to_dataframe_empty():
@@ -125,7 +128,8 @@ async def test_fetch_previews_skips_existing(tmp_path):
 async def test_itunes_downloads_real_file(tmp_path):
     """iTunes: get URL → download file → verify it is real audio."""
     import httpx
-    from src.data.preview_fetcher import _itunes_url, _download
+
+    from src.data.preview_fetcher import _download, _itunes_url
 
     async with httpx.AsyncClient() as client:
         url = await _itunes_url(client, "Daft Punk", "Around The World")
@@ -183,7 +187,8 @@ async def test_spotify_downloads_if_preview_available(tmp_path):
     Skips gracefully if all previews are None (Spotify deprecation).
     """
     import httpx
-    from src.data.preview_fetcher import _spotify_client, _spotify_url, _download
+
+    from src.data.preview_fetcher import _download, _spotify_client, _spotify_url
 
     sp = _spotify_client()
     candidates = [

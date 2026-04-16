@@ -17,10 +17,9 @@ import logging
 from pathlib import Path
 
 import httpx
-import pandas as pd
 from mutagen import File as MutaFile
-
-from preview_fetcher import _itunes_url, _download, clean_track_name
+import pandas as pd
+from preview_fetcher import _download, _itunes_url, clean_track_name
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)

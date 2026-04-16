@@ -24,8 +24,8 @@ Batched:    inserts in chunks of BATCH_SIZE (ChromaDB recommends ≤ 5000 per ca
 Output: data/processed/chromadb/  (ChromaDB persistent store)
 """
 import logging
-import time
 from pathlib import Path
+import time
 
 import chromadb
 import numpy as np
@@ -127,10 +127,14 @@ def populate(
         embeddings = [e.tolist() if hasattr(e, "tolist") else list(e) for e in chunk["embedding"]]
         metadatas  = _build_metadatas(chunk)
 
+        has_labels = "artist" in chunk.columns and "track_name" in chunk.columns
+        documents  = (chunk["artist"] + " - " + chunk["track_name"]).tolist() if has_labels else None
+
         collection.add(
             ids=ids,
             embeddings=embeddings,
             metadatas=metadatas,
+            documents=documents,
         )
 
         inserted   += len(chunk)

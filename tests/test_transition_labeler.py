@@ -16,13 +16,10 @@ Coverage
 import hashlib
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
 from src.features.transition_labeler import (
-    BPM_RATIO_LOOSE,
-    BPM_RATIO_TIGHT,
     ENERGY_FALL_MIN,
     ENERGY_MELT_MAX,
     ENERGY_RISE_MIN,

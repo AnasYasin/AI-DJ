@@ -3,14 +3,14 @@
 import asyncio
 import hashlib
 import logging
+from pathlib import Path
 import random
 import re
-from pathlib import Path
 from urllib.parse import unquote
 
+from bs4 import BeautifulSoup
 import nodriver as nd
 import pandas as pd
-from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -156,8 +156,8 @@ def _parse_tracklist_section(full_text: str) -> list[str]:
         re.IGNORECASE | re.MULTILINE | re.DOTALL,
     )
     if match:
-        lines = [l.strip() for l in match.group(1).splitlines() if l.strip()]
-        tracks = [l for l in lines if re.match(r"^\d+\)", l) or (" - " in l and "[" in l)]
+        lines = [line.strip() for line in match.group(1).splitlines() if line.strip()]
+        tracks = [track for track in lines if re.match(r"^\d+\)", track) or (" - " in track and "[" in track)]
         if tracks:
             return tracks
 

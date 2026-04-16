@@ -21,13 +21,13 @@ import asyncio
 import hashlib
 import logging
 import os
-import re
 from pathlib import Path
+import re
 
+from dotenv import load_dotenv
 import httpx
 import pandas as pd
 import spotipy
-from dotenv import load_dotenv
 from spotipy.oauth2 import SpotifyClientCredentials
 
 load_dotenv()

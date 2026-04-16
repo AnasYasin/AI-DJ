@@ -1,13 +1,5 @@
 name: CI
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Runs on every push to dev or main, and on all pull requests to main.
-# What it checks:
-#   1. ruff lint  — code style errors (unused imports, undefined names, etc.)
-#   2. ruff format — consistent formatting (like Black but faster)
-#   3. pytest     — all unit tests pass
-# ─────────────────────────────────────────────────────────────────────────────
-
 on:
   push:
     branches: [dev, main]
@@ -19,16 +11,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Check out the repo code
       - uses: actions/checkout@v4
 
-      # 2. Set up Python 3.10 (matches pyproject.toml)
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # 3. Cache pip dependencies
-      #    Key includes requirements.txt hash — cache is invalidated when deps change
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -37,29 +25,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # 4. Install system deps that librosa needs (same as Dockerfile)
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg libsndfile1
 
-      # 5. Install Python packages
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      # 6. Lint: ruff checks for errors and style issues
-      #    --output-format=github shows inline annotations in GitHub PR view
       - name: Lint (ruff check)
         run: ruff check src/ tests/ --output-format=github
 
-      # 7. Format: ruff format --check exits non-zero if any file would be reformatted
       - name: Format check (ruff format)
         run: ruff format --check src/ tests/
 
-      # 8. Tests: run all tests, show verbose output
-      #    Spotify credentials come from GitHub Secrets (Settings → Secrets → Actions)
-      #    Tests that call the real Spotify API are marked @pytest.mark.integration
-      #    and are skipped in CI (they run locally only)
       - name: Run tests
         run: pytest tests/ -v -m "not integration"
         env:

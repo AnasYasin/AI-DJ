@@ -23,13 +23,13 @@ CSS selectors to adjust if the site changes:
 import asyncio
 import hashlib
 import logging
+from pathlib import Path
 import random
 import re
-from pathlib import Path
 
+from bs4 import BeautifulSoup
 import nodriver as nd
 import pandas as pd
-from bs4 import BeautifulSoup
 
 LOG_PATH = Path(__file__).parent.parent.parent / "logs" / "tracklists1001_client.log"
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -325,7 +325,7 @@ async def _collect_mix_urls(browser, dj_config: list[dict]) -> list[dict]:
     complete=True so future runs skip it.
     """
     cache_df = _load_url_cache()
-    complete_djs = set(cache_df[cache_df["complete"] == True]["dj_name"].unique())
+    complete_djs = set(cache_df[cache_df["complete"]]["dj_name"].unique())
 
     # Seed all_metas and seen ONLY from complete DJs in this config.
     # Incomplete DJs are intentionally excluded so re-collection starts fresh
