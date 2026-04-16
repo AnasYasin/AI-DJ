@@ -31,11 +31,24 @@ import nodriver as nd
 import pandas as pd
 from bs4 import BeautifulSoup
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+LOG_PATH = Path(__file__).parent.parent.parent / "logs" / "tracklists1001_client.log"
+LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
 log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)
+if not log.handlers:
+    _fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    _sh  = logging.StreamHandler()
+    _sh.setFormatter(_fmt)
+    _fh  = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    _fh.setFormatter(_fmt)
+    log.addHandler(_sh)
+    log.addHandler(_fh)
+    log.propagate = False   # don't double-log via nodriver's root logger
 
 BASE_URL    = "https://www.1001tracklists.com"
 OUTPUT_PATH = Path("data/interim/tracklist.csv")
+URL_CACHE   = Path("data/interim/mix_urls.csv")   # persisted URL collection cache
 
 # ── CSS selectors (update here if the site restructures) ──────────────────────
 _ITEM_SEL = "div.tlpItem"   # one container per track in a set
@@ -93,14 +106,6 @@ async def extract_tracklist(page) -> dict:
         if " - " in title:
             title = title.rsplit(" - ", 1)[0].strip()
 
-    # ── Skip incomplete / unordered mixes ─────────────────────────────────────
-    # 1001tracklists shows this notice when no recording exists and the track
-    # order may be wrong. Corrupted order = corrupted consecutive pairs.
-    page_text = soup.get_text(separator=" ")
-    if "track order might not be correct" in page_text.lower():
-        log.info("  Skipping — tracklist marked as incomplete/unordered")
-        return {"title": title, "tracklist": [], "track_count": 0, "success": False}
-
     # ── Tracklist ──────────────────────────────────────────────────────────────
     tracklist = _parse_tracklist_html(soup)
 
@@ -118,59 +123,162 @@ async def extract_tracklist(page) -> dict:
     }
 
 
+CHECKPOINT_EVERY    = 20    # save + flush results every N mixes
+BROWSER_RESTART_AT  = 200   # restart Chrome after this many mixes to prevent memory/connection exhaustion
+
 async def scrape_multiple_mixes(url_metas: list[dict], browser=None) -> list[dict]:
     """
     Scrape tracklists from a list of set URLs. Reuses browser if provided.
     url_metas: list of dicts with keys: url, dj_name, genre
-    """
-    own_browser = browser is None
-    if own_browser:
-        browser = await nd.start(headless=True, no_sandbox=True)
 
-    results = []
+    Skips URLs whose mix_id already exists in OUTPUT_PATH (resume support).
+    Saves a checkpoint every CHECKPOINT_EVERY mixes and clears the in-memory
+    buffer to bound RAM usage.
+    """
+    # ── Build set of already-scraped URLs for resume ─────────────────────────
+    # Prefer direct URL matching (new schema has url column).
+    # Legacy fallback: if url column absent, derive done URLs via mix_id hash.
+    done_urls: set[str] = set()
+    if OUTPUT_PATH.exists():
+        try:
+            existing = pd.read_csv(OUTPUT_PATH)
+            if "url" in existing.columns:
+                done_urls = set(existing["url"].dropna().unique())
+            else:
+                done_ids = set(existing["mix_id"].dropna().unique())
+                done_urls = {
+                    m["url"] for m in url_metas
+                    if hashlib.md5(m["url"].encode()).hexdigest()[:10] in done_ids
+                }
+            log.info("Resume: %d URLs already scraped — will skip", len(done_urls))
+        except Exception:
+            log.warning("Could not read existing CSV for resume check — will re-scrape all")
+
+    # Filter out already-done URLs
+    pending = [m for m in url_metas if m["url"] not in done_urls]
+    skipped = len(url_metas) - len(pending)
+    if skipped:
+        log.info("Skipping %d already-scraped mixes, %d remaining", skipped, len(pending))
+
+    PAGE_LOAD_TIMEOUT  = 60    # seconds to wait for tab.get()
+    SCROLL_TIMEOUT     = 210   # MAX_SCROLL_STEPS * 3s + buffer
+    PARSE_TIMEOUT      = 30    # BeautifulSoup parse should be instant
+    OFFLINE_RETRY_WAIT = 120   # seconds to wait before retrying when offline
+    OFFLINE_MAX_RETRY  = 5     # give up and save+exit after this many consecutive offline hits
+    TIMEOUT_MAX        = 3     # exit after this many consecutive timeouts (browser offline)
+
+    async def _start_browser_and_tab():
+        b   = await nd.start(headless=False, no_sandbox=True)
+        t   = await b.get("about:blank", new_tab=True)
+        return b, t
+
+    browser, tab = await _start_browser_and_tab()
+
+    # buffer holds results since the last checkpoint; flushed after each save
+    buffer: list[dict] = []
+    total_done   = skipped
+    offline_streak = 0
+    timeout_streak = 0
+    scrapes_since_restart = 0
+
     try:
-        for i, meta in enumerate(url_metas, 1):
+        for i, meta in enumerate(pending, 1):
             url = meta["url"]
-            log.info("[%d/%d] %s", i, len(url_metas), url)
-            page = await browser.get(url, new_tab=True)
-            await asyncio.sleep(random.uniform(15, 20))   # initial render
-            await _scroll_to_bottom(page, label="mix page")  # load all tracks
-            data = await extract_tracklist(page)
-            await _close(page)
+            log.info("[%d/%d] %s", i, len(pending), url)
+
+            # ── Periodic browser restart to prevent memory/connection exhaustion ─
+            if scrapes_since_restart >= BROWSER_RESTART_AT:
+                log.info("  restarting browser after %d mixes", scrapes_since_restart)
+                if buffer:
+                    _save(buffer)
+                    log.info("  checkpoint saved before restart (%d mixes this run)", i - 1)
+                    buffer.clear()
+                await _close(tab)
+                browser.stop()
+                await asyncio.sleep(2)
+                browser, tab = await _start_browser_and_tab()
+                scrapes_since_restart = 0
+                log.info("  browser restarted — continuing from mix %d", i)
+
+            try:
+                await asyncio.wait_for(tab.get(url), timeout=PAGE_LOAD_TIMEOUT)
+                await asyncio.sleep(random.uniform(3, 5))   # initial render
+
+                # ── Connectivity check ────────────────────────────────────────
+                # Detect Chrome error pages (offline / DNS failure / blocked).
+                page_title = await tab.evaluate("document.title")
+                if any(tok in page_title for tok in
+                       ("ERR_", "No internet", "can't be reached", "not available")):
+                    offline_streak += 1
+                    log.warning("  Offline or blocked (streak %d) — waiting %ds before retry",
+                                offline_streak, OFFLINE_RETRY_WAIT)
+                    if offline_streak >= OFFLINE_MAX_RETRY:
+                        log.error("  %d consecutive offline hits — saving and exiting. "
+                                  "Resume when internet is back.", OFFLINE_MAX_RETRY)
+                        break
+                    await asyncio.sleep(OFFLINE_RETRY_WAIT)
+                    pending.insert(i, meta)   # re-queue this URL at current position
+                    continue
+
+                offline_streak = 0   # reset on successful load
+
+                await asyncio.wait_for(
+                    _scroll_to_bottom(tab, label="mix page"), timeout=SCROLL_TIMEOUT
+                )
+                data = await asyncio.wait_for(
+                    extract_tracklist(tab), timeout=PARSE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                timeout_streak += 1
+                log.warning("  Timed out (streak %d) — skipping %s", timeout_streak, url)
+                if timeout_streak >= TIMEOUT_MAX:
+                    log.error("  %d consecutive timeouts — browser likely offline. "
+                              "Saving and exiting. Resume when internet is back.", TIMEOUT_MAX)
+                    break
+                continue
+
+            timeout_streak = 0   # reset on any successful load
+
             data["url"]     = url
             data["dj_name"] = meta["dj_name"]
             data["genre"]   = meta["genre"]
-            results.append(data)
-            log.info("  → %d tracks", data["track_count"])
-            if i % 5 == 0:
-                _save(results[-5:])
-                log.info("  checkpoint saved (%d mixes done)", i)
-            if i < len(url_metas):
-                await asyncio.sleep(random.uniform(12, 30))
+            buffer.append(data)
+            total_done += 1
+            scrapes_since_restart += 1
+            log.info("  → %d tracks (total mixes done: %d)", data["track_count"], total_done)
+            if i % CHECKPOINT_EVERY == 0:
+                _save(buffer)
+                log.info("  checkpoint saved (%d mixes this run, %d total)", i, total_done)
+                buffer.clear()   # free memory
+            if i < len(pending):
+                await asyncio.sleep(random.uniform(2, 5))
     except Exception:
         log.exception("Error during mix scraping")
     finally:
-        if own_browser:
-            browser.stop()
-            await asyncio.sleep(0.5)
+        await _close(tab)
+        if buffer:
+            _save(buffer)
+            log.info("  final checkpoint saved (%d mixes this run)", len(buffer))
+            buffer.clear()
+        browser.stop()
+        await asyncio.sleep(0.5)
 
-    _log_summary(results)
-    _save(results)
-    return results
+    log.info("scrape_multiple_mixes complete: %d mixes processed this run", total_done - skipped)
+    return []
 
 
 async def scrape_mixes_from_djs(dj_config: list[dict]) -> list[dict]:
     """
     Main entry point. Two-step process:
-      1. Visit each DJ artist page → collect set URLs
-      2. Visit each set URL → scrape tracklist
+      1. Visit each DJ artist page → collect set URLs  (skipped per DJ if already cached)
+      2. Visit each set URL → scrape tracklist          (skipped if already in tracklist.csv)
     Saves output to data/interim/tracklist.csv.
 
     dj_config: list of dicts with keys: url (DJ artist page), genre
       e.g. [{"url": "https://www.1001tracklists.com/dj/charlotte-de-witte/index.html",
               "genre": "techno"}]
     """
-    browser = await nd.start(headless=True, no_sandbox=True)
+    browser = await nd.start(headless=False, no_sandbox=True)
     try:
         url_metas = await _collect_mix_urls(browser, dj_config)
         if not url_metas:
@@ -184,13 +292,15 @@ async def scrape_mixes_from_djs(dj_config: list[dict]) -> list[dict]:
 
 # ── Private helpers ────────────────────────────────────────────────────────────
 
+MAX_SCROLL_STEPS = 60   # safety cap (~3 min at 3s/step)
+
 async def _scroll_to_bottom(page, label: str = "page") -> None:
     """Scroll down until no new content loads (handles infinite-scroll pages)."""
     prev_height = 0
     step = 0
-    while True:
+    while step < MAX_SCROLL_STEPS:
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
         height = await page.evaluate("document.body.scrollHeight")
         if height == prev_height:
             log.info("  %s fully scrolled (%d steps, %dpx)", label, step, height)
@@ -198,35 +308,59 @@ async def _scroll_to_bottom(page, label: str = "page") -> None:
         prev_height = height
         step += 1
         log.info("  scrolled to %dpx", height)
+    else:
+        log.warning("  %s hit max scroll steps (%d) at %dpx — continuing anyway", label, MAX_SCROLL_STEPS, prev_height)
 
+
+MAX_SETS_PER_DJ = 250
 
 async def _collect_mix_urls(browser, dj_config: list[dict]) -> list[dict]:
     """
     Step 1: visit each DJ artist page (and its paginated sub-pages) to collect
     all set URLs. Returns list of dicts: {url, dj_name, genre}.
+    Stops collecting for a DJ once MAX_SETS_PER_DJ URLs are found.
+
+    DJs already marked complete=True in mix_urls.csv are skipped — their cached
+    URLs are returned directly. After finishing each new DJ, saves to cache with
+    complete=True so future runs skip it.
     """
-    all_metas, seen = [], set()
+    cache_df = _load_url_cache()
+    complete_djs = set(cache_df[cache_df["complete"] == True]["dj_name"].unique())
+
+    # Seed all_metas and seen ONLY from complete DJs in this config.
+    # Incomplete DJs are intentionally excluded so re-collection starts fresh
+    # and all their URLs end up in dj_metas → saved correctly to cache.
+    # NOTE: load ALL rows for complete DJs (including complete=False ones the user
+    # reset for re-scraping) — the actual skip decision lives in scrape_multiple_mixes
+    # via done_urls from tracklist.csv. complete=False rows that were never saved to
+    # tracklist.csv will appear in pending and get re-scraped correctly.
+    config_names = {_dj_name(c["url"]) for c in dj_config}
+    complete_config_djs = config_names & complete_djs
+    cached_for_batch = cache_df[cache_df["dj_name"].isin(complete_config_djs)]
+    all_metas = cached_for_batch[["url", "dj_name", "genre"]].to_dict("records")
+    seen = {m["url"] for m in all_metas}
 
     for i, cfg in enumerate(dj_config, 1):
         dj_url = cfg["url"]
         genre  = cfg["genre"]
         name   = _dj_name(dj_url)
-        log.info("[%d/%d] Scraping DJ page: %s (%s)", i, len(dj_config), name, genre)
 
+        if name in complete_djs:
+            count = sum(1 for m in all_metas if m["dj_name"] == name)
+            log.info("[%d/%d] %s — cached (%d URLs), skipping collection", i, len(dj_config), name, count)
+            continue
+
+        log.info("[%d/%d] Scraping DJ page: %s (%s)", i, len(dj_config), name, genre)
+        dj_metas = []
+        dj_count = 0
         try:
-            # Collect across all paginated pages for this DJ
             page_url = dj_url
             page_num = 1
             while page_url:
                 page = await browser.get(page_url, new_tab=True)
-                await asyncio.sleep(random.uniform(20, 25))   # wait for initial page render
-
-                # Scroll to bottom until no new content loads (infinite scroll)
+                await asyncio.sleep(random.uniform(20, 25))
                 await _scroll_to_bottom(page, label="DJ page")
-
                 soup = BeautifulSoup(await page.get_content(), "html.parser")
-
-                # Log page title to quickly diagnose wrong-slug redirects
                 page_title = soup.title.string.strip() if soup.title else "NO TITLE"
                 log.info("  page title: %s", page_title)
                 await _close(page)
@@ -235,12 +369,17 @@ async def _collect_mix_urls(browser, dj_config: list[dict]) -> list[dict]:
                 for url in await _extract_set_urls_from_soup(soup):
                     if url not in seen:
                         seen.add(url)
-                        all_metas.append({"url": url, "dj_name": name, "genre": genre})
+                        dj_metas.append({"url": url, "dj_name": name, "genre": genre})
                         new_on_page += 1
+                        dj_count += 1
+                        if dj_count >= MAX_SETS_PER_DJ:
+                            log.info("  reached %d set limit for %s", MAX_SETS_PER_DJ, name)
+                            break
 
-                log.info("  page %d: +%d sets", page_num, new_on_page)
+                log.info("  page %d: +%d sets (%d total for %s)", page_num, new_on_page, dj_count, name)
+                if dj_count >= MAX_SETS_PER_DJ:
+                    break
 
-                # Follow next-page link if present (stops when no more pages)
                 page_url = _next_page_url(soup, page_url)
                 page_num += 1
                 if page_url:
@@ -249,8 +388,31 @@ async def _collect_mix_urls(browser, dj_config: list[dict]) -> list[dict]:
                 else:
                     log.info("  → no next page found")
 
+            # Collection finished for this DJ
+            if dj_metas:
+                all_metas.extend(dj_metas)
+                cache_df = cache_df[cache_df["dj_name"] != name]   # drop stale rows
+                new_rows = pd.DataFrame([{**m, "complete": True} for m in dj_metas])
+                cache_df = pd.concat([cache_df, new_rows], ignore_index=True)
+                _save_url_cache(cache_df)
+                complete_djs.add(name)
+                log.info("  %s collection complete: %d URLs cached", name, dj_count)
+            else:
+                log.warning("  %s: 0 URLs found — will retry next run", name)
+
         except Exception:
             log.exception("Failed to scrape DJ page %s", dj_url)
+            # Drop any stale rows for this DJ and save partial as incomplete
+            # so next run knows to re-collect from scratch
+            cache_df = cache_df[cache_df["dj_name"] != name]
+            if dj_metas:
+                new_rows = pd.DataFrame([{**m, "complete": False} for m in dj_metas])
+                cache_df = pd.concat([cache_df, new_rows], ignore_index=True)
+                try:
+                    _save_url_cache(cache_df)
+                except Exception:
+                    log.warning("Could not save URL cache after error for %s — continuing", name)
+            all_metas.extend(dj_metas)
 
         if i < len(dj_config):
             await asyncio.sleep(random.uniform(5, 12))
@@ -284,14 +446,16 @@ def _next_page_url(soup: BeautifulSoup, current_url: str) -> str | None:
     next_link = soup.find("a", rel=lambda r: r and "next" in r)
     if next_link and next_link.get("href"):
         href = next_link["href"].strip()
-        return (BASE_URL + href) if href.startswith("/") else href
+        url = (BASE_URL + href) if href.startswith("/") else href
+        return url if url != current_url else None
 
     # Fallback: look for a link whose text is ">" or "Next"
     for a in soup.find_all("a", href=True):
         text = a.get_text(strip=True)
         if text in (">", "»", "Next", "next"):
             href = a["href"].strip()
-            return (BASE_URL + href) if href.startswith("/") else href
+            url = (BASE_URL + href) if href.startswith("/") else href
+            return url if url != current_url else None
 
     return None
 
@@ -355,7 +519,11 @@ def _parse_tracklist_html(soup: BeautifulSoup) -> list[dict]:
         cue_div       = item.select_one("div.cue")
         time_str      = cue_div.get_text(strip=True) if cue_div else ""
         starting_time = _parse_time_to_minutes(time_str)
-        if starting_time is None and position == 1:
+        # Default first sequential track to 0.0 when no timestamp present.
+        # Use `not tracks` rather than `position == 1` because position counts
+        # all tlpItems including skipped ones — the first real track may have
+        # position > 1 if earlier items were skipped.
+        if starting_time is None and not tracks:
             starting_time = 0.0
 
         tid = _track_id(artist, title)
@@ -429,6 +597,7 @@ def _parse_tracklist_text(full_text: str) -> list[dict]:
             continue
 
         tracks.append({
+            "track_id":       _track_id(artist, title),
             "artist_name":    artist,
             "track_name":     title,
             "starting_time":  float("nan"),
@@ -446,6 +615,7 @@ def _results_to_dataframe(results: list[dict]) -> pd.DataFrame:
             "mix_title": d.get("title", ""),
             "dj_name":   d.get("dj_name", ""),
             "genre":     d.get("genre", ""),
+            "url":       d["url"],
             **track,
         }
         for d in results
@@ -453,7 +623,7 @@ def _results_to_dataframe(results: list[dict]) -> pd.DataFrame:
     ]
     return pd.DataFrame(
         rows,
-        columns=["mix_id", "mix_title", "dj_name", "genre",
+        columns=["mix_id", "mix_title", "dj_name", "genre", "url",
                  "track_id", "starting_time", "track_name", "artist_name",
                  "play_type", "overlay_parent"],
     )
@@ -498,11 +668,38 @@ def _save(results: list[dict]) -> None:
         return
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     if OUTPUT_PATH.exists():
-        existing = pd.read_csv(OUTPUT_PATH)
-        existing = existing[~existing["mix_id"].isin(df["mix_id"])]
-        df = pd.concat([existing, df], ignore_index=True)
+        try:
+            existing = pd.read_csv(OUTPUT_PATH)
+            existing = existing[~existing["mix_id"].isin(df["mix_id"])]
+            df = pd.concat([existing, df], ignore_index=True)
+        except Exception:
+            log.warning("Could not read existing %s (corrupt?) — overwriting with current batch", OUTPUT_PATH)
     df.to_csv(OUTPUT_PATH, index=False)
     log.info("Saved %d rows → %s", len(df), OUTPUT_PATH)
+
+
+def _load_url_cache() -> pd.DataFrame:
+    """
+    Load mix_urls.csv. Returns empty DataFrame with correct columns if not found.
+    Columns: url, dj_name, genre, complete (bool)
+    """
+    if URL_CACHE.exists():
+        try:
+            df = pd.read_csv(URL_CACHE)
+            # CSV round-trip stores True/False as strings — normalise to Python bool
+            if "complete" not in df.columns:
+                df["complete"] = False
+            df["complete"] = df["complete"].astype(str).str.lower() == "true"
+            return df
+        except Exception:
+            log.warning("Could not read %s (corrupt?) — starting with empty cache", URL_CACHE)
+    return pd.DataFrame(columns=["url", "dj_name", "genre", "complete"])
+
+
+def _save_url_cache(cache_df: pd.DataFrame) -> None:
+    URL_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    cache_df.to_csv(URL_CACHE, index=False)
+    log.info("URL cache saved: %d rows → %s", len(cache_df), URL_CACHE)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -511,11 +708,67 @@ if __name__ == "__main__":
     DJ_CONFIG = [
         # Verify slug: open https://www.1001tracklists.com, search for the DJ,
         # and copy the URL from their profile page — slugs are case-sensitive.
+        # Techno 8
         {"url": "https://www.1001tracklists.com/dj/charlottedewitte/index.html", "genre": "techno"},
+        {"url": "https://www.1001tracklists.com/dj/klangkuenstler/index.html",       "genre": "techno"},
+        {"url": "https://www.1001tracklists.com/dj/amelielens/index.html",       "genre": "techno"},
+        {"url": "https://www.1001tracklists.com/dj/saralandry/index.html",       "genre": "techno"},
+        {"url": "https://www.1001tracklists.com/dj/holypriest/index.html",       "genre": "techno"},
+        {"url": "https://www.1001tracklists.com/dj/999999999/index.html",       "genre": "techno"},
+        {"url": "https://www.1001tracklists.com/dj/ihatemodels/index.html",       "genre": "techno"},
         {"url": "https://www.1001tracklists.com/dj/adambeyer/index.html",       "genre": "techno"},
-        # {"url": "https://www.1001tracklists.com/dj/dixon/index.html",           "genre": "deep house"},
-        # {"url": "https://www.1001tracklists.com/dj/richiehawtin/index.html",    "genre": "minimal techno"},
-        # {"url": "https://www.1001tracklists.com/dj/paulvandyk/index.html",      "genre": "trance"},
-        # {"url": "https://www.1001tracklists.com/dj/goldie/index.html",          "genre": "drum and bass"},
+
+        #tech house 8
+        {"url": "https://www.1001tracklists.com/dj/solomun/index.html",           "genre": "tech house"},
+        {"url": "https://www.1001tracklists.com/dj/romanflugel/index.html",           "genre": "tech house"},
+        {"url": "https://www.1001tracklists.com/dj/djtennis/index.html",           "genre": "tech house"},
+        {"url": "https://www.1001tracklists.com/dj/fisher/index.html",           "genre": "tech house"},
+        {"url": "https://www.1001tracklists.com/dj/hotsince82/index.html",           "genre": "tech house"},
+        {"url": "https://www.1001tracklists.com/dj/johnsummit/index.html",           "genre": "tech house"},
+        {"url": "https://www.1001tracklists.com/dj/chrislake/index.html",           "genre": "tech house"},
+        {"url": "https://www.1001tracklists.com/dj/carlcox/index.html",           "genre": "tech house"},
+
+        # melodic house 9
+        {"url": "https://www.1001tracklists.com/dj/taleofus/index.html", "genre": "melodic house"},
+        {"url": "https://www.1001tracklists.com/dj/anyma/index.html", "genre": "melodic house"},
+        {"url": "https://www.1001tracklists.com/dj/massano/index.html", "genre": "melodic house"},
+        {"url": "https://www.1001tracklists.com/dj/monolink/index.html", "genre": "melodic house"},
+        {"url": "https://www.1001tracklists.com/dj/benbohmer/index.html", "genre": "melodic house"},
+        {"url": "https://www.1001tracklists.com/dj/rufusdusol/index.html", "genre": "melodic house"},
+        {"url": "https://www.1001tracklists.com/dj/sultanplusshepard/index.html", "genre": "melodic house"},
+        {"url": "https://www.1001tracklists.com/dj/argy/index.html", "genre": "melodic house"},
+        {"url": "https://www.1001tracklists.com/dj/sultanplusshepard/index.html", "genre": "deep house"},
+
+        # afro house 9
+        {"url": "https://www.1001tracklists.com/dj/black-coffee/index.html", "genre": "afro house"},
+        {"url": "https://www.1001tracklists.com/dj/themba/index.html", "genre": "afro house"},
+        {"url": "https://www.1001tracklists.com/dj/enoo-napa/index.html", "genre": "afro house"},
+        {"url": "https://www.1001tracklists.com/dj/da-capo/index.html", "genre": "afro house"},
+        {"url": "https://www.1001tracklists.com/dj/shimza/index.html", "genre": "afro house"},
+        {"url": "https://www.1001tracklists.com/dj/samm-be/index.html", "genre": "afro house"},
+        {"url": "https://www.1001tracklists.com/dj/moblack/index.html", "genre": "afro house"},
+        {"url": "https://www.1001tracklists.com/dj/nitefreak/index.html", "genre": "afro house"},
+        {"url": "https://www.1001tracklists.com/dj/aaronsevilla/index.html", "genre": "afro house"},
+
+        # trance 7
+        {"url": "https://www.1001tracklists.com/dj/paulvandyk/index.html", "genre": "trance"},
+        {"url": "https://www.1001tracklists.com/dj/arminvanbuuren/index.html", "genre": "trance"},
+        {"url": "https://www.1001tracklists.com/dj/markusschulz/index.html", "genre": "trance"},
+        {"url": "https://www.1001tracklists.com/dj/johnocallaghan/index.html", "genre": "trance"},
+        {"url": "https://www.1001tracklists.com/dj/ferrycorsten/index.html", "genre": "trance"},
+        {"url": "https://www.1001tracklists.com/dj/rank1/index.html", "genre": "trance"},
+        {"url": "https://www.1001tracklists.com/dj/alyandfila/index.html", "genre": "trance"},
+
+        # drum and base 9
+        {"url": "https://www.1001tracklists.com/dj/hedex/index.html", "genre": "drum and base"},
+        {"url": "https://www.1001tracklists.com/dj/andyc/index.html", "genre": "drum and base"},
+        {"url": "https://www.1001tracklists.com/dj/calibre/index.html", "genre": "drum and base"},
+        {"url": "https://www.1001tracklists.com/dj/ltjbukem/index.html", "genre": "drum and base"},
+        {"url": "https://www.1001tracklists.com/dj/noisia/index.html", "genre": "drum and base"},
+        {"url": "https://www.1001tracklists.com/dj/subfocus/index.html", "genre": "drum and base"},
+        {"url": "https://www.1001tracklists.com/dj/dimension/index.html", "genre": "drum and base"},
+        {"url": "https://www.1001tracklists.com/dj/chasestatus/index.html", "genre": "drum and base"},
+        {"url": "https://www.1001tracklists.com/dj/pendulum/index.html", "genre": "drum and base"},
     ]
+    log.info("Running all %d DJs", len(DJ_CONFIG))
     asyncio.run(scrape_mixes_from_djs(DJ_CONFIG))
