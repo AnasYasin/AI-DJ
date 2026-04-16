@@ -1,0 +1,6 @@
+FROM apache/airflow:2.9.0-python3.10
+RUN pip install --no-cache-dir setuptools && \
+    pip install --no-cache-dir \
+    apache-airflow-providers-docker==3.9.2 \
+    apache-airflow-providers-ssh==3.10.0
+RUN mkdir -p /home/airflow/.ssh && chmod 700 /home/airflow/.ssh

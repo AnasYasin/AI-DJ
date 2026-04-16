@@ -1,5 +1,23 @@
-# Data
-/data/
+# Claude context file
+CLAUDE.md
+
+# Data (never commit raw audio or processed features — use S3)
+/data/raw/
+/data/processed/
+
+# Keep interim data (scraped tracklists are small, useful to version)
+!/data/interim/
+
+# Models (large binary files — use S3)
+/models/*.pt
+/models/*.pth
+
+# MLflow local runs
+mlruns/
+mlflow.db
+
+# W&B local cache
+wandb/
 
 # Mac OS-specific storage files
 .DS_Store

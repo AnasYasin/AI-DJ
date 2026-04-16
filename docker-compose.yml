@@ -1,0 +1,129 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI DJ — Docker Compose
+#
+# Services:
+#   mlflow    — experiment tracking UI         http://localhost:5000
+#   chromadb  — vector store HTTP API          http://localhost:8000
+#   airflow   — pipeline orchestrator UI       http://localhost:8080
+#   trainer   — one-off ML container (manual)
+#
+# All services share `ai-dj-net` so DockerOperator task containers can reach
+# mlflow and chromadb by service name (e.g. http://mlflow:5000).
+#
+# Usage:
+#   Start all services:          docker-compose up mlflow chromadb airflow
+#   Build the ML image:          docker-compose build trainer
+#   Run a script manually:       docker-compose run --rm trainer python src/models/train_model.py
+#   Stop everything:             docker-compose down
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  ai-dj-net:
+    # Explicit name so DockerOperator tasks can join it by this name.
+    # Without a fixed name docker-compose prefixes it with the project directory name.
+    name: ai-dj-net
+
+services:
+
+  # ── MLflow tracking server ──────────────────────────────────────────────────
+  mlflow:
+    build: .
+    image: ai-dj:latest        # tag reused by DockerOperator tasks
+    command: >
+      mlflow server
+        --host 0.0.0.0
+        --port 5000
+        --backend-store-uri sqlite:///mlflow.db
+        --default-artifact-root /app/mlruns
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/app/mlruns
+      - ./mlflow.db:/app/mlflow.db
+    networks:
+      - ai-dj-net
+
+  # ── ChromaDB vector store ───────────────────────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:0.5.3
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/processed/chromadb:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+    networks:
+      - ai-dj-net
+
+  # ── Airflow orchestrator ────────────────────────────────────────────────────
+  # Uses the official lightweight Airflow image — no ML dependencies here.
+  # Tasks run via DockerOperator, which spawns sibling containers from ai-dj:latest
+  # on the host Docker daemon through the mounted socket.
+  #
+  # NOTE: user: root is required for Docker socket access in development.
+  #       In production use a dedicated docker group GID instead.
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    image: ai-dj-airflow:latest
+    user: root
+    command: bash -c "airflow db migrate && airflow users create --username airflow --password airflow --firstname Admin --lastname User --role Admin --email admin@localhost 2>/dev/null || true && airflow scheduler & exec airflow webserver --port 8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      # Docker socket: lets DockerOperator spawn sibling task containers on the host
+      - /var/run/docker.sock:/var/run/docker.sock
+      # DAGs loaded directly from the repo — no image rebuild needed for DAG changes
+      - ./dags:/opt/airflow/dags
+      # Read-only data mount for ShortCircuitOperator file-existence checks
+      - ./data:/opt/airflow/host_data:ro
+      # Persist Airflow DB and logs across restarts
+      - airflow_home:/opt/airflow
+      # SSH key so SSHOperator can reach the host to run the browser scraper
+      - ${HOME}/.ssh/airflow_host_key:/home/airflow/.ssh/id_rsa:ro
+    environment:
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/airflow.db
+      - AIRFLOW__WEBSERVER__SECRET_KEY=ai-dj-dev-secret
+      # Passed to DockerOperator so it can build correct host-side volume mount paths
+      - HOST_PROJECT_ROOT=${PWD}
+      # Host username for SSHOperator (scraper runs here as this user)
+      - HOST_USER=${USER}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    depends_on:
+      - mlflow
+      - chromadb
+    networks:
+      - ai-dj-net
+
+  # ── Training container (manual runs) ───────────────────────────────────────
+  # Not started automatically by `docker-compose up`.
+  # The `image: ai-dj:latest` tag makes this image available to DockerOperator.
+  # Run individual pipeline steps:
+  #   docker-compose run --rm trainer python src/features/build_features.py
+  #   docker-compose run --rm trainer python src/models/train_model.py
+  trainer:
+    build: .
+    image: ai-dj:latest
+    command: 'echo "Trainer ready. Run: docker-compose run --rm trainer python <script>"'
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    env_file:
+      - .env
+    depends_on:
+      - mlflow
+      - chromadb
+    networks:
+      - ai-dj-net
+
+volumes:
+  airflow_home:   # persists Airflow DB and logs across container restarts
