@@ -85,7 +85,9 @@ def _load_track_metadata(tracklist_path: str | Path = TRACKLIST_PATH) -> pd.Data
     Tracks appear in multiple mixes — take the first occurrence of genre and dj_name per track_id
     (consistent across runs since tracklist_clean.csv is deterministically ordered).
     """
-    tl = pd.read_csv(tracklist_path, usecols=["track_id", "genre", "dj_name", "artist_name", "track_name"])
+    tl = pd.read_csv(
+        tracklist_path, usecols=["track_id", "genre", "dj_name", "artist_name", "track_name"]
+    )
     tl = tl.dropna(subset=["track_id"])
     # First occurrence wins — deterministic since CSV order is stable
     return tl.drop_duplicates(subset="track_id", keep="first").set_index("track_id")

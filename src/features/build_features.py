@@ -42,8 +42,10 @@ MERT_BATCH_SIZE = 4
 
 def _load_audio(path: str, sr: int) -> tuple:
     """Load audio with a hard timeout — librosa can hang on corrupt MP3 headers."""
+
     def _handler(signum, frame):
         raise TimeoutError(f"librosa.load timed out after {LOAD_TIMEOUT_S}s: {path}")
+
     signal.signal(signal.SIGALRM, _handler)
     signal.alarm(LOAD_TIMEOUT_S)
     try:
@@ -216,14 +218,17 @@ def _do_checkpoint(
     mins = rem_s // 60
     log.info(
         "--- checkpoint %d/%d | %.2f s/track | ETA %dh %02dm | skipped %d ---",
-        i, total, elapsed / max(i, 1), hrs, mins, skipped,
+        i,
+        total,
+        elapsed / max(i, 1),
+        hrs,
+        mins,
+        skipped,
     )
     if rows:
         batch_df = pd.DataFrame(rows)
         existing = (
-            pd.concat([existing, batch_df], ignore_index=True)
-            if not existing.empty
-            else batch_df
+            pd.concat([existing, batch_df], ignore_index=True) if not existing.empty else batch_df
         )
         existing.to_parquet(out_path, index=False)
         rows.clear()
@@ -297,14 +302,18 @@ def build_features(manifest_path: str = str(MANIFEST_PATH), mode: str = "both") 
                 log.warning("  Skipping — librosa extraction failed")
                 skipped += 1
             else:
-                rows.append({
-                    "track_id": row["track_id"],
-                    "embedding": row["embedding"],
-                    **librosa_feats,
-                })
+                rows.append(
+                    {
+                        "track_id": row["track_id"],
+                        "embedding": row["embedding"],
+                        **librosa_feats,
+                    }
+                )
 
             if i - last_ckpt_i >= CHECKPOINT_EVERY or i >= total:
-                existing = _do_checkpoint(existing, rows, out_path, i, total, t_start, skipped, use_gpu=False)
+                existing = _do_checkpoint(
+                    existing, rows, out_path, i, total, t_start, skipped, use_gpu=False
+                )
                 last_ckpt_i = i
 
     # ── mert-only / both: GPU batched MERT ────────────────────────────────────
@@ -342,30 +351,39 @@ def build_features(manifest_path: str = str(MANIFEST_PATH), mode: str = "both") 
                         continue
 
                     if mode == "mert-only":
-                        rows.append({
-                            "track_id": row["track_id"],
-                            "embedding": emb_vec.tolist(),
-                        })
+                        rows.append(
+                            {
+                                "track_id": row["track_id"],
+                                "embedding": emb_vec.tolist(),
+                            }
+                        )
                     else:
                         librosa_feats = extractor.extract(row["local_path"])
                         if librosa_feats is None:
                             log.warning("  Skipping — librosa extraction failed")
                             skipped += 1
                             continue
-                        rows.append({
-                            "track_id": row["track_id"],
-                            "embedding": emb_vec.tolist(),
-                            **librosa_feats,
-                        })
+                        rows.append(
+                            {
+                                "track_id": row["track_id"],
+                                "embedding": emb_vec.tolist(),
+                                **librosa_feats,
+                            }
+                        )
 
             if i - last_ckpt_i >= CHECKPOINT_EVERY or i >= total:
-                existing = _do_checkpoint(existing, rows, out_path, i, total, t_start, skipped, use_gpu=True)
+                existing = _do_checkpoint(
+                    existing, rows, out_path, i, total, t_start, skipped, use_gpu=True
+                )
                 last_ckpt_i = i
 
     elapsed_total = time.time() - t_start
     log.info(
         "Done. %d tracks in %s (%.0f min, %d skipped)",
-        len(existing), out_path, elapsed_total / 60, skipped,
+        len(existing),
+        out_path,
+        elapsed_total / 60,
+        skipped,
     )
     return existing
 
@@ -413,6 +431,7 @@ if __name__ == "__main__":
     manifest_path = args.manifest
     if args.sample:
         import tempfile
+
         df = pd.read_csv(args.manifest)
         df = df[df["source"] != "not_found"].head(args.sample)
         tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w")

@@ -34,9 +34,7 @@ def _drop_bad_mixes(df: pd.DataFrame) -> pd.DataFrame:
     mix_sizes = df.groupby("mix_id")["track_id"].transform("count")
     mask = (mix_sizes >= MIN_TRACKS) & (mix_sizes <= MAX_TRACKS)
     dropped = df["mix_id"].nunique() - df.loc[mask, "mix_id"].nunique()
-    log.info(
-        "Mix size filter [%d–%d]: dropped %d mixes", MIN_TRACKS, MAX_TRACKS, dropped
-    )
+    log.info("Mix size filter [%d–%d]: dropped %d mixes", MIN_TRACKS, MAX_TRACKS, dropped)
     return df.loc[mask].copy()
 
 
@@ -62,15 +60,9 @@ def _cap_genres(df: pd.DataFrame) -> pd.DataFrame:
             kept_mixes.extend(mix_ids)
             log.info("  %-20s %d mixes (under cap, kept all)", genre, len(mix_ids))
         else:
-            sampled = (
-                pd.Series(mix_ids)
-                .sample(n=MAX_MIXES_PER_GENRE, random_state=SEED)
-                .tolist()
-            )
+            sampled = pd.Series(mix_ids).sample(n=MAX_MIXES_PER_GENRE, random_state=SEED).tolist()
             kept_mixes.extend(sampled)
-            log.info(
-                "  %-20s %d → %d mixes (capped)", genre, len(mix_ids), MAX_MIXES_PER_GENRE
-            )
+            log.info("  %-20s %d → %d mixes (capped)", genre, len(mix_ids), MAX_MIXES_PER_GENRE)
     before_mixes = df["mix_id"].nunique()
     df = df[df["mix_id"].isin(kept_mixes)].copy()
     log.info(
