@@ -55,7 +55,6 @@ def _drop_nulls(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _cap_genres(df: pd.DataFrame) -> pd.DataFrame:
-    rng = pd.core.common.maybe_make_list  # just use pandas sample below
     kept_mixes = []
     for genre, gdf in df.groupby("genre"):
         mix_ids = gdf["mix_id"].unique()
