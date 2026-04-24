@@ -34,14 +34,21 @@ log = logging.getLogger(__name__)
 PREVIEWS_DIR = Path("data/raw/previews")
 NOT_FOUND_PATH = Path("data/raw/not_found.csv")
 MANIFEST_PATH = Path("data/raw/preview_manifest.csv")  # rebuilt on demand, not written during run
-_ITUNES_GAP = 1.0        # seconds between iTunes requests — sequential, no burst
+_ITUNES_GAP = 1.0  # seconds between iTunes requests — sequential, no burst
 _RETRY_DELAYS = [5, 15, 30]  # backoff seconds on iTunes 429
 
 
 # ── Track name cleaning ────────────────────────────────────────────────────────
 
 _VERSION_KEYWORDS = {
-    "remix", "mix", "edit", "version", "dub", "instrumental", "reprise", "remaster",
+    "remix",
+    "mix",
+    "edit",
+    "version",
+    "dub",
+    "instrumental",
+    "reprise",
+    "remaster",
 }
 
 
@@ -59,6 +66,7 @@ def clean_track_name(track: str) -> str:
 
     Rule: strip bracket content UNLESS it contains a version keyword.
     """
+
     def should_keep(bracket_content: str) -> bool:
         return any(w in _VERSION_KEYWORDS for w in bracket_content.lower().split())
 
@@ -146,9 +154,13 @@ async def _soundcloud_download(tid: str, artist: str, track: str) -> Path | None
         try:
             # Step 1: get title without downloading
             probe = await asyncio.create_subprocess_exec(
-                "yt-dlp", f"scsearch1:{query}",
-                "--print", "%(title)s",
-                "--no-playlist", "--quiet", "--no-warnings",
+                "yt-dlp",
+                f"scsearch1:{query}",
+                "--print",
+                "%(title)s",
+                "--no-playlist",
+                "--quiet",
+                "--no-warnings",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -163,12 +175,19 @@ async def _soundcloud_download(tid: str, artist: str, track: str) -> Path | None
             proc = await asyncio.create_subprocess_exec(
                 "yt-dlp",
                 f"scsearch1:{query}",
-                "--download-sections", "*0-30",
+                "--download-sections",
+                "*0-30",
                 "--force-keyframes-at-cuts",
-                "-x", "--audio-format", "mp3", "--audio-quality", "5",
-                "-o", str(dest),
+                "-x",
+                "--audio-format",
+                "mp3",
+                "--audio-quality",
+                "5",
+                "-o",
+                str(dest),
                 "--no-playlist",
-                "--quiet", "--no-warnings",
+                "--quiet",
+                "--no-warnings",
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -242,8 +261,15 @@ def build_manifest(tracklist_path: str = "data/processed/tracklist_clean.csv") -
         path = _find_cached(tid)
         if path:
             src = "itunes" if path.suffix == ".m4a" else "soundcloud"
-            rows.append({"track_id": tid, "artist": row["artist_name"],
-                         "track_name": row["track_name"], "source": src, "local_path": str(path)})
+            rows.append(
+                {
+                    "track_id": tid,
+                    "artist": row["artist_name"],
+                    "track_name": row["track_name"],
+                    "source": src,
+                    "local_path": str(path),
+                }
+            )
     manifest = pd.DataFrame(rows)
     manifest.to_csv(MANIFEST_PATH, index=False)
     log.info("Manifest rebuilt: %d tracks → %s", len(manifest), MANIFEST_PATH)
