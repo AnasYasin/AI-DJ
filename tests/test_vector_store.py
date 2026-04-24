@@ -43,6 +43,22 @@ def _fake_df(n: int = 3) -> pd.DataFrame:
     )
 
 
+def _fake_tracklist_path(tmp_path, n: int = 5):
+    """Write a minimal tracklist_clean.csv covering track_000..track_{n-1}."""
+    df = pd.DataFrame(
+        {
+            "track_id": [f"track_{i:03d}" for i in range(n)],
+            "genre": ["techno"] * n,
+            "dj_name": ["Test DJ"] * n,
+            "artist_name": [f"Artist {i}" for i in range(n)],
+            "track_name": [f"Track {i}" for i in range(n)],
+        }
+    )
+    p = tmp_path / "tracklist_clean.csv"
+    df.to_csv(p, index=False)
+    return p
+
+
 @pytest.fixture
 def ephemeral_collection():
     """In-memory ChromaDB collection — no disk I/O."""
@@ -144,9 +160,12 @@ def test_populate_inserts_all_tracks(tmp_path, monkeypatch):
     df.to_parquet(parquet_path)
 
     chroma_path = tmp_path / "chromadb"
+    tracklist_path = _fake_tracklist_path(tmp_path, n=3)
     monkeypatch.setattr("src.features.vector_store.BATCH_SIZE", 2)  # force 2 batches
 
-    count = populate(features_path=parquet_path, chroma_path=chroma_path)
+    count = populate(
+        features_path=parquet_path, chroma_path=chroma_path, tracklist_path=tracklist_path
+    )
     assert count == 3
 
 
@@ -155,9 +174,12 @@ def test_populate_is_idempotent(tmp_path):
     parquet_path = tmp_path / "features.parquet"
     df.to_parquet(parquet_path)
     chroma_path = tmp_path / "chromadb"
+    tracklist_path = _fake_tracklist_path(tmp_path, n=3)
 
-    populate(features_path=parquet_path, chroma_path=chroma_path)
-    count = populate(features_path=parquet_path, chroma_path=chroma_path)
+    populate(features_path=parquet_path, chroma_path=chroma_path, tracklist_path=tracklist_path)
+    count = populate(
+        features_path=parquet_path, chroma_path=chroma_path, tracklist_path=tracklist_path
+    )
 
     assert count == 3, f"Expected 3 after second run, got {count} — idempotency broken"
 
@@ -171,9 +193,12 @@ def test_populate_skips_existing_tracks(tmp_path):
     df3.to_parquet(parquet3)
     df5.to_parquet(parquet5)
     chroma_path = tmp_path / "chromadb"
+    tracklist_path = _fake_tracklist_path(tmp_path, n=5)
 
-    populate(features_path=parquet3, chroma_path=chroma_path)
-    count = populate(features_path=parquet5, chroma_path=chroma_path)
+    populate(features_path=parquet3, chroma_path=chroma_path, tracklist_path=tracklist_path)
+    count = populate(
+        features_path=parquet5, chroma_path=chroma_path, tracklist_path=tracklist_path
+    )
 
     assert count == 5
 
@@ -183,8 +208,9 @@ def test_populate_stores_correct_document(tmp_path):
     parquet_path = tmp_path / "features.parquet"
     df.to_parquet(parquet_path)
     chroma_path = tmp_path / "chromadb"
+    tracklist_path = _fake_tracklist_path(tmp_path, n=1)
 
-    populate(features_path=parquet_path, chroma_path=chroma_path)
+    populate(features_path=parquet_path, chroma_path=chroma_path, tracklist_path=tracklist_path)
 
     client = chromadb.PersistentClient(path=str(chroma_path))
     col = client.get_collection(COLLECTION_NAME)

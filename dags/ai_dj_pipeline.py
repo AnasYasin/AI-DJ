@@ -37,12 +37,12 @@ Trigger manually:
   airflow dags trigger ai_dj_pipeline
   Or: http://localhost:8080
 """
-import os
 from datetime import datetime, timedelta
+import os
 from pathlib import Path
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.operators.python import PythonOperator
 from airflow.providers.docker.operators.docker import DockerOperator
 from docker.types import Mount
 

@@ -257,14 +257,19 @@ def build_consecutive_pairs(
                 group = group.reset_index(drop=True)
             else:
                 group = group.sort_values("starting_time").reset_index(drop=True)
-            tids = []
-            for _, row in group.iterrows():
-                tid = _track_id(row["artist_name"], row["track_name"])
-                if tid in feat_ids:
-                    tids.append(tid)
+            # Keep original order — do NOT filter before pairing.
+            # Filtering first causes gap-bridging: if B is missing from
+            # [A,B,C], filtering gives tids=[A,C] and creates pair A→C
+            # which is wrong (they were never consecutive).
+            all_tids = [_track_id(r["artist_name"], r["track_name"]) for _, r in group.iterrows()]
 
-            # Build consecutive pairs
-            pairs = [(tids[i], tids[i + 1]) for i in range(len(tids) - 1)]
+            # Only keep pairs where both tracks are adjacent in the original
+            # sequence AND both have embeddings in features.parquet.
+            pairs = [
+                (all_tids[i], all_tids[i + 1])
+                for i in range(len(all_tids) - 1)
+                if all_tids[i] in feat_ids and all_tids[i + 1] in feat_ids
+            ]
             if pairs:
                 all_pairs[str(mix_id)] = pairs
 

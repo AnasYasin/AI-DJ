@@ -180,8 +180,8 @@ def _patch_extractors(monkeypatch, features_path):
     fake_muta.info.length = 5.0
     monkeypatch.setattr("src.features.build_features.MutaFile", lambda p: fake_muta)
     monkeypatch.setattr(
-        "src.features.build_features.MERTEmbedder.embed",
-        lambda self, p: np.random.rand(768).astype(np.float32),
+        "src.features.build_features.MERTEmbedder.embed_batch",
+        lambda self, paths: [np.random.rand(768).astype(np.float32) for _ in paths],
     )
     monkeypatch.setattr(
         "src.features.build_features.LibrosaExtractor.extract", lambda self, p: fake_librosa

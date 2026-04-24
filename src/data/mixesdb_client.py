@@ -81,7 +81,7 @@ async def scrape_multiple_mixes(url_metas: list[dict], browser=None) -> list[dic
             url = meta["url"]
             log.info("[%d/%d] %s", i, len(url_metas), url)
             page = await browser.get(url, new_tab=True)
-            await asyncio.sleep(random.uniform(7, 13))
+            await asyncio.sleep(random.uniform(45, 60))
             data = await extract_tracklist(page)
             await _close(page)
             data["url"] = url
