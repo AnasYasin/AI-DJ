@@ -1,12 +1,12 @@
 """Tests for data collection: mixesdb_client and preview_fetcher."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
 from src.data.mixesdb_client import _parse_track_line, _results_to_dataframe
-from src.data.preview_fetcher import clean_track_name, fetch_previews, track_id
+from src.data.preview_fetcher import build_manifest, clean_track_name, fetch_previews, track_id
 
 # ── clean_track_name ───────────────────────────────────────────────────────────
 
@@ -131,7 +131,8 @@ def test_results_to_dataframe_empty():
 
 @pytest.mark.asyncio
 async def test_fetch_previews_skips_existing(tmp_path):
-    """If a preview MP3 already exists it should be marked 'cached' without any API call."""
+    """Tracks already on disk must be skipped — no API calls made.
+    build_manifest() should find them and return the correct source."""
     csv_path = tmp_path / "tracklist.csv"
     pd.DataFrame({"artist_name": ["Test Artist"], "track_name": ["Test Track"]}).to_csv(
         csv_path, index=False
@@ -145,12 +146,13 @@ async def test_fetch_previews_skips_existing(tmp_path):
     with (
         patch("src.data.preview_fetcher.PREVIEWS_DIR", preview_dir),
         patch("src.data.preview_fetcher.MANIFEST_PATH", tmp_path / "manifest.csv"),
-        patch("src.data.preview_fetcher._spotify_client", return_value=MagicMock()),
     ):
-        manifest = await fetch_previews(str(csv_path))
+        await fetch_previews(str(csv_path))
+        manifest = build_manifest(str(csv_path))
 
-    assert manifest.iloc[0]["source"] == "cached"
+    assert len(manifest) == 1
     assert manifest.iloc[0]["track_id"] == tid
+    assert manifest.iloc[0]["source"] == "soundcloud"  # .mp3 → soundcloud
 
 
 # ── Integration tests — hit real APIs, run locally only ───────────────────────

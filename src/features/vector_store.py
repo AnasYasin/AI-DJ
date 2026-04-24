@@ -115,6 +115,9 @@ def populate(
     # Join genre, dj_name, artist_name, track_name from tracklist
     track_meta = _load_track_metadata(tracklist_path)
     before = len(df)
+    overlap = [c for c in track_meta.columns if c in df.columns]
+    if overlap:
+        df = df.drop(columns=overlap)
     df = df.join(track_meta, on="track_id", how="left")
     missing_genre = df["genre"].isna().sum()
     if missing_genre:
