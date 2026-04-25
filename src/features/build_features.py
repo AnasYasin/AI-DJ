@@ -17,7 +17,7 @@ All modes are resumable: re-running skips already-processed tracks.
 """
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import logging
 import multiprocessing
 import os
@@ -144,7 +144,7 @@ class DiscogsEmbedderGPU:
     INPUT_TENSOR = "serving_default_melspectrogram:0"
     OUTPUT_TENSOR = "PartitionedCall:1"
 
-    def __init__(self, model_path: Path = DISCOGS_MODEL_PATH, batch_tracks: int = 6):
+    def __init__(self, model_path: Path = DISCOGS_MODEL_PATH, batch_tracks: int = 64, loader_workers: int = 8):
         import tensorflow as tf
 
         if not Path(model_path).exists():
@@ -155,6 +155,7 @@ class DiscogsEmbedderGPU:
                 "discogs-effnet/discogs-effnet-bs64-1.pb"
             )
         self.batch_tracks = batch_tracks
+        self.loader_workers = loader_workers
 
         graph_def = tf.compat.v1.GraphDef()
         with open(str(model_path), "rb") as f:
@@ -206,22 +207,32 @@ class DiscogsEmbedderGPU:
         patches = mel.reshape(self.N_MELS, n, self.PATCH_FRAMES).transpose(1, 0, 2)
         return patches[:, :, :, np.newaxis].astype(np.float32)  # (N, 96, 64, 1)
 
+    def _load_patches(self, args: tuple[int, str]) -> tuple[int, np.ndarray | None]:
+        i, path = args
+        try:
+            y, _ = _load_audio(path, self.SAMPLE_RATE)
+            return i, self._mel_patches(y)
+        except Exception as e:
+            log.warning("  audio load failed %s: %s", path, e)
+            return i, None
+
     def embed_batch(self, audio_paths: list[str]) -> list[np.ndarray | None]:
         """List of paths → list of (1280,) float32 arrays (None on failure)."""
         all_patches: list[np.ndarray] = []
         patch_counts: list[int] = []
         valid_idx: list[int] = []
 
-        for i, path in enumerate(audio_paths):
-            try:
-                y, _ = _load_audio(path, self.SAMPLE_RATE)
-                patches = self._mel_patches(y)
-                if patches is not None:
-                    all_patches.append(patches)
-                    patch_counts.append(len(patches))
-                    valid_idx.append(i)
-            except Exception as e:
-                log.warning("  audio load failed %s: %s", path, e)
+        with ThreadPoolExecutor(max_workers=self.loader_workers) as pool:
+            patch_results = sorted(
+                pool.map(self._load_patches, enumerate(audio_paths)),
+                key=lambda x: x[0],
+            )
+
+        for i, patches in patch_results:
+            if patches is not None:
+                all_patches.append(patches)
+                patch_counts.append(len(patches))
+                valid_idx.append(i)
 
         results: list[np.ndarray | None] = [None] * len(audio_paths)
         if not all_patches:
@@ -371,7 +382,8 @@ def build_features(
     manifest_path: str = str(MANIFEST_PATH),
     mode: str = "both",
     workers: int = 1,
-    batch_tracks: int = 6,
+    batch_tracks: int = 64,
+    loader_workers: int = 8,
 ) -> pd.DataFrame:
     """
     mode="both"          — discogs-effnet + features → features.parquet  (default)
@@ -416,7 +428,7 @@ def build_features(
     if mode == "librosa-only":
         embedder = None
     elif mode == "discogs-only":
-        embedder = DiscogsEmbedderGPU(batch_tracks=batch_tracks)
+        embedder = DiscogsEmbedderGPU(batch_tracks=batch_tracks, loader_workers=loader_workers)
     else:
         embedder = DiscogsEmbedder()
 
@@ -661,8 +673,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--batch-tracks",
         type=int,
-        default=6,
-        help="Tracks per GPU batch for discogs-only mode (default: 6).",
+        default=64,
+        help="Tracks per GPU batch for discogs-only mode (default: 64).",
+    )
+    parser.add_argument(
+        "--loader-workers",
+        type=int,
+        default=8,
+        help="Parallel threads for audio loading within each batch (default: 8).",
     )
     args = parser.parse_args()
 
@@ -695,4 +713,5 @@ if __name__ == "__main__":
         mode=args.mode,
         workers=args.workers,
         batch_tracks=args.batch_tracks,
+        loader_workers=args.loader_workers,
     )
