@@ -2,46 +2,59 @@
 Feature extraction pipeline.
 
 For each track in preview_manifest.csv, extracts:
-  1. MERT embedding (768-dim) — m-a-p/MERT-v1-95M
-  2. Librosa features — bpm, key, loudness_lufs, energy_mean/std,
-                        spectral_centroid, onset_strength, mfcc_0..12
+  1. discogs-effnet embedding (1280-dim) — essentia.upf.edu/models
+  2. Audio features — bpm (DeepRhythm CNN), key (Essentia KeyExtractor),
+                     loudness_lufs, energy_mean/std, spectral_centroid,
+                     onset_strength, mfcc_0..12 (librosa)
 
 Modes (--mode flag):
-  both         — MERT + librosa → features.parquet  (default)
-  mert-only    — MERT only      → embeddings.parquet  (run on GPU instance)
-  librosa-only — librosa only   → features.parquet  (run locally, reads embeddings.parquet)
+  both          — discogs-effnet + features → features.parquet  (default)
+  discogs-only  — discogs-effnet only       → embeddings.parquet  (run on GPU instance)
+  librosa-only  — features only             → librosa_features.parquet  (any machine with audio files)
+  merge         — join embeddings.parquet + librosa_features.parquet → features.parquet
 
 All modes are resumable: re-running skips already-processed tracks.
 """
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import logging
+import multiprocessing
+import os
 from pathlib import Path
 import signal
 import time
 
+from deeprhythm import DeepRhythmPredictor
+import essentia.standard as es
 import librosa
 from mutagen import File as MutaFile
 import numpy as np
 import pandas as pd
 import pyloudnorm as pyln
-import torch
-from transformers import AutoModel, Wav2Vec2FeatureExtractor
 
 log = logging.getLogger(__name__)
 
 MANIFEST_PATH = Path("data/raw/preview_manifest.csv")
 FEATURES_PATH = Path("data/processed/features.parquet")
 EMBEDDINGS_PATH = Path("data/processed/embeddings.parquet")
-MERT_MODEL_NAME = "m-a-p/MERT-v1-95M"
+DISCOGS_MODEL_PATH = Path("models/essentia/discogs-effnet-bs64-1.pb")
+LIBROSA_FEATURES_PATH = Path("data/processed/librosa_features.parquet")
 LOAD_TIMEOUT_S = 30
-# Conservative for T4 16GB: model ~380MB + batch-4 attention ~1.5GB → ~14GB headroom.
-# Falls back to 1 automatically on OOM — do not raise this without testing.
-MERT_BATCH_SIZE = 4
+
+# Essentia may return flat key names on some platforms — normalise to sharps
+_FLAT_TO_SHARP = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
+
+# All valid key strings produced by Essentia KeyExtractor after normalisation
+VALID_KEYS = {
+    n + m
+    for n in ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+    for m in ["", "m"]
+}
 
 
 def _load_audio(path: str, sr: int) -> tuple:
-    """Load audio with a hard timeout — librosa can hang on corrupt MP3 headers."""
+    """Load audio with a hard timeout — librosa can hang on corrupt M4A headers."""
 
     def _handler(signum, frame):
         raise TimeoutError(f"librosa.load timed out after {LOAD_TIMEOUT_S}s: {path}")
@@ -54,122 +67,86 @@ def _load_audio(path: str, sr: int) -> tuple:
         signal.alarm(0)
 
 
-_CHROMA_TO_NOTE = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-_KS_MAJOR = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
-_KS_MINOR = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+def _essentia_key(y: np.ndarray, sr: int) -> str:
+    """Detect key using Essentia KeyExtractor — more accurate than Krumhansl-Schmuckler."""
+    key_note, scale, _ = es.KeyExtractor(sampleRate=float(sr), profileType="edma")(
+        y.astype(np.float32)
+    )
+    key_note = _FLAT_TO_SHARP.get(key_note, key_note)
+    return key_note + ("m" if scale == "minor" else "")
 
 
-def _detect_key(chroma_mean: np.ndarray) -> str:
-    best_score, best_key = -np.inf, "C"
-    for root in range(12):
-        major_profile = np.roll(_KS_MAJOR, root)
-        minor_profile = np.roll(_KS_MINOR, root)
-        score_major = np.corrcoef(chroma_mean, major_profile)[0, 1]
-        score_minor = np.corrcoef(chroma_mean, minor_profile)[0, 1]
-        if score_major > best_score:
-            best_score = score_major
-            best_key = _CHROMA_TO_NOTE[root]
-        if score_minor > best_score:
-            best_score = score_minor
-            best_key = _CHROMA_TO_NOTE[root] + "m"
-    return best_key
+# ── discogs-effnet Embedder ────────────────────────────────────────────────────
 
 
-# ── MERT Embedder ──────────────────────────────────────────────────────────────
+class DiscogsEmbedder:
+    """
+    Wraps the Essentia discogs-effnet TensorFlow model.
+    GPU is used automatically by TensorFlow when CUDA is available — no extra config needed.
+    Output: 1280-dim mean-pooled embedding per track.
+    """
 
+    SAMPLE_RATE = 16_000
+    EMBEDDING_DIM = 1280
 
-class MERTEmbedder:
-    SAMPLE_RATE = 24_000
-
-    def __init__(self, model_name: str = MERT_MODEL_NAME):
-        log.info("Loading MERT model: %s", model_name)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        log.info("Using device: %s", self.device)
-        self.processor = Wav2Vec2FeatureExtractor.from_pretrained(
-            model_name, trust_remote_code=True
-        )
-        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-        self.model.to(self.device)
-        self.model.eval()
-        log.info("MERT model loaded on %s", self.device)
-
-    def _forward(self, audios: list[np.ndarray]) -> list[np.ndarray]:
-        """One batched GPU forward pass. Returns one 768-dim array per audio."""
-        inputs = self.processor(
-            audios,
-            sampling_rate=self.SAMPLE_RATE,
-            return_tensors="pt",
-            padding=True,
-        )
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-        embs = outputs.last_hidden_state.mean(dim=1).cpu().numpy()  # (batch, 768)
-        del inputs, outputs
-        return [embs[i] for i in range(len(audios))]
-
-    def embed_batch(self, paths: list[str]) -> list[np.ndarray | None]:
-        """
-        Embed a list of audio files in one GPU forward pass.
-        Falls back to one-by-one if GPU OOM — never crashes the pipeline.
-        Returns one embedding per path (None if that track failed).
-        """
-        results: list[np.ndarray | None] = [None] * len(paths)
-
-        # Load audio sequentially — SIGALRM timeout only works single-threaded
-        loaded: list[tuple[int, np.ndarray]] = []
-        for idx, path in enumerate(paths):
-            try:
-                audio, _ = _load_audio(path, self.SAMPLE_RATE)
-                loaded.append((idx, audio))
-            except Exception as e:
-                log.warning("  Audio load failed %s: %s", path, e)
-
-        if not loaded:
-            return results
-
-        indices, audios = zip(*loaded)
-
+    def __init__(self, model_path: Path = DISCOGS_MODEL_PATH):
+        if not Path(model_path).exists():
+            raise FileNotFoundError(
+                f"discogs-effnet model not found at {model_path}.\n"
+                "Download: wget -O models/essentia/discogs-effnet-bs64-1.pb "
+                "https://essentia.upf.edu/models/feature-extractors/"
+                "discogs-effnet/discogs-effnet-bs64-1.pb"
+            )
+        log.info("Loading discogs-effnet: %s", model_path)
         try:
-            embs = self._forward(list(audios))
-            for orig_idx, emb in zip(indices, embs):
-                results[orig_idx] = emb
+            import tensorflow as tf
 
-        except torch.cuda.OutOfMemoryError:
-            log.warning("  GPU OOM on batch=%d — falling back one-by-one", len(audios))
-            torch.cuda.empty_cache()
-            for orig_idx, audio in zip(indices, audios):
-                try:
-                    results[orig_idx] = self._forward([audio])[0]
-                except Exception as e:
-                    log.warning("  Fallback embed failed: %s", e)
-                    torch.cuda.empty_cache()
-
-        return results
+            gpus = tf.config.list_physical_devices("GPU")
+            log.info("TensorFlow device: %s", "GPU" if gpus else "CPU")
+        except Exception:
+            pass
+        self._model = es.TensorflowPredictEffnetDiscogs(
+            graphFilename=str(model_path),
+            output="PartitionedCall:1",
+        )
+        log.info("discogs-effnet loaded (dim=%d)", self.EMBEDDING_DIM)
 
     def embed(self, audio_path: str) -> np.ndarray | None:
-        return self.embed_batch([audio_path])[0]
+        """Embed one audio file → (1280,) float32. Returns None on failure."""
+        try:
+            y, _ = _load_audio(audio_path, self.SAMPLE_RATE)
+            frames = self._model(y.astype(np.float32))  # (N_frames, 1280)
+            return np.array(frames, dtype=np.float32).mean(axis=0)
+        except Exception as e:
+            log.warning("  discogs embed failed %s: %s", audio_path, e)
+            return None
 
 
-# ── Librosa Feature Extractor ──────────────────────────────────────────────────
+# ── Audio Feature Extractor ────────────────────────────────────────────────────
 
 
 class LibrosaExtractor:
+    """
+    Extracts per-track audio features.
+    BPM: DeepRhythm CNN — more accurate than rule-based estimators for EDM.
+    Key: Essentia KeyExtractor.
+    Everything else: librosa.
+    """
+
     SAMPLE_RATE = 22_050
+
+    def __init__(self):
+        self._dr = DeepRhythmPredictor()
 
     def extract(self, audio_path: str) -> dict | None:
         try:
             y, sr = _load_audio(audio_path, self.SAMPLE_RATE)
 
-            bpm, _ = librosa.beat.beat_track(y=y, sr=sr, start_bpm=120.0)
+            bpm = self._dr.predict_from_audio(y, sr)
+            if bpm is None:
+                raise ValueError("DeepRhythm could not detect BPM")
             bpm = float(bpm)
-            while bpm < 80:
-                bpm *= 2
-            while bpm > 180:
-                bpm /= 2
-
-            chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
-            key = _detect_key(chroma.mean(axis=1))
+            key = _essentia_key(y, sr)
 
             y_stereo = np.stack([y, y], axis=1)
             meter = pyln.Meter(sr)
@@ -183,7 +160,7 @@ class LibrosaExtractor:
             mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
 
             return {
-                "bpm": float(bpm),
+                "bpm": bpm,
                 "key": key,
                 "loudness_lufs": float(lufs),
                 "energy_mean": float(rms.mean()),
@@ -194,11 +171,26 @@ class LibrosaExtractor:
             }
 
         except Exception as e:
-            log.warning("librosa extraction failed for %s: %s", audio_path, e)
+            log.warning("Feature extraction failed for %s: %s", audio_path, e)
             return None
 
 
-# ── Main pipeline ──────────────────────────────────────────────────────────────
+# ── Parallel worker (module-level so ProcessPoolExecutor can pickle it) ────────
+
+_worker_extractor: "LibrosaExtractor | None" = None
+
+
+def _librosa_worker(args: tuple) -> tuple[str, dict | None]:
+    """Extract librosa features for one track. Returns (track_id, feats_or_None).
+    DeepRhythm model is loaded once per worker process, not once per track."""
+    global _worker_extractor
+    if _worker_extractor is None:
+        _worker_extractor = LibrosaExtractor()
+    track_id, local_path = args
+    return track_id, _worker_extractor.extract(local_path)
+
+
+# ── Checkpoint helper ──────────────────────────────────────────────────────────
 
 
 def _do_checkpoint(
@@ -209,7 +201,6 @@ def _do_checkpoint(
     total: int,
     t_start: float,
     skipped: int,
-    use_gpu: bool,
 ) -> pd.DataFrame:
     elapsed = time.time() - t_start
     rate = i / elapsed if elapsed > 0 else 1
@@ -232,40 +223,65 @@ def _do_checkpoint(
         )
         existing.to_parquet(out_path, index=False)
         rows.clear()
-    if use_gpu and torch.cuda.is_available():
-        torch.cuda.empty_cache()
     log.info("  Checkpoint saved → %s (%d tracks total)", out_path, len(existing))
     return existing
 
 
-def build_features(manifest_path: str = str(MANIFEST_PATH), mode: str = "both") -> pd.DataFrame:
+# ── Merge ─────────────────────────────────────────────────────────────────────
+
+
+def _merge_features() -> pd.DataFrame:
+    """Join embeddings.parquet + librosa_features.parquet → features.parquet."""
+    for path in (EMBEDDINGS_PATH, LIBROSA_FEATURES_PATH):
+        if not path.exists():
+            raise FileNotFoundError(f"{path} not found — run the corresponding mode first")
+    emb = pd.read_parquet(EMBEDDINGS_PATH)
+    feats = pd.read_parquet(LIBROSA_FEATURES_PATH)
+    log.info("embeddings: %d tracks | librosa_features: %d tracks", len(emb), len(feats))
+    merged = emb.merge(feats, on="track_id", how="inner")
+    lost = len(emb) - len(merged)
+    if lost:
+        log.warning("  %d tracks in embeddings have no librosa features yet", lost)
+    FEATURES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_parquet(FEATURES_PATH, index=False)
+    log.info("Merged %d tracks → %s", len(merged), FEATURES_PATH)
+    return merged
+
+
+# ── Main pipeline ──────────────────────────────────────────────────────────────
+
+
+def build_features(
+    manifest_path: str = str(MANIFEST_PATH),
+    mode: str = "both",
+    workers: int = 1,
+) -> pd.DataFrame:
     """
-    mode="both"         — MERT + librosa → features.parquet  (default)
-    mode="mert-only"    — MERT only      → embeddings.parquet
-    mode="librosa-only" — librosa only   → features.parquet  (reads embeddings.parquet)
-    All modes resumable: re-running skips already-processed track_ids.
+    mode="both"          — discogs-effnet + features → features.parquet  (default)
+    mode="discogs-only"  — discogs-effnet only       → embeddings.parquet
+    mode="librosa-only"  — features only             → librosa_features.parquet (no embeddings needed)
+    mode="merge"         — join embeddings.parquet + librosa_features.parquet → features.parquet
+    workers              — parallel processes for librosa extraction (default 1 = sequential)
+                           discogs-only and merge always run sequentially.
+    Extract modes resumable: re-running skips already-processed track_ids.
     """
-    assert mode in ("both", "mert-only", "librosa-only"), f"Unknown mode: {mode}"
-    out_path = EMBEDDINGS_PATH if mode == "mert-only" else FEATURES_PATH
-    log.info("Mode: %s  →  %s", mode, out_path)
+    if mode == "merge":
+        return _merge_features()
+    assert mode in ("both", "discogs-only", "librosa-only"), f"Unknown mode: {mode}"
+    out_path = (
+        EMBEDDINGS_PATH
+        if mode == "discogs-only"
+        else LIBROSA_FEATURES_PATH
+        if mode == "librosa-only"
+        else FEATURES_PATH
+    )
+    use_parallel = workers > 1 and mode != "discogs-only"
+    log.info("Mode: %s  →  %s  (workers=%d)", mode, out_path, workers)
 
     manifest = pd.read_csv(manifest_path)
 
-    if mode == "librosa-only":
-        if not EMBEDDINGS_PATH.exists():
-            raise FileNotFoundError(
-                f"embeddings.parquet not found at {EMBEDDINGS_PATH} — run --mode mert-only first"
-            )
-        embeddings_df = pd.read_parquet(EMBEDDINGS_PATH)
-        to_process = embeddings_df.merge(
-            manifest[["track_id", "local_path", "artist", "track_name"]],
-            on="track_id",
-            how="inner",
-        )
-        log.info("Embeddings loaded: %d tracks", len(embeddings_df))
-    else:
-        to_process = manifest[manifest["source"] != "not_found"].copy()
-        log.info("Manifest: %d tracks total, %d have audio", len(manifest), len(to_process))
+    to_process = manifest[manifest["source"] != "not_found"].copy()
+    log.info("Manifest: %d tracks total, %d have audio", len(manifest), len(to_process))
 
     if out_path.exists():
         existing = pd.read_parquet(out_path)
@@ -280,8 +296,7 @@ def build_features(manifest_path: str = str(MANIFEST_PATH), mode: str = "both") 
         log.info("Nothing new to process.")
         return existing
 
-    embedder = MERTEmbedder() if mode != "librosa-only" else None
-    extractor = LibrosaExtractor() if mode != "mert-only" else None
+    embedder = DiscogsEmbedder() if mode != "librosa-only" else None
 
     all_rows = to_process.to_dict("records")
     total = len(all_rows)
@@ -289,92 +304,156 @@ def build_features(manifest_path: str = str(MANIFEST_PATH), mode: str = "both") 
     CHECKPOINT_EVERY = max(10, total // 100)
     rows: list[dict] = []
     t_start = time.time()
-    i = 0
     last_ckpt_i = 0
 
-    # ── librosa-only: CPU-only, no batching ───────────────────────────────────
-    if mode == "librosa-only":
-        for row in all_rows:
-            i += 1
-            log.info("[%d/%d] %s - %s", i, total, row["artist"], row["track_name"])
-            librosa_feats = extractor.extract(row["local_path"])
-            if librosa_feats is None:
-                log.warning("  Skipping — librosa extraction failed")
+    # ── librosa-only parallel ──────────────────────────────────────────────────
+    if mode == "librosa-only" and use_parallel:
+        log.info("Parallel librosa extraction: %d workers", workers)
+        ctx = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+            future_to_row = {
+                pool.submit(_librosa_worker, (row["track_id"], row["local_path"])): row
+                for row in all_rows
+            }
+            for i, future in enumerate(as_completed(future_to_row), start=1):
+                row = future_to_row[future]
+                try:
+                    track_id, feats = future.result()
+                except Exception as e:
+                    log.warning("  worker error %s: %s", row.get("local_path"), e)
+                    skipped += 1
+                else:
+                    if feats is None:
+                        log.warning(
+                            "  Skipping — feature extraction failed: %s", row.get("track_id")
+                        )
+                        skipped += 1
+                    else:
+                        rows.append({"track_id": track_id, **feats})
+                if i - last_ckpt_i >= CHECKPOINT_EVERY or i >= total:
+                    existing = _do_checkpoint(existing, rows, out_path, i, total, t_start, skipped)
+                    last_ckpt_i = i
+
+    # ── both parallel: discogs sequential (GPU) → librosa parallel (CPU) ───────
+    elif mode == "both" and use_parallel:
+        log.info("Two-pass parallel: discogs sequential → librosa %d workers", workers)
+
+        # Pass 1: collect all discogs embeddings sequentially
+        embed_rows: list[dict] = []
+        for i, row in enumerate(all_rows, start=1):
+            log.info(
+                "[%d/%d discogs] %s - %s",
+                i,
+                total,
+                row.get("artist", ""),
+                row.get("track_name", ""),
+            )
+            path = row["local_path"]
+            try:
+                mf = MutaFile(path)
+                if mf is None or mf.info.length <= 0:
+                    raise ValueError("empty or unreadable")
+            except Exception as e:
+                log.warning("  Skipping corrupt %s: %s", path, e)
+                skipped += 1
+                continue
+            emb = embedder.embed(path)
+            if emb is None:
+                log.warning("  Skipping — discogs embed failed")
                 skipped += 1
             else:
-                rows.append(
-                    {
-                        "track_id": row["track_id"],
-                        "embedding": row["embedding"],
-                        **librosa_feats,
-                    }
-                )
+                embed_rows.append({**row, "embedding": emb.tolist()})
 
-            if i - last_ckpt_i >= CHECKPOINT_EVERY or i >= total:
-                existing = _do_checkpoint(
-                    existing, rows, out_path, i, total, t_start, skipped, use_gpu=False
-                )
-                last_ckpt_i = i
+        log.info(
+            "Discogs done: %d embeddings (%.0f min). Starting parallel librosa...",
+            len(embed_rows),
+            (time.time() - t_start) / 60,
+        )
 
-    # ── mert-only / both: GPU batched MERT ────────────────────────────────────
+        # Pass 2: parallel librosa on embedded tracks
+        t_librosa = time.time()
+        total_emb = len(embed_rows)
+        last_ckpt_i = 0
+        ctx = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+            future_to_row = {
+                pool.submit(_librosa_worker, (row["track_id"], row["local_path"])): row
+                for row in embed_rows
+            }
+            for i, future in enumerate(as_completed(future_to_row), start=1):
+                row = future_to_row[future]
+                try:
+                    track_id, feats = future.result()
+                except Exception as e:
+                    log.warning("  librosa worker error %s: %s", row.get("local_path"), e)
+                    skipped += 1
+                else:
+                    if feats is None:
+                        skipped += 1
+                    else:
+                        rows.append({"track_id": track_id, "embedding": row["embedding"], **feats})
+                if i - last_ckpt_i >= CHECKPOINT_EVERY or i >= total_emb:
+                    existing = _do_checkpoint(
+                        existing, rows, out_path, i, total_emb, t_librosa, skipped
+                    )
+                    last_ckpt_i = i
+
+    # ── sequential path (discogs-only, or workers=1) ───────────────────────────
     else:
-        for batch_start in range(0, total, MERT_BATCH_SIZE):
-            batch = all_rows[batch_start : batch_start + MERT_BATCH_SIZE]
+        extractor = LibrosaExtractor() if mode != "discogs-only" else None
 
-            valid: list[dict] = []
-            for row in batch:
-                i += 1
-                path = row["local_path"]
+        for i, row in enumerate(all_rows, start=1):
+            log.info("[%d/%d] %s - %s", i, total, row.get("artist", ""), row.get("track_name", ""))
+            path = row["local_path"]
+
+            if mode != "librosa-only":
                 try:
                     mf = MutaFile(path)
                     if mf is None or mf.info.length <= 0:
                         raise ValueError("empty or unreadable")
-                    valid.append(row)
                 except Exception as e:
-                    log.warning("[%d/%d] Skipping corrupt %s: %s", i, total, path, e)
+                    log.warning("  Skipping corrupt %s: %s", path, e)
                     skipped += 1
-
-            if valid:
-                emb_vecs = embedder.embed_batch([r["local_path"] for r in valid])
-
-                for j, (row, emb_vec) in enumerate(zip(valid, emb_vecs)):
-                    log.info(
-                        "[%d/%d] %s - %s",
-                        batch_start + j + 1,
-                        total,
-                        row["artist"],
-                        row["track_name"],
-                    )
-                    if emb_vec is None:
-                        log.warning("  Skipping — MERT embed failed")
-                        skipped += 1
-                        continue
-
-                    if mode == "mert-only":
-                        rows.append(
-                            {
-                                "track_id": row["track_id"],
-                                "embedding": emb_vec.tolist(),
-                            }
+                    if i - last_ckpt_i >= CHECKPOINT_EVERY or i >= total:
+                        existing = _do_checkpoint(
+                            existing, rows, out_path, i, total, t_start, skipped
                         )
+                        last_ckpt_i = i
+                    continue
+
+            if mode == "librosa-only":
+                feats = extractor.extract(path)
+                if feats is None:
+                    log.warning("  Skipping — feature extraction failed")
+                    skipped += 1
+                else:
+                    rows.append({"track_id": row["track_id"], **feats})
+
+            elif mode == "discogs-only":
+                emb = embedder.embed(path)
+                if emb is None:
+                    log.warning("  Skipping — discogs embed failed")
+                    skipped += 1
+                else:
+                    rows.append({"track_id": row["track_id"], "embedding": emb.tolist()})
+
+            else:  # both, sequential
+                emb = embedder.embed(path)
+                if emb is None:
+                    log.warning("  Skipping — discogs embed failed")
+                    skipped += 1
+                else:
+                    feats = extractor.extract(path)
+                    if feats is None:
+                        log.warning("  Skipping — feature extraction failed")
+                        skipped += 1
                     else:
-                        librosa_feats = extractor.extract(row["local_path"])
-                        if librosa_feats is None:
-                            log.warning("  Skipping — librosa extraction failed")
-                            skipped += 1
-                            continue
                         rows.append(
-                            {
-                                "track_id": row["track_id"],
-                                "embedding": emb_vec.tolist(),
-                                **librosa_feats,
-                            }
+                            {"track_id": row["track_id"], "embedding": emb.tolist(), **feats}
                         )
 
             if i - last_ckpt_i >= CHECKPOINT_EVERY or i >= total:
-                existing = _do_checkpoint(
-                    existing, rows, out_path, i, total, t_start, skipped, use_gpu=True
-                )
+                existing = _do_checkpoint(existing, rows, out_path, i, total, t_start, skipped)
                 last_ckpt_i = i
 
     elapsed_total = time.time() - t_start
@@ -391,15 +470,16 @@ def build_features(manifest_path: str = str(MANIFEST_PATH), mode: str = "both") 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Extract MERT and/or librosa features.")
+    parser = argparse.ArgumentParser(description="Extract discogs-effnet embeddings and features.")
     parser.add_argument(
         "--mode",
-        choices=["both", "mert-only", "librosa-only"],
+        choices=["both", "discogs-only", "librosa-only", "merge"],
         default="both",
         help=(
-            "both (default): MERT+librosa → features.parquet | "
-            "mert-only: MERT → embeddings.parquet (run on GPU instance) | "
-            "librosa-only: librosa → features.parquet (run locally, reads embeddings.parquet)"
+            "both (default): discogs-effnet + features → features.parquet | "
+            "discogs-only: discogs-effnet → embeddings.parquet (GPU instance) | "
+            "librosa-only: features → librosa_features.parquet (any machine with audio) | "
+            "merge: join embeddings.parquet + librosa_features.parquet → features.parquet"
         ),
     )
     parser.add_argument(
@@ -412,6 +492,15 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Only process the first N tracks (for quick smoke tests)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count() or 4,
+        help=(
+            "Parallel worker processes for librosa extraction "
+            "(default: all CPU cores). Ignored for discogs-only and merge modes."
+        ),
     )
     args = parser.parse_args()
 
@@ -429,7 +518,7 @@ if __name__ == "__main__":
     log.info("Logging to %s", _log_path)
 
     manifest_path = args.manifest
-    if args.sample:
+    if args.sample and args.mode != "merge":
         import tempfile
 
         df = pd.read_csv(args.manifest)
@@ -439,4 +528,4 @@ if __name__ == "__main__":
         manifest_path = tmp.name
         log.info("Sample mode: using %d tracks from %s", len(df), manifest_path)
 
-    build_features(manifest_path=manifest_path, mode=args.mode)
+    build_features(manifest_path=manifest_path, mode=args.mode, workers=args.workers)
