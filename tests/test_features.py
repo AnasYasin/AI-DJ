@@ -313,7 +313,6 @@ def _patch_both(monkeypatch, features_path):
     monkeypatch.setattr("src.features.build_features.FEATURES_PATH", features_path)
 
 
-
 def _patch_librosa_only(monkeypatch, librosa_path):
     """Patch librosa extractor + LIBROSA_FEATURES_PATH for --mode librosa-only tests."""
     monkeypatch.setattr(
