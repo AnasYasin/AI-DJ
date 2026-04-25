@@ -122,6 +122,124 @@ class DiscogsEmbedder:
             return None
 
 
+# ── Batched GPU Embedder ───────────────────────────────────────────────────────
+
+
+class DiscogsEmbedderGPU:
+    """
+    Batched GPU discogs-effnet embedder.
+    Loads the frozen .pb directly with TensorFlow — bypasses essentia's one-at-a-time
+    TF wrapper so the GPU is actually saturated.
+    Stacks mel patches from batch_tracks audio files into one GPU call.
+    """
+
+    SAMPLE_RATE = 16_000
+    N_FFT = 512
+    HOP_LENGTH = 256
+    N_MELS = 96
+    FMIN = 0.0
+    FMAX = 8000.0
+    PATCH_FRAMES = 64
+    EMBEDDING_DIM = 1280
+    INPUT_TENSOR = "serving_default_melspectrogram:0"
+    OUTPUT_TENSOR = "PartitionedCall:1"
+
+    def __init__(self, model_path: Path = DISCOGS_MODEL_PATH, batch_tracks: int = 6):
+        import tensorflow as tf
+
+        if not Path(model_path).exists():
+            raise FileNotFoundError(
+                f"discogs-effnet model not found at {model_path}.\n"
+                "Download: wget -O models/essentia/discogs-effnet-bs64-1.pb "
+                "https://essentia.upf.edu/models/feature-extractors/"
+                "discogs-effnet/discogs-effnet-bs64-1.pb"
+            )
+        self.batch_tracks = batch_tracks
+
+        graph_def = tf.compat.v1.GraphDef()
+        with open(str(model_path), "rb") as f:
+            graph_def.ParseFromString(f.read())
+
+        self._graph = tf.compat.v1.Graph()
+        with self._graph.as_default():
+            tf.compat.v1.import_graph_def(graph_def, name="")
+
+        cfg = tf.compat.v1.ConfigProto()
+        cfg.gpu_options.allow_growth = True
+        self._sess = tf.compat.v1.Session(graph=self._graph, config=cfg)
+
+        try:
+            self._input = self._graph.get_tensor_by_name(self.INPUT_TENSOR)
+            self._output = self._graph.get_tensor_by_name(self.OUTPUT_TENSOR)
+        except KeyError:
+            placeholders = [
+                op.name
+                for op in self._graph.get_operations()
+                if op.type == "Placeholder"
+            ]
+            log.error("Tensor not found. Placeholders in graph: %s", placeholders[:10])
+            raise
+
+        gpus = tf.config.list_physical_devices("GPU")
+        log.info(
+            "DiscogsEmbedderGPU loaded (device=%s, batch_tracks=%d)",
+            "GPU" if gpus else "CPU",
+            batch_tracks,
+        )
+
+    def _mel_patches(self, y: np.ndarray) -> np.ndarray | None:
+        """Float32 mono 16 kHz → (N_patches, 96, 64, 1) float32."""
+        mel = librosa.feature.melspectrogram(
+            y=y.astype(np.float32),
+            sr=self.SAMPLE_RATE,
+            n_fft=self.N_FFT,
+            hop_length=self.HOP_LENGTH,
+            n_mels=self.N_MELS,
+            fmin=self.FMIN,
+            fmax=self.FMAX,
+            power=2.0,
+            norm=None,
+        )
+        mel = np.log10(np.maximum(mel, 1e-6))  # (96, T) — match essentia log scale
+        n = mel.shape[1] // self.PATCH_FRAMES
+        if n == 0:
+            return None
+        mel = mel[:, : n * self.PATCH_FRAMES]
+        patches = mel.reshape(self.N_MELS, n, self.PATCH_FRAMES).transpose(1, 0, 2)
+        return patches[:, :, :, np.newaxis].astype(np.float32)  # (N, 96, 64, 1)
+
+    def embed_batch(self, audio_paths: list[str]) -> list[np.ndarray | None]:
+        """List of paths → list of (1280,) float32 arrays (None on failure)."""
+        all_patches: list[np.ndarray] = []
+        patch_counts: list[int] = []
+        valid_idx: list[int] = []
+
+        for i, path in enumerate(audio_paths):
+            try:
+                y, _ = _load_audio(path, self.SAMPLE_RATE)
+                patches = self._mel_patches(y)
+                if patches is not None:
+                    all_patches.append(patches)
+                    patch_counts.append(len(patches))
+                    valid_idx.append(i)
+            except Exception as e:
+                log.warning("  audio load failed %s: %s", path, e)
+
+        results: list[np.ndarray | None] = [None] * len(audio_paths)
+        if not all_patches:
+            return results
+
+        X = np.concatenate(all_patches, axis=0)  # (total_patches, 96, 64, 1)
+        embeddings = self._sess.run(self._output, {self._input: X})  # (total_patches, 1280)
+
+        idx = 0
+        for i, count in zip(valid_idx, patch_counts):
+            results[i] = embeddings[idx : idx + count].mean(axis=0).astype(np.float32)
+            idx += count
+
+        return results
+
+
 # ── Audio Feature Extractor ────────────────────────────────────────────────────
 
 
@@ -255,6 +373,7 @@ def build_features(
     manifest_path: str = str(MANIFEST_PATH),
     mode: str = "both",
     workers: int = 1,
+    batch_tracks: int = 6,
 ) -> pd.DataFrame:
     """
     mode="both"          — discogs-effnet + features → features.parquet  (default)
@@ -296,7 +415,12 @@ def build_features(
         log.info("Nothing new to process.")
         return existing
 
-    embedder = DiscogsEmbedder() if mode != "librosa-only" else None
+    if mode == "librosa-only":
+        embedder = None
+    elif mode == "discogs-only":
+        embedder = DiscogsEmbedderGPU(batch_tracks=batch_tracks)
+    else:
+        embedder = DiscogsEmbedder()
 
     all_rows = to_process.to_dict("records")
     total = len(all_rows)
@@ -398,7 +522,41 @@ def build_features(
                     )
                     last_ckpt_i = i
 
-    # ── sequential path (discogs-only, or workers=1) ───────────────────────────
+    # ── discogs-only: batched GPU inference ───────────────────────────────────
+    elif mode == "discogs-only":
+        log.info("Batched GPU discogs extraction (batch_tracks=%d)", embedder.batch_tracks)
+        bt = embedder.batch_tracks
+        for batch_start in range(0, total, bt):
+            batch = all_rows[batch_start : batch_start + bt]
+            i = batch_start + len(batch)
+
+            valid: list[tuple[dict, str]] = []
+            for r in batch:
+                path = r["local_path"]
+                try:
+                    mf = MutaFile(path)
+                    if mf is None or mf.info.length <= 0:
+                        raise ValueError("empty")
+                    valid.append((r, path))
+                except Exception as e:
+                    log.warning("  Skipping corrupt %s: %s", path, e)
+                    skipped += 1
+
+            if valid:
+                embs = embedder.embed_batch([p for _, p in valid])
+                for (r, path), emb in zip(valid, embs):
+                    if emb is None:
+                        log.warning("  discogs embed failed: %s", path)
+                        skipped += 1
+                    else:
+                        rows.append({"track_id": r["track_id"], "embedding": emb.tolist()})
+
+            log.info("[%d/%d] batch done", i, total)
+            if i - last_ckpt_i >= CHECKPOINT_EVERY or i >= total:
+                existing = _do_checkpoint(existing, rows, out_path, i, total, t_start, skipped)
+                last_ckpt_i = i
+
+    # ── sequential path (both mode, or workers=1) ─────────────────────────────
     else:
         extractor = LibrosaExtractor() if mode != "discogs-only" else None
 
@@ -502,6 +660,12 @@ if __name__ == "__main__":
             "(default: all CPU cores). Ignored for discogs-only and merge modes."
         ),
     )
+    parser.add_argument(
+        "--batch-tracks",
+        type=int,
+        default=6,
+        help="Tracks per GPU batch for discogs-only mode (default: 6).",
+    )
     args = parser.parse_args()
 
     _fmt = "%(asctime)s %(levelname)s %(message)s"
@@ -528,4 +692,9 @@ if __name__ == "__main__":
         manifest_path = tmp.name
         log.info("Sample mode: using %d tracks from %s", len(df), manifest_path)
 
-    build_features(manifest_path=manifest_path, mode=args.mode, workers=args.workers)
+    build_features(
+        manifest_path=manifest_path,
+        mode=args.mode,
+        workers=args.workers,
+        batch_tracks=args.batch_tracks,
+    )
