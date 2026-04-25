@@ -139,7 +139,8 @@ class DiscogsEmbedderGPU:
     N_MELS = 96
     FMIN = 0.0
     FMAX = 8000.0
-    PATCH_FRAMES = 64
+    PATCH_FRAMES = 128
+    MODEL_BATCH = 64  # fixed batch size baked into the .pb graph
     EMBEDDING_DIM = 1280
     INPUT_TENSOR = "serving_default_melspectrogram:0"
     OUTPUT_TENSOR = "PartitionedCall:1"
@@ -187,7 +188,7 @@ class DiscogsEmbedderGPU:
         )
 
     def _mel_patches(self, y: np.ndarray) -> np.ndarray | None:
-        """Float32 mono 16 kHz → (N_patches, 96, 64, 1) float32."""
+        """Float32 mono 16 kHz → (N_patches, 128, 96) float32 — model input format."""
         mel = librosa.feature.melspectrogram(
             y=y.astype(np.float32),
             sr=self.SAMPLE_RATE,
@@ -199,13 +200,14 @@ class DiscogsEmbedderGPU:
             power=2.0,
             norm=None,
         )
-        mel = np.log10(np.maximum(mel, 1e-6))  # (96, T) — match essentia log scale
+        mel = np.log10(np.maximum(mel, 1e-6))  # (96, T)
         n = mel.shape[1] // self.PATCH_FRAMES
         if n == 0:
             return None
         mel = mel[:, : n * self.PATCH_FRAMES]
-        patches = mel.reshape(self.N_MELS, n, self.PATCH_FRAMES).transpose(1, 0, 2)
-        return patches[:, :, :, np.newaxis].astype(np.float32)  # (N, 96, 64, 1)
+        # reshape to (N, PATCH_FRAMES, N_MELS) = (N, 128, 96)
+        patches = mel.reshape(self.N_MELS, n, self.PATCH_FRAMES).transpose(1, 2, 0)
+        return patches.astype(np.float32)
 
     def _load_patches(self, args: tuple[int, str]) -> tuple[int, np.ndarray | None]:
         i, path = args
@@ -239,8 +241,19 @@ class DiscogsEmbedderGPU:
         if not all_patches:
             return results
 
-        X = np.concatenate(all_patches, axis=0)  # (total_patches, 96, 64, 1)
-        embeddings = self._sess.run(self._output, {self._input: X})  # (total_patches, 1280)
+        X = np.concatenate(all_patches, axis=0)  # (total_patches, 128, 96)
+
+        # model has fixed batch size MODEL_BATCH=64 — feed in chunks, pad last if needed
+        all_embeddings = []
+        for start in range(0, len(X), self.MODEL_BATCH):
+            chunk = X[start : start + self.MODEL_BATCH]
+            if len(chunk) < self.MODEL_BATCH:
+                pad = np.zeros((self.MODEL_BATCH - len(chunk), *chunk.shape[1:]), dtype=np.float32)
+                chunk = np.concatenate([chunk, pad], axis=0)
+            out = self._sess.run(self._output, {self._input: chunk})  # (64, 1280)
+            all_embeddings.append(out)
+
+        embeddings = np.concatenate(all_embeddings, axis=0)[: len(X)]  # trim padding
 
         idx = 0
         for i, count in zip(valid_idx, patch_counts):
