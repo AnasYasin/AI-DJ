@@ -164,34 +164,7 @@ def test_build_features_is_idempotent(tmp_path, monkeypatch):
     assert len(result) == 1, f"Expected 1 row, got {len(result)} — idempotency broken"
 
 
-# ── build_features --mode discogs-only ────────────────────────────────────────
-
-
-def test_discogs_only_output_columns(tmp_path, monkeypatch):
-    """discogs-only must write track_id + embedding only — no audio features."""
-    manifest_path = _write_manifest(tmp_path, ["abc123"])
-    embeddings_path = tmp_path / "embeddings.parquet"
-    _patch_discogs_only(monkeypatch, embeddings_path)
-
-    result = build_features(str(manifest_path), mode="discogs-only")
-
-    assert embeddings_path.exists()
-    assert len(result) == 1
-    assert "embedding" in result.columns
-    assert "bpm" not in result.columns
-    assert "key" not in result.columns
-
-
-def test_discogs_only_is_resumable(tmp_path, monkeypatch):
-    """Re-running discogs-only must skip already-embedded track_ids."""
-    manifest_path = _write_manifest(tmp_path, ["abc123"])
-    embeddings_path = tmp_path / "embeddings.parquet"
-    _patch_discogs_only(monkeypatch, embeddings_path)
-
-    build_features(str(manifest_path), mode="discogs-only")
-    result = build_features(str(manifest_path), mode="discogs-only")
-
-    assert len(result) == 1, f"Expected 1 row, got {len(result)} — resumability broken"
+# discogs-only tests require GPU + TensorFlow — run on EC2 instance only
 
 
 # ── build_features --mode librosa-only ────────────────────────────────────────
@@ -339,21 +312,6 @@ def _patch_both(monkeypatch, features_path):
     )
     monkeypatch.setattr("src.features.build_features.FEATURES_PATH", features_path)
 
-
-def _patch_discogs_only(monkeypatch, embeddings_path):
-    """Patch discogs extractor + EMBEDDINGS_PATH for --mode discogs-only tests."""
-    fake_muta = MagicMock()
-    fake_muta.info.length = 5.0
-    monkeypatch.setattr("src.features.build_features.MutaFile", lambda p: fake_muta)
-    monkeypatch.setattr(
-        "src.features.build_features.DiscogsEmbedder.__init__",
-        lambda self, *args, **kwargs: None,
-    )
-    monkeypatch.setattr(
-        "src.features.build_features.DiscogsEmbedder.embed",
-        lambda self, p: _FAKE_EMBEDDING.copy(),
-    )
-    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
 
 
 def _patch_librosa_only(monkeypatch, librosa_path):
