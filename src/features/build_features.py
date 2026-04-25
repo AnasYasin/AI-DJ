@@ -173,9 +173,7 @@ class DiscogsEmbedderGPU:
             self._output = self._graph.get_tensor_by_name(self.OUTPUT_TENSOR)
         except KeyError:
             placeholders = [
-                op.name
-                for op in self._graph.get_operations()
-                if op.type == "Placeholder"
+                op.name for op in self._graph.get_operations() if op.type == "Placeholder"
             ]
             log.error("Tensor not found. Placeholders in graph: %s", placeholders[:10])
             raise
