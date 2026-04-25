@@ -1,27 +1,18 @@
 """
-Phase 5 — Model training: contrastive encoder + transition classifier.
+Phase 5 — Contrastive encoder training.
 
-Two models trained sequentially:
+ContrastiveEncoder  MLP(1287→256→128)
+Input:   1280-dim discogs-effnet embedding + 7 normalised librosa features:
+           bpm_norm (bpm/200), key_sin, key_cos, key_mode (Camelot circular
+           encoding), energy_mean, onset_norm (onset/5), lufs_norm
+Loss:    NT-Xent (temperature-scaled cross-entropy)
+Signal:  consecutive tracks in a DJ mix = positive pairs
+Negatives: in-batch + semi-hard negatives mined from ChromaDB
+           (ChromaDB queries use raw 1280-dim discogs-effnet embeddings)
+Output:  128-dim "mixability" embedding on the unit hypersphere
+Saved:   models/contrastive_encoder.pt
 
-  1. ContrastiveEncoder  MLP(775→256→128)
-     Input:   768-dim MERT embedding + 7 normalised librosa features:
-                bpm_norm (bpm/200), key_sin, key_cos, key_mode (Camelot circular
-                encoding), energy_mean, onset_norm (onset/5), lufs_norm
-     Loss:    NT-Xent (temperature-scaled cross-entropy)
-     Signal:  consecutive tracks in a DJ mix = positive pairs
-     Negatives: in-batch + semi-hard negatives mined from ChromaDB
-                (ChromaDB queries still use raw 768-dim MERT only)
-     Output:  128-dim "mixability" embedding on the unit hypersphere
-     Saved:   models/contrastive_encoder.pt
-
-  2. TransitionClassifier  MLP(260→128→64→6)
-     Input:   concat(emb_A[128], emb_B[128], bpm_ratio, energy_delta,
-                     harmonic_dist, time_gap)  → 260 dims
-     Classes: slam / melt / blend / rise / fade / wave
-     Labels:  data/processed/transition_labels.csv  (from Phase 4)
-     Saved:   models/transition_classifier.pt
-
-Both models log to MLflow (experiment registry) AND W&B (live dashboard).
+Logs to MLflow (experiment registry) AND W&B (live dashboard).
 
 MLflow setup:
   mlflow ui --port 5000          → http://localhost:5000
@@ -45,14 +36,6 @@ import mlflow
 import mlflow.pytorch
 import numpy as np
 import pandas as pd
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
-)
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -74,45 +57,30 @@ log = logging.getLogger(__name__)
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
 FEATURES_PATH = Path("data/processed/features.parquet")
-LABELS_PATH = Path("data/processed/transition_labels.csv")
 MODELS_DIR = Path("models")
 ENCODER_PATH = MODELS_DIR / "contrastive_encoder.pt"
-CLASSIFIER_PATH = MODELS_DIR / "transition_classifier.pt"
 
 # ── Hyperparameters ────────────────────────────────────────────────────────────
-# Centralised here so MLflow/W&B can log them all at once.
 
 HPARAMS = {
     # Contrastive encoder
-    "encoder_input_dim": 775,  # 768 MERT + 7 librosa (bpm, key×3, energy, onset, lufs)
+    "encoder_input_dim": 1287,  # 1280 discogs-effnet + 7 librosa (bpm, key×3, energy, onset, lufs)
     "encoder_hidden_dim": 256,
     "encoder_output_dim": 128,
     "temperature": 0.07,  # NT-Xent temperature (lower = sharper contrast)
     "encoder_lr": 3e-4,
     "encoder_epochs": 50,
     "encoder_batch_size": 128,
-    "hard_neg_per_anchor": 5,  # how many hard negatives to fetch per anchor
+    "hard_neg_per_anchor": 5,
     "hard_neg_min_dist": HARD_NEG_MIN_DISTANCE,
     "hard_neg_max_dist": HARD_NEG_MAX_DISTANCE,
-    # Transition classifier
-    "cls_lr": 1e-3,
-    "cls_epochs": 30,
-    "cls_batch_size": 64,
-    "cls_dropout": 0.3,
     # Shared
     "weight_decay": 1e-4,
-    "val_split": 0.2,  # fraction of mixes held out for validation
+    "val_split": 0.2,
     "random_seed": 42,
 }
 
-TRANSITION_CLASSES = ["slam", "melt", "blend", "rise", "fade", "wave"]
-
-# Transition feature normalisation constants
-HARM_DIST_MAX = 6.0  # max Camelot wheel distance; divides harm_dist → [0, 1]
-TIME_GAP_NORM_DEFAULT = 0.5  # fallback when time_gap_norm is absent from labels
-
-# Camelot wheel distances for harmonic compatibility scoring.
-# Each key maps to its Camelot number (1-12). Same number or ±1 = compatible.
+# Camelot wheel positions for key circular encoding (1–12).
 _CAMELOT = {
     "C": 8,
     "Cm": 5,
@@ -141,23 +109,8 @@ _CAMELOT = {
 }
 
 
-def _harmonic_dist(key_a: str, key_b: str) -> float:
-    """
-    Camelot wheel distance between two keys: 0 (same) to 6 (maximally incompatible).
-    Wraps around the 12-position wheel.
-    Unknown keys default to 6 (worst-case).
-    """
-    ca = _CAMELOT.get(key_a, -1)
-    cb = _CAMELOT.get(key_b, -1)
-    if ca < 0 or cb < 0:
-        return 6.0
-    diff = abs(ca - cb)
-    return float(min(diff, 12 - diff))
-
-
 # ── Encoder input preparation ──────────────────────────────────────────────────
 
-# Number of librosa features appended to the MERT embedding before the encoder.
 # bpm_norm(1) + key_sin(1) + key_cos(1) + key_mode(1) + energy_mean(1)
 # + onset_norm(1) + lufs_norm(1) = 7
 ENCODER_EXTRA_DIM = 7
@@ -165,11 +118,7 @@ ENCODER_EXTRA_DIM = 7
 
 def _prepare_encoder_inputs(features: pd.DataFrame) -> tuple[np.ndarray, dict[str, int]]:
     """
-    Build the augmented encoder input matrix: MERT[768] + librosa[7] = [775].
-
-    The 7 extra features make BPM and key compatibility explicit in the
-    embedding space — critical for EDM where many tracks share similar timbral
-    MERT embeddings but differ significantly in tempo and key.
+    Build the augmented encoder input matrix: discogs-effnet[1280] + librosa[7] = [1287].
 
     Key encoding uses circular (sin/cos) Camelot-wheel position so the model
     sees C (position 8) and B (position 1) as close on the wheel, not far apart
@@ -181,11 +130,11 @@ def _prepare_encoder_inputs(features: pd.DataFrame) -> tuple[np.ndarray, dict[st
       lufs      (x+40)/40     → [0, 1] mapping −40…0 LUFS
 
     Returns:
-        matrix     (N, 775) float32 array, row order matches features rows
+        matrix     (N, 1287) float32 array, row order matches features rows
         tid_to_idx track_id → row index in matrix
     """
     n = len(features)
-    matrix = np.zeros((n, 768 + ENCODER_EXTRA_DIM), dtype=np.float32)
+    matrix = np.zeros((n, 1280 + ENCODER_EXTRA_DIM), dtype=np.float32)
     tid_to_idx: dict[str, int] = {}
 
     for idx, (_, row) in enumerate(features.iterrows()):
@@ -232,39 +181,24 @@ def build_consecutive_pairs(
 
     Splitting is done at the MIX level (not pair level) to prevent data leakage —
     no mix appears in both train and val.
-
-    Pairs from the same mix are positives for contrastive training.
-    Also builds a lookup: track_id → list of all its positive partner IDs (used
-    for hard negative exclusion — we must not treat known positives as negatives).
     """
-    all_pairs: dict[str, list[tuple]] = {}  # mix_id → list of (tid_a, tid_b)
+    all_pairs: dict[str, list[tuple]] = {}
     feat_ids = set(features["track_id"])
 
     for csv_path in mix_csvs:
         df = pd.read_csv(csv_path)
 
         for mix_id, group in df.groupby("mix_id"):
-            # Keep only sequential tracks — simultaneous ("w/") tracks are
-            # overlays, not transitions. They stay in tracklist.csv for the
-            # inference engine but must not corrupt the pair sequence here.
             if "play_type" in group.columns:
                 group = group[group["play_type"] == "sequential"]
 
-            # Sort by starting_time when all values are real (MixesDB real minutes).
-            # When any are NaN (1001tracklists missing timestamps), trust row order —
-            # the scraper preserves track numbering order so row order = play order.
             if group["starting_time"].isna().any():
                 group = group.reset_index(drop=True)
             else:
                 group = group.sort_values("starting_time").reset_index(drop=True)
-            # Keep original order — do NOT filter before pairing.
-            # Filtering first causes gap-bridging: if B is missing from
-            # [A,B,C], filtering gives tids=[A,C] and creates pair A→C
-            # which is wrong (they were never consecutive).
+
             all_tids = [_track_id(r["artist_name"], r["track_name"]) for _, r in group.iterrows()]
 
-            # Only keep pairs where both tracks are adjacent in the original
-            # sequence AND both have embeddings in features.parquet.
             pairs = [
                 (all_tids[i], all_tids[i + 1])
                 for i in range(len(all_tids) - 1)
@@ -304,7 +238,7 @@ def build_positive_index(pairs: list[tuple]) -> dict[str, set[str]]:
     return index
 
 
-# ── Datasets ───────────────────────────────────────────────────────────────────
+# ── Dataset ────────────────────────────────────────────────────────────────────
 
 
 class ContrastiveDataset(Dataset):
@@ -314,9 +248,6 @@ class ContrastiveDataset(Dataset):
     Hard negatives are pre-mined at the start of each epoch by querying ChromaDB.
     Pre-mining is faster than querying per-batch and produces stable negatives
     within an epoch.
-
-    hard_neg_embs: (hard_neg_per_anchor, 768) tensor. May be zeros if ChromaDB
-    yields no candidates in the distance window (rare but handled gracefully).
     """
 
     def __init__(
@@ -332,9 +263,9 @@ class ContrastiveDataset(Dataset):
         self.collection = collection
         self.n_hard = hard_neg_per_anchor
 
-        # Augmented inputs for encoder training (MERT + librosa features)
+        # Augmented inputs for encoder training (discogs-effnet + librosa features)
         self.input_matrix, self.tid_to_idx = _prepare_encoder_inputs(features)
-        # Raw 768-dim MERT embeddings kept separately for ChromaDB ANN queries
+        # Raw 1280-dim discogs-effnet embeddings for ChromaDB ANN queries
         raw = features.set_index("track_id")["embedding"]
         self.raw_emb: dict[str, np.ndarray] = {
             tid: np.asarray(raw.loc[tid], dtype=np.float32) for tid in raw.index
@@ -345,9 +276,6 @@ class ContrastiveDataset(Dataset):
         """
         Query ChromaDB for hard negatives for every unique anchor.
         Call this at the start of each epoch to refresh the cache.
-
-        exclude_ids = anchor itself + all known positive partners.
-        Candidates in [HARD_NEG_MIN_DISTANCE, HARD_NEG_MAX_DISTANCE] are kept.
         """
         unique_anchors = set(a for a, _ in self.pairs)
         log.info("Mining hard negatives for %d unique anchors...", len(unique_anchors))
@@ -357,7 +285,6 @@ class ContrastiveDataset(Dataset):
         for tid in unique_anchors:
             if tid not in self.raw_emb:
                 continue
-            # ChromaDB query uses raw 768-dim MERT — the index was built on those
             exclude = {tid} | self.pos_index.get(tid, set())
             results = query_hard_negatives(
                 self.collection,
@@ -374,7 +301,6 @@ class ContrastiveDataset(Dataset):
                         if nid in self.tid_to_idx
                     ]
                 )
-                # Pad or trim to exactly n_hard rows
                 if len(neg_embs) < self.n_hard:
                     pad = np.zeros((self.n_hard - len(neg_embs), enc_dim), dtype=np.float32)
                     neg_embs = np.vstack([neg_embs, pad])
@@ -392,9 +318,7 @@ class ContrastiveDataset(Dataset):
 
     def __getitem__(self, idx: int):
         tid_a, tid_b = self.pairs[idx]
-        # Skip pairs where either track is missing from features
         if tid_a not in self.tid_to_idx or tid_b not in self.tid_to_idx:
-            # Return zeros — collate_fn will drop these
             enc_dim = self.input_matrix.shape[1]
             z = torch.zeros(enc_dim)
             return z, z, torch.zeros(self.n_hard, enc_dim)
@@ -411,73 +335,22 @@ class ContrastiveDataset(Dataset):
         return anchor, positive, hard_negs
 
 
-class TransitionDataset(Dataset):
-    """
-    Returns (feature_vec, label_idx) for transition classification.
-
-    feature_vec = concat(emb_A[128], emb_B[128], delta_features[4]) = 260-dim
-    delta_features = [bpm_ratio, energy_delta, harmonic_dist, time_gap_norm]
-
-    Requires:
-      - transition_labels.csv: from_track_id, to_track_id, label, confidence
-      - features.parquet: must contain 128-dim projected embeddings (emb_proj_*)
-        produced by the contrastive encoder. Run this AFTER encoder training.
-    """
-
-    def __init__(
-        self, labels_df: pd.DataFrame, features: pd.DataFrame, label_encoder: LabelEncoder
-    ):
-        self.label_enc = label_encoder
-        feat_idx = features.set_index("track_id")
-        rows = []
-        for _, row in labels_df.iterrows():
-            tid_a, tid_b = row["from_track_id"], row["to_track_id"]
-            if tid_a not in feat_idx.index or tid_b not in feat_idx.index:
-                continue
-
-            fa = feat_idx.loc[tid_a]
-            fb = feat_idx.loc[tid_b]
-
-            emb_a = np.array(fa["embedding_proj"], dtype=np.float32)
-            emb_b = np.array(fb["embedding_proj"], dtype=np.float32)
-
-            bpm_ratio = float(fb["bpm"]) / max(float(fa["bpm"]), 1.0)
-            energy_delta = float(fb["energy_mean"]) - float(fa["energy_mean"])
-            harm_dist = _harmonic_dist(str(fa["key"]), str(fb["key"])) / HARM_DIST_MAX
-            _tg = row.get("time_gap_norm", TIME_GAP_NORM_DEFAULT)
-            time_gap = TIME_GAP_NORM_DEFAULT if pd.isna(_tg) else float(_tg)
-
-            delta = np.array([bpm_ratio, energy_delta, harm_dist, time_gap], dtype=np.float32)
-            vec = np.concatenate([emb_a, emb_b, delta])  # (260,)
-            label = label_encoder.transform([row["label"]])[0]
-            rows.append((vec, label))
-
-        self.data = rows
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        vec, label = self.data[idx]
-        return torch.tensor(vec), torch.tensor(label, dtype=torch.long)
-
-
 # ── Models ─────────────────────────────────────────────────────────────────────
 
 
 class ContrastiveEncoder(nn.Module):
     """
-    Projection head that maps 768-dim MERT embeddings → 128-dim unit hypersphere.
+    Projection head: 1280-dim discogs-effnet embeddings → 128-dim unit hypersphere.
 
     Architecture: Linear → BN → ReLU → Linear → L2-normalise
     BatchNorm before ReLU stabilises training when input scale varies across tracks.
     L2 normalisation forces all embeddings onto the unit sphere — required for
-    NT-Xent loss (which uses cosine similarity = dot product on unit sphere).
+    NT-Xent loss (cosine similarity = dot product on unit sphere).
 
-    The MERT backbone stays frozen. Only this head is trained (~200K params).
+    discogs-effnet backbone stays frozen. Only this head is trained (~400K params).
     """
 
-    def __init__(self, input_dim: int = 768, hidden_dim: int = 256, output_dim: int = 128):
+    def __init__(self, input_dim: int = 1280, hidden_dim: int = 256, output_dim: int = 128):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -488,33 +361,6 @@ class ContrastiveEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return F.normalize(self.net(x), dim=1)  # → unit hypersphere
-
-
-class TransitionClassifier(nn.Module):
-    """
-    6-class MLP classifying transition type between two consecutive tracks.
-
-    Input:  260-dim (concat of 128-dim projected embeddings A + B + 4 delta features)
-    Hidden: 128 → 64 with BatchNorm + Dropout for regularisation
-    Output: 6 logits (slam / melt / blend / rise / fade / wave)
-    """
-
-    def __init__(self, input_dim: int = 260, dropout: float = 0.3):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(64, len(TRANSITION_CLASSES)),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
 
 
 # ── NT-Xent Loss ───────────────────────────────────────────────────────────────
@@ -530,10 +376,7 @@ class NTXentLoss(nn.Module):
              + Σ_{j≠i} exp(sim(a_i, a_j) / τ)     ← in-batch negatives
              + Σ_k     exp(sim(a_i, h_ik) / τ)] )  ← hard negatives
 
-    Lower temperature τ → sharper distribution → harder training signal.
-    Too low (< 0.05) → numerical instability. Typical range: 0.05–0.2.
-
-    All vectors must be L2-normalised (encoder does this) so sim = dot product.
+    All vectors must be L2-normalised so sim = dot product.
     """
 
     def __init__(self, temperature: float = 0.07):
@@ -548,29 +391,20 @@ class NTXentLoss(nn.Module):
     ) -> torch.Tensor:
         B = anchors.size(0)
 
-        # Positive similarity: (B,)
         pos_sim = (anchors * positives).sum(dim=1) / self.temperature
 
-        # In-batch negative similarities: (B, B)
-        # sim(a_i, a_j) for all j — diagonal is self-similarity (excluded)
         batch_sim = torch.mm(anchors, anchors.T) / self.temperature
-        # Mask diagonal (self-similarity) with -inf so it's zeroed by softmax
         mask = torch.eye(B, device=anchors.device).bool()
         batch_sim = batch_sim.masked_fill(mask, float("-inf"))
 
-        # Concatenate: positives | in-batch negatives
-        # logits[:, 0] = positive sim, logits[:, 1:] = negative sims
         logits = torch.cat([pos_sim.unsqueeze(1), batch_sim], dim=1)  # (B, 1+B)
 
         if hard_negs is not None and hard_negs.size(1) > 0:
-            # hard_negs: (B, K, D). Normalise (may have been padded with zeros).
             hard_negs = F.normalize(hard_negs, dim=2)
-            # sim(a_i, h_ik): (B, K) via batched dot product
             hard_sim = torch.bmm(anchors.unsqueeze(1), hard_negs.transpose(1, 2))
             hard_sim = hard_sim.squeeze(1) / self.temperature  # (B, K)
             logits = torch.cat([logits, hard_sim], dim=1)  # (B, 1+B+K)
 
-        # Target: position 0 is always the positive pair
         targets = torch.zeros(B, dtype=torch.long, device=anchors.device)
         return F.cross_entropy(logits, targets)
 
@@ -587,29 +421,17 @@ def compute_contrastive_metrics(
     """
     Evaluate contrastive encoder quality on validation pairs.
 
-    Metrics logged to both MLflow and W&B:
-
-      alignment       Wang & Isola (2020): -mean||z_a - z_p||²  (higher = closer positives)
-      uniformity      log mean exp(-2||z_i - z_j||²) (lower = more spread, no collapse)
-      top1_retrieval  % of val anchors whose positive is their #1 nearest neighbor
-      top5_retrieval  % where positive is in top 5
-      top10_retrieval % where positive is in top 10
-      mean_pos_sim    mean cosine similarity of positive pairs (higher = better)
-      mean_neg_sim    mean cosine similarity of random non-pair tracks (should be low)
-      emb_variance    mean per-dim variance of projected embeddings (collapse = near 0)
-
-    Why these metrics matter:
-      - alignment + uniformity: theoretical guarantees from contrastive learning theory.
-        Good models should be both aligned (positives close) AND uniform (no mode collapse).
-      - top-K retrieval: practical DJ use case — if you query with track A, does track B
-        (the one that actually followed it in a real mix) come up first?
-      - emb_variance: mode collapse early warning. If variance → 0, all tracks map to
-        same point and the model is useless.
+    Metrics:
+      alignment       -mean||z_a - z_p||²  (higher = closer positives)
+      uniformity      log mean exp(-2||z_i - z_j||²) (lower = more spread)
+      top1/5/10_retrieval  % where positive is in top-K nearest neighbours
+      mean_pos_sim    mean cosine similarity of positive pairs
+      mean_neg_sim    mean cosine similarity of random non-pair tracks
+      emb_variance    mean per-dim variance (collapse early warning)
     """
     encoder.eval()
     input_matrix, tid_to_idx = _prepare_encoder_inputs(features)
 
-    # Project all val-involved tracks
     val_ids = list({tid for pair in val_pairs for tid in pair if tid in tid_to_idx})
     if not val_ids:
         return {}
@@ -621,24 +443,19 @@ def compute_contrastive_metrics(
 
     proj_idx = {tid: proj[i] for i, tid in enumerate(val_ids)}
 
-    # ── Alignment ──────────────────────────────────────────────────────────────
     valid_pairs = [(a, b) for a, b in val_pairs if a in proj_idx and b in proj_idx]
     if not valid_pairs:
         return {}
 
-    za = torch.stack([proj_idx[a] for a, _ in valid_pairs])  # (P, 128)
-    zp = torch.stack([proj_idx[b] for _, b in valid_pairs])  # (P, 128)
+    za = torch.stack([proj_idx[a] for a, _ in valid_pairs])
+    zp = torch.stack([proj_idx[b] for _, b in valid_pairs])
     alignment = -((za - zp) ** 2).sum(dim=1).mean().item()
 
-    # ── Uniformity ─────────────────────────────────────────────────────────────
-    # Sample up to 1000 embeddings to keep it fast
     sample = proj[: min(1000, len(proj))]
     sq_dists = torch.cdist(sample, sample, p=2) ** 2
     uniformity = torch.log(torch.exp(-2 * sq_dists).mean()).item()
 
-    # ── Top-K retrieval ────────────────────────────────────────────────────────
-    # For each anchor, rank all val tracks by cosine similarity, check positive rank.
-    all_proj = torch.stack([proj_idx[tid] for tid in val_ids])  # (N, 128)
+    all_proj = torch.stack([proj_idx[tid] for tid in val_ids])
     top1 = top5 = top10 = 0
     pos_sims = []
     neg_sims_list = []
@@ -646,14 +463,12 @@ def compute_contrastive_metrics(
     for tid_a, tid_b in valid_pairs:
         if tid_a not in proj_idx or tid_b not in proj_idx:
             continue
-        q = proj_idx[tid_a]  # (128,)
-        sims = torch.mv(all_proj, q)  # (N,) cosine sim (unit sphere)
-        # Exclude self (tid_a)
+        q = proj_idx[tid_a]
+        sims = torch.mv(all_proj, q)
         self_idx = val_ids.index(tid_a)
         sims[self_idx] = -2.0
         ranked = sims.argsort(descending=True).tolist()
         pos_rank = val_ids.index(tid_b)
-
         pos_sims.append(sims[pos_rank].item())
         rank = ranked.index(pos_rank) + 1
         if rank <= 1:
@@ -662,8 +477,6 @@ def compute_contrastive_metrics(
             top5 += 1
         if rank <= 10:
             top10 += 1
-
-        # Random non-pair similarity
         rand_idx = np.random.randint(0, len(val_ids))
         if val_ids[rand_idx] not in {tid_a, tid_b}:
             neg_sims_list.append(sims[rand_idx].item())
@@ -681,69 +494,7 @@ def compute_contrastive_metrics(
     }
 
 
-def compute_classifier_metrics(
-    model: TransitionClassifier,
-    loader: DataLoader,
-    device: torch.device,
-) -> dict:
-    """
-    Evaluate transition classifier. All metrics logged to MLflow + W&B.
-
-    Metrics:
-      val/cls_accuracy     overall accuracy
-      val/macro_f1         macro F1 — weights all 6 classes equally (catches imbalanced classes)
-      val/weighted_f1      weighted F1 — weighted by support (matches real-world frequency)
-      val/per_class_f1     dict of F1 per class (slam, melt, blend, rise, fade, wave)
-      val/confusion_matrix logged as W&B table for interactive inspection
-      val/mean_confidence  avg softmax prob on the predicted class (calibration proxy)
-
-    Why macro_f1 matters: if the dataset has 80% "melt" transitions and 5% "slam",
-    a model that always predicts "melt" gets 80% accuracy but 0% macro F1 on "slam".
-    Macro F1 catches this — it's the honest metric for imbalanced multiclass problems.
-    """
-    model.eval()
-    all_preds, all_labels, all_confs = [], [], []
-
-    with torch.no_grad():
-        for vecs, labels in loader:
-            vecs, labels = vecs.to(device), labels.to(device)
-            logits = model(vecs)
-            probs = F.softmax(logits, dim=1)
-            preds = probs.argmax(dim=1)
-            confs = probs.max(dim=1).values
-
-            all_preds.extend(preds.cpu().tolist())
-            all_labels.extend(labels.cpu().tolist())
-            all_confs.extend(confs.cpu().tolist())
-
-    report = classification_report(
-        all_labels,
-        all_preds,
-        target_names=TRANSITION_CLASSES,
-        output_dict=True,
-        zero_division=0,
-    )
-    per_class_f1 = {cls: report[cls]["f1-score"] for cls in TRANSITION_CLASSES if cls in report}
-
-    cm = confusion_matrix(all_labels, all_preds)
-    # Log confusion matrix as W&B Table — each row is a true class, columns are predicted
-    cm_table = wandb.Table(
-        columns=["true \\ pred"] + TRANSITION_CLASSES,
-        data=[[TRANSITION_CLASSES[i]] + cm[i].tolist() for i in range(len(cm))],
-    )
-
-    metrics = {
-        "val/cls_accuracy": accuracy_score(all_labels, all_preds),
-        "val/macro_f1": f1_score(all_labels, all_preds, average="macro", zero_division=0),
-        "val/weighted_f1": f1_score(all_labels, all_preds, average="weighted", zero_division=0),
-        "val/mean_confidence": float(np.mean(all_confs)),
-        "val/confusion_matrix": cm_table,
-        **{f"val/f1_{cls}": v for cls, v in per_class_f1.items()},
-    }
-    return metrics
-
-
-# ── Training loops ─────────────────────────────────────────────────────────────
+# ── Training loop ──────────────────────────────────────────────────────────────
 
 
 def train_contrastive(
@@ -756,7 +507,7 @@ def train_contrastive(
     hparams: dict,
 ) -> ContrastiveEncoder:
     """
-    Train the contrastive encoder for `encoder_epochs` epochs.
+    Train the contrastive encoder for encoder_epochs epochs.
 
     Each epoch:
       1. Mine hard negatives from ChromaDB (refreshes the cache)
@@ -787,21 +538,19 @@ def train_contrastive(
     MODELS_DIR.mkdir(exist_ok=True)
 
     for epoch in range(1, hparams["encoder_epochs"] + 1):
-        # Refresh hard negatives at the start of each epoch
         train_ds.mine_hard_negatives()
 
         encoder.train()
         epoch_loss = 0.0
         grad_norms = []
 
-        for batch_idx, (anchors, positives, hard_negs) in enumerate(loader):
+        for _batch_idx, (anchors, positives, hard_negs) in enumerate(loader):
             anchors = anchors.to(device)
             positives = positives.to(device)
             hard_negs = hard_negs.to(device)
 
             z_a = encoder(anchors)
             z_p = encoder(positives)
-            # Project hard negatives — flatten batch dim, encode, reshape
             B, K, D = hard_negs.shape
             z_h = encoder(hard_negs.view(B * K, D)).view(B, K, -1)
 
@@ -809,14 +558,11 @@ def train_contrastive(
 
             optimizer.zero_grad()
             loss.backward()
-            # Gradient clipping — prevents exploding gradients with hard negatives
             grad_norm = nn.utils.clip_grad_norm_(encoder.parameters(), max_norm=1.0)
             optimizer.step()
 
             epoch_loss += loss.item()
             grad_norms.append(grad_norm.item())
-
-            # W&B: log every batch for smooth loss curves
             wandb.log(
                 {
                     "train/loss": loss.item(),
@@ -830,11 +576,9 @@ def train_contrastive(
         avg_loss = epoch_loss / max(len(loader), 1)
         avg_grad = float(np.mean(grad_norms))
 
-        # MLflow: log epoch-level summary
         mlflow.log_metric("train/epoch_loss", avg_loss, step=epoch)
         mlflow.log_metric("train/grad_norm", avg_grad, step=epoch)
 
-        # Validation metrics every epoch
         val_metrics = compute_contrastive_metrics(encoder, val_pairs, features, device)
         for k, v in val_metrics.items():
             mlflow.log_metric(k, v, step=epoch)
@@ -861,87 +605,6 @@ def train_contrastive(
     return encoder
 
 
-def train_classifier(
-    classifier: TransitionClassifier,
-    train_ds: TransitionDataset,
-    val_ds: TransitionDataset,
-    device: torch.device,
-    hparams: dict,
-) -> TransitionClassifier:
-    """
-    Train the 6-class transition classifier.
-
-    Uses cross-entropy with class weights to handle label imbalance —
-    rare transition types (slam, wave) get upweighted so the model doesn't
-    ignore them in favour of the majority class (melt/blend).
-    """
-    train_loader = DataLoader(train_ds, batch_size=hparams["cls_batch_size"], shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=hparams["cls_batch_size"])
-
-    # Compute class weights from training set label distribution
-    label_counts = np.bincount(
-        [lbl for _, lbl in train_ds.data], minlength=len(TRANSITION_CLASSES)
-    )
-    weights = 1.0 / (label_counts + 1e-6)
-    weights /= weights.sum()
-    class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
-
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = torch.optim.AdamW(
-        classifier.parameters(),
-        lr=hparams["cls_lr"],
-        weight_decay=hparams["weight_decay"],
-    )
-
-    best_macro_f1 = 0.0
-
-    for epoch in range(1, hparams["cls_epochs"] + 1):
-        classifier.train()
-        epoch_loss = 0.0
-
-        for vecs, labels in train_loader:
-            vecs, labels = vecs.to(device), labels.to(device)
-            logits = classifier(vecs)
-            loss = criterion(logits, labels)
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            epoch_loss += loss.item()
-            wandb.log({"train/cls_loss": loss.item()})
-
-        avg_loss = epoch_loss / max(len(train_loader), 1)
-        mlflow.log_metric("train/cls_epoch_loss", avg_loss, step=epoch)
-
-        val_metrics = compute_classifier_metrics(classifier, val_loader, device)
-        macro_f1 = val_metrics.get("val/macro_f1", 0.0)
-
-        # W&B: log all metrics; confusion matrix is a Table (rendered interactively)
-        wandb.log({"epoch": epoch, **val_metrics})
-        for k, v in val_metrics.items():
-            if isinstance(v, (int, float)):
-                mlflow.log_metric(k, v, step=epoch)
-
-        log.info(
-            "[Classifier] epoch %d/%d  loss=%.4f  acc=%.3f  macro_f1=%.3f",
-            epoch,
-            hparams["cls_epochs"],
-            avg_loss,
-            val_metrics.get("val/cls_accuracy", 0),
-            macro_f1,
-        )
-
-        if macro_f1 > best_macro_f1:
-            best_macro_f1 = macro_f1
-            torch.save(classifier.state_dict(), CLASSIFIER_PATH)
-            log.info("  ↑ New best macro F1: %.3f → saved %s", best_macro_f1, CLASSIFIER_PATH)
-            mlflow.pytorch.log_model(classifier, artifact_path="classifier_best")
-
-    log.info("Classifier training done. Best macro F1: %.3f", best_macro_f1)
-    return classifier
-
-
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 
@@ -950,10 +613,10 @@ def train(
     hparams: dict | None = None,
 ) -> None:
     """
-    Full training pipeline: encoder → classifier.
+    Full training pipeline: contrastive encoder.
 
-    mlflow:  logs to ./mlruns/  — view with `mlflow ui --port 5000`
-    wandb:   logs to wandb.ai   — run `wandb login` once before calling this
+    mlflow: logs to ./mlruns/ — view with `mlflow ui --port 5000`
+    wandb:  logs to wandb.ai  — run `wandb login` once before calling this
 
     mix_csvs: list of CSV paths with mix tracklists. Defaults to romanFlugel.csv.
               Each CSV must have columns: mix_id, artist_name, track_name, starting_time.
@@ -967,11 +630,9 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
 
-    # ── Load features ──────────────────────────────────────────────────────────
     features = pd.read_parquet(FEATURES_PATH)
     log.info("Features loaded: %d tracks, %d columns", len(features), len(features.columns))
 
-    # ── Build consecutive pairs ────────────────────────────────────────────────
     train_pairs, val_pairs = build_consecutive_pairs(
         [Path(p) for p in mix_csvs],
         features,
@@ -980,28 +641,21 @@ def train(
     )
     positive_index = build_positive_index(train_pairs + val_pairs)
 
-    # ── ChromaDB ───────────────────────────────────────────────────────────────
     client = get_client(CHROMA_PATH)
     collection = get_collection(client)
     log.info("ChromaDB collection '%s': %d tracks", COLLECTION_NAME, collection.count())
 
-    # ── MLflow + W&B: start a single run covering both models ─────────────────
     mlflow.set_experiment("ai-dj-training")
-
-    # wandb.init groups all epochs under one run on the W&B dashboard.
-    # config=hparams stores all hyperparameters — visible in the run summary.
     wandb.init(
         project="ai-dj",
         name=f"run-{int(time.time())}",
         config=hparams,
-        tags=["contrastive", "transition-classifier"],
+        tags=["contrastive"],
     )
 
     with mlflow.start_run():
-        # Log all hyperparameters to MLflow in one call
         mlflow.log_params(hparams)
 
-        # ── Phase A: Contrastive encoder ───────────────────────────────────────
         log.info("=== Training contrastive encoder ===")
         encoder = ContrastiveEncoder(
             input_dim=hparams["encoder_input_dim"],
@@ -1019,15 +673,12 @@ def train(
             hard_neg_per_anchor=hparams["hard_neg_per_anchor"],
         )
 
-        # W&B model watcher: logs gradient histograms every 100 batches
         wandb.watch(encoder, log="gradients", log_freq=100)
-
         encoder = train_contrastive(
             encoder, criterion, train_ds, val_pairs, features, device, hparams
         )
 
-        # ── Phase B: Project all embeddings and add to features ────────────────
-        # The classifier needs 128-dim projected embeddings, not raw 768-dim MERT.
+        # Project all embeddings and persist to features.parquet
         log.info("Projecting all embeddings with trained encoder...")
         encoder.eval()
         input_matrix, _ = _prepare_encoder_inputs(features)
@@ -1039,41 +690,7 @@ def train(
         features.to_parquet(FEATURES_PATH, index=False)
         log.info("Projected embeddings written to %s", FEATURES_PATH)
 
-        # ── Phase C: Transition classifier (requires Phase 4 labels) ──────────
-        if not LABELS_PATH.exists():
-            log.warning(
-                "Transition labels not found at %s — skipping classifier training.\n"
-                "Run Phase 4 (transition_labeler.py) first, then re-run this script.",
-                LABELS_PATH,
-            )
-        else:
-            log.info("=== Training transition classifier ===")
-            labels_df = pd.read_csv(LABELS_PATH)
-
-            le = LabelEncoder()
-            le.fit(TRANSITION_CLASSES)
-
-            train_lbl, val_lbl = train_test_split(
-                labels_df,
-                test_size=hparams["val_split"],
-                stratify=labels_df["label"],
-                random_state=hparams["random_seed"],
-            )
-
-            cls_train_ds = TransitionDataset(train_lbl, features, le)
-            cls_val_ds = TransitionDataset(val_lbl, features, le)
-
-            classifier = TransitionClassifier(
-                input_dim=260,
-                dropout=hparams["cls_dropout"],
-            ).to(device)
-            wandb.watch(classifier, log="gradients", log_freq=100)
-
-            train_classifier(classifier, cls_train_ds, cls_val_ds, device, hparams)
-
         mlflow.log_artifact(str(ENCODER_PATH))
-        if CLASSIFIER_PATH.exists():
-            mlflow.log_artifact(str(CLASSIFIER_PATH))
 
     wandb.finish()
     log.info("Training complete. Models saved to %s/", MODELS_DIR)

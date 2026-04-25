@@ -159,7 +159,7 @@ async def test_fetch_previews_skips_existing(tmp_path):
 # Usage: pytest tests/test_data.py -v -m integration
 
 
-@pytest.mark.integration
+@pytest.mark.api
 async def test_itunes_downloads_real_file(tmp_path):
     """iTunes: get URL → download file → verify it is real audio."""
     import httpx
@@ -179,7 +179,7 @@ async def test_itunes_downloads_real_file(tmp_path):
     _assert_audio_file(dest)
 
 
-@pytest.mark.integration
+@pytest.mark.api
 async def test_spotify_credentials_work():
     """
     Spotify: credentials in .env are valid and the API responds without error.
@@ -215,7 +215,7 @@ async def test_spotify_credentials_work():
     print(f"\n  {len(found)}/{len(candidates)} tracks still have Spotify previews")
 
 
-@pytest.mark.integration
+@pytest.mark.api
 async def test_spotify_downloads_if_preview_available(tmp_path):
     """
     If Spotify returns a preview URL for any track, verify it downloads correctly.

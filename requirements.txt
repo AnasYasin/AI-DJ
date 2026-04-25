@@ -10,17 +10,21 @@ python-dotenv
 ruff
 
 # ── audio processing ───────────────────────────────────────────────────────────
-librosa==0.10.2        # BPM, key, onset, energy — the DSP workhorse
+librosa==0.10.2        # onset, energy, MFCC, spectral features — the DSP workhorse
 soundfile==0.12.1      # reads MP3/WAV cleanly; librosa depends on it internally
 pyloudnorm             # LUFS loudness measurement (build_features.py)
 beautifulsoup4         # HTML parsing for MixesDB scraper (mixesdb_client.py)
-scipy                  # butterworth filters for audio mixing; spearmanr in train_model.py
-scikit-learn           # LabelEncoder, train_test_split, metrics in train_model.py
+scipy                  # butterworth filters for audio mixing
+scikit-learn           # metrics and utilities
 
 # ── ML / embeddings ────────────────────────────────────────────────────────────
-torch==2.2.2           # PyTorch — all model code lives here
-transformers==4.41.0   # HuggingFace — loads CLAP (laion/clap-htsat-unfused)
+torch                  # PyTorch — contrastive encoder training
 numpy==1.26.4
+
+# ── essentia (key, discogs-effnet embeddings) ──────────────────────────────────
+essentia               # KeyExtractor — installed via conda/pip
+essentia-tensorflow    # TensorflowPredictEffnetDiscogs (discogs-effnet 1280-dim)
+deeprhythm             # DeepRhythm CNN BPM estimator (replaces RhythmExtractor2013)
 
 # ── audio preview fetching ─────────────────────────────────────────────────────
 yt-dlp                 # SoundCloud fallback previews (30s MP3 via scsearch + ffmpeg)

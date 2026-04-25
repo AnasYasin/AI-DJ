@@ -1,4 +1,4 @@
-"""Tests for feature extraction: CLAPEmbedder and LibrosaExtractor."""
+"""Tests for feature extraction: DiscogsEmbedder and LibrosaExtractor."""
 
 from unittest.mock import MagicMock
 
@@ -7,18 +7,35 @@ import pandas as pd
 import pytest
 
 from src.features.build_features import (
-    _CHROMA_TO_NOTE,
+    VALID_KEYS,
+    DiscogsEmbedder,
     LibrosaExtractor,
-    MERTEmbedder,
     build_features,
 )
+
+_FAKE_LIBROSA_FEATS = {
+    "bpm": 128.0,
+    "key": "Am",
+    "loudness_lufs": -14.0,
+    "energy_mean": 0.1,
+    "energy_std": 0.02,
+    "spectral_centroid": 3000.0,
+    "onset_strength": 0.5,
+    **{f"mfcc_{i}": float(i) for i in range(13)},
+}
+
+_FAKE_EMBEDDING = np.ones(1280, dtype=np.float32)
+
 
 # ── LibrosaExtractor ───────────────────────────────────────────────────────────
 # Uses tmp_audio_file fixture from conftest.py (5s sine wave WAV).
 # No network, no model download.
 
 
-def test_librosa_returns_all_expected_keys(tmp_audio_file):
+def test_librosa_returns_all_expected_keys(tmp_audio_file, monkeypatch):
+    monkeypatch.setattr(
+        "deeprhythm.DeepRhythmPredictor.predict_from_audio", lambda self, a, sr: 128.0
+    )
     ext = LibrosaExtractor()
     result = ext.extract(tmp_audio_file)
     assert result is not None
@@ -36,16 +53,25 @@ def test_librosa_returns_all_expected_keys(tmp_audio_file):
         assert f"mfcc_{i}" in result, f"Missing mfcc_{i}"
 
 
-def test_librosa_bpm_is_positive(tmp_audio_file):
+def test_librosa_bpm_is_positive(tmp_audio_file, monkeypatch):
+    monkeypatch.setattr(
+        "deeprhythm.DeepRhythmPredictor.predict_from_audio", lambda self, a, sr: 128.0
+    )
     assert LibrosaExtractor().extract(tmp_audio_file)["bpm"] > 0
 
 
-def test_librosa_key_is_valid_note(tmp_audio_file):
+def test_librosa_key_is_valid_note(tmp_audio_file, monkeypatch):
+    monkeypatch.setattr(
+        "deeprhythm.DeepRhythmPredictor.predict_from_audio", lambda self, a, sr: 128.0
+    )
     result = LibrosaExtractor().extract(tmp_audio_file)
-    assert result["key"] in _CHROMA_TO_NOTE, f"Unknown key: {result['key']}"
+    assert result["key"] in VALID_KEYS, f"Unknown key: {result['key']}"
 
 
-def test_librosa_energy_mean_is_positive(tmp_audio_file):
+def test_librosa_energy_mean_is_positive(tmp_audio_file, monkeypatch):
+    monkeypatch.setattr(
+        "deeprhythm.DeepRhythmPredictor.predict_from_audio", lambda self, a, sr: 128.0
+    )
     assert LibrosaExtractor().extract(tmp_audio_file)["energy_mean"] > 0
 
 
@@ -53,63 +79,51 @@ def test_librosa_returns_none_for_missing_file():
     assert LibrosaExtractor().extract("/nonexistent/path/track.mp3") is None
 
 
-# ── CLAPEmbedder ───────────────────────────────────────────────────────────────
-# CLAP downloads ~860MB on first run — marked slow, skip with: pytest -m "not slow"
-# Run explicitly with: pytest tests/test_features.py -v -m slow
+# ── DiscogsEmbedder ────────────────────────────────────────────────────────────
+# Requires discogs-effnet model file (~100MB) — marked slow.
+# Skip with: pytest -m "not slow"
+# Run explicitly: pytest tests/test_features.py -v -m slow
 
 
-@pytest.mark.slow
-def test_mert_embedding_shape(tmp_audio_file):
-    """MERT must return exactly 768 dimensions."""
-    result = MERTEmbedder().embed(tmp_audio_file)
+@pytest.mark.dl_model
+def test_discogs_embedding_shape(tmp_audio_file):
+    """discogs-effnet must return exactly 1280 dimensions."""
+    result = DiscogsEmbedder().embed(tmp_audio_file)
     assert result is not None
-    assert result.shape == (768,), f"Expected (768,), got {result.shape}"
+    assert result.shape == (1280,), f"Expected (1280,), got {result.shape}"
 
 
-@pytest.mark.slow
-def test_mert_embedding_is_finite(tmp_audio_file):
+@pytest.mark.dl_model
+def test_discogs_embedding_is_finite(tmp_audio_file):
     """Embedding must not contain NaN or Inf — corrupts downstream training."""
-    result = MERTEmbedder().embed(tmp_audio_file)
+    result = DiscogsEmbedder().embed(tmp_audio_file)
     assert np.all(np.isfinite(result)), "Embedding contains NaN or Inf"
 
 
-@pytest.mark.slow
-def test_mert_same_audio_gives_same_embedding(tmp_audio_file):
-    """MERT is deterministic — same audio must produce identical embeddings."""
-    embedder = MERTEmbedder()
+@pytest.mark.dl_model
+def test_discogs_same_audio_gives_same_embedding(tmp_audio_file):
+    """discogs-effnet is deterministic — same audio must produce identical embeddings."""
+    embedder = DiscogsEmbedder()
     np.testing.assert_array_equal(embedder.embed(tmp_audio_file), embedder.embed(tmp_audio_file))
 
 
-@pytest.mark.slow
-def test_mert_returns_none_for_missing_file():
-    assert MERTEmbedder().embed("/nonexistent/path/track.mp3") is None
+@pytest.mark.dl_model
+def test_discogs_returns_none_for_missing_file():
+    assert DiscogsEmbedder().embed("/nonexistent/path/track.mp3") is None
 
 
-# ── build_features (mocked — no model load, no real audio) ────────────────────
+# ── build_features --mode both (default) ──────────────────────────────────────
 
 
 def test_build_features_creates_parquet(tmp_path, monkeypatch):
-    """
-    build_features() writes features.parquet with correct columns.
-    Extractors are monkeypatched — no model or real audio needed.
-    """
-    manifest_path = tmp_path / "manifest.csv"
-    pd.DataFrame(
-        {
-            "track_id": ["abc123"],
-            "artist": ["Test Artist"],
-            "track_name": ["Test Track"],
-            "source": ["itunes"],
-            "local_path": ["/fake/path.mp3"],
-        }
-    ).to_csv(manifest_path, index=False)
-
+    """build_features() writes features.parquet with embedding + audio feature columns."""
+    manifest_path = _write_manifest(tmp_path, ["abc123"])
     features_path = tmp_path / "features.parquet"
-    _patch_extractors(monkeypatch, features_path)
+    _patch_both(monkeypatch, features_path)
 
     result = build_features(str(manifest_path))
 
-    assert features_path.exists(), "features.parquet was not created"
+    assert features_path.exists()
     assert len(result) == 1
     assert "embedding" in result.columns
     assert "bpm" in result.columns
@@ -129,9 +143,8 @@ def test_build_features_skips_not_found_tracks(tmp_path, monkeypatch):
             "local_path": ["/fake/path.mp3", None],
         }
     ).to_csv(manifest_path, index=False)
-
     features_path = tmp_path / "features.parquet"
-    _patch_extractors(monkeypatch, features_path)
+    _patch_both(monkeypatch, features_path)
 
     result = build_features(str(manifest_path))
 
@@ -141,49 +154,212 @@ def test_build_features_skips_not_found_tracks(tmp_path, monkeypatch):
 
 def test_build_features_is_idempotent(tmp_path, monkeypatch):
     """Running build_features twice must not duplicate rows."""
-    manifest_path = tmp_path / "manifest.csv"
-    pd.DataFrame(
-        {
-            "track_id": ["abc123"],
-            "artist": ["A"],
-            "track_name": ["T"],
-            "source": ["itunes"],
-            "local_path": ["/fake/path.mp3"],
-        }
-    ).to_csv(manifest_path, index=False)
-
+    manifest_path = _write_manifest(tmp_path, ["abc123"])
     features_path = tmp_path / "features.parquet"
-    _patch_extractors(monkeypatch, features_path)
+    _patch_both(monkeypatch, features_path)
 
-    build_features(str(manifest_path))  # first run
-    result = build_features(str(manifest_path))  # second run — must skip existing
+    build_features(str(manifest_path))
+    result = build_features(str(manifest_path))
 
     assert len(result) == 1, f"Expected 1 row, got {len(result)} — idempotency broken"
 
 
-# ── Shared test helper ─────────────────────────────────────────────────────────
+# ── build_features --mode discogs-only ────────────────────────────────────────
 
 
-def _patch_extractors(monkeypatch, features_path):
-    """Patch both extractors and FEATURES_PATH for unit tests."""
-    fake_librosa = {
-        "bpm": 128.0,
-        "key": "Am",
-        "loudness_lufs": -14.0,
-        "energy_mean": 0.1,
-        "energy_std": 0.02,
-        "spectral_centroid": 3000.0,
-        "onset_strength": 0.5,
-        **{f"mfcc_{i}": float(i) for i in range(13)},
-    }
+def test_discogs_only_output_columns(tmp_path, monkeypatch):
+    """discogs-only must write track_id + embedding only — no audio features."""
+    manifest_path = _write_manifest(tmp_path, ["abc123"])
+    embeddings_path = tmp_path / "embeddings.parquet"
+    _patch_discogs_only(monkeypatch, embeddings_path)
+
+    result = build_features(str(manifest_path), mode="discogs-only")
+
+    assert embeddings_path.exists()
+    assert len(result) == 1
+    assert "embedding" in result.columns
+    assert "bpm" not in result.columns
+    assert "key" not in result.columns
+
+
+def test_discogs_only_is_resumable(tmp_path, monkeypatch):
+    """Re-running discogs-only must skip already-embedded track_ids."""
+    manifest_path = _write_manifest(tmp_path, ["abc123"])
+    embeddings_path = tmp_path / "embeddings.parquet"
+    _patch_discogs_only(monkeypatch, embeddings_path)
+
+    build_features(str(manifest_path), mode="discogs-only")
+    result = build_features(str(manifest_path), mode="discogs-only")
+
+    assert len(result) == 1, f"Expected 1 row, got {len(result)} — resumability broken"
+
+
+# ── build_features --mode librosa-only ────────────────────────────────────────
+
+
+def test_librosa_only_does_not_require_embeddings_parquet(tmp_path, monkeypatch):
+    """librosa-only must run without embeddings.parquet — core of the split-machine workflow."""
+    manifest_path = _write_manifest(tmp_path, ["abc123"])
+    librosa_path = tmp_path / "librosa_features.parquet"
+    _patch_librosa_only(monkeypatch, librosa_path)
+    # Point EMBEDDINGS_PATH at a nonexistent file to prove it is never read
+    monkeypatch.setattr(
+        "src.features.build_features.EMBEDDINGS_PATH", tmp_path / "nonexistent.parquet"
+    )
+
+    result = build_features(str(manifest_path), mode="librosa-only")
+
+    assert librosa_path.exists()
+    assert len(result) == 1
+    assert "bpm" in result.columns
+    assert "embedding" not in result.columns
+
+
+def test_librosa_only_is_resumable(tmp_path, monkeypatch):
+    """Re-running librosa-only must skip already-processed track_ids."""
+    manifest_path = _write_manifest(tmp_path, ["abc123"])
+    librosa_path = tmp_path / "librosa_features.parquet"
+    _patch_librosa_only(monkeypatch, librosa_path)
+
+    build_features(str(manifest_path), mode="librosa-only")
+    result = build_features(str(manifest_path), mode="librosa-only")
+
+    assert len(result) == 1, f"Expected 1 row, got {len(result)} — resumability broken"
+
+
+# ── build_features --mode merge ───────────────────────────────────────────────
+
+
+def test_merge_joins_on_track_id(tmp_path, monkeypatch):
+    """merge must inner-join embeddings + librosa features on track_id → features.parquet."""
+    embeddings_path = tmp_path / "embeddings.parquet"
+    librosa_path = tmp_path / "librosa_features.parquet"
+    features_path = tmp_path / "features.parquet"
+
+    pd.DataFrame(
+        {"track_id": ["t1", "t2"], "embedding": [_FAKE_EMBEDDING.tolist()] * 2}
+    ).to_parquet(embeddings_path, index=False)
+    pd.DataFrame(
+        {"track_id": ["t1", "t2"], **{k: [v, v] for k, v in _FAKE_LIBROSA_FEATS.items()}}
+    ).to_parquet(librosa_path, index=False)
+
+    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
+    monkeypatch.setattr("src.features.build_features.LIBROSA_FEATURES_PATH", librosa_path)
+    monkeypatch.setattr("src.features.build_features.FEATURES_PATH", features_path)
+
+    result = build_features(mode="merge")
+
+    assert features_path.exists()
+    assert len(result) == 2
+    assert "embedding" in result.columns
+    assert "bpm" in result.columns
+    assert set(result["track_id"]) == {"t1", "t2"}
+
+
+def test_merge_inner_joins_partial_librosa(tmp_path, monkeypatch):
+    """merge must drop tracks missing from librosa_features (inner join)."""
+    embeddings_path = tmp_path / "embeddings.parquet"
+    librosa_path = tmp_path / "librosa_features.parquet"
+    features_path = tmp_path / "features.parquet"
+
+    pd.DataFrame(
+        {"track_id": ["t1", "t2"], "embedding": [_FAKE_EMBEDDING.tolist()] * 2}
+    ).to_parquet(embeddings_path, index=False)
+    pd.DataFrame(
+        {"track_id": ["t1"], **{k: [v] for k, v in _FAKE_LIBROSA_FEATS.items()}}
+    ).to_parquet(librosa_path, index=False)
+
+    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
+    monkeypatch.setattr("src.features.build_features.LIBROSA_FEATURES_PATH", librosa_path)
+    monkeypatch.setattr("src.features.build_features.FEATURES_PATH", features_path)
+
+    result = build_features(mode="merge")
+
+    assert len(result) == 1
+    assert result.iloc[0]["track_id"] == "t1"
+
+
+def test_merge_raises_if_embeddings_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.features.build_features.EMBEDDINGS_PATH", tmp_path / "missing_emb.parquet"
+    )
+    monkeypatch.setattr(
+        "src.features.build_features.LIBROSA_FEATURES_PATH", tmp_path / "missing_lib.parquet"
+    )
+    with pytest.raises(FileNotFoundError):
+        build_features(mode="merge")
+
+
+def test_merge_raises_if_librosa_features_missing(tmp_path, monkeypatch):
+    embeddings_path = tmp_path / "embeddings.parquet"
+    pd.DataFrame({"track_id": ["t1"], "embedding": [_FAKE_EMBEDDING.tolist()]}).to_parquet(
+        embeddings_path, index=False
+    )
+    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
+    monkeypatch.setattr(
+        "src.features.build_features.LIBROSA_FEATURES_PATH", tmp_path / "missing.parquet"
+    )
+    with pytest.raises(FileNotFoundError):
+        build_features(mode="merge")
+
+
+# ── Shared helpers ─────────────────────────────────────────────────────────────
+
+
+def _write_manifest(tmp_path, track_ids: list[str]):
+    path = tmp_path / "manifest.csv"
+    pd.DataFrame(
+        {
+            "track_id": track_ids,
+            "artist": ["Artist"] * len(track_ids),
+            "track_name": ["Track"] * len(track_ids),
+            "source": ["itunes"] * len(track_ids),
+            "local_path": ["/fake/path.mp3"] * len(track_ids),
+        }
+    ).to_csv(path, index=False)
+    return path
+
+
+def _patch_both(monkeypatch, features_path):
+    """Patch all extractors + FEATURES_PATH for --mode both tests."""
     fake_muta = MagicMock()
     fake_muta.info.length = 5.0
     monkeypatch.setattr("src.features.build_features.MutaFile", lambda p: fake_muta)
     monkeypatch.setattr(
-        "src.features.build_features.MERTEmbedder.embed_batch",
-        lambda self, paths: [np.random.rand(768).astype(np.float32) for _ in paths],
+        "src.features.build_features.DiscogsEmbedder.__init__",
+        lambda self, *args, **kwargs: None,
     )
     monkeypatch.setattr(
-        "src.features.build_features.LibrosaExtractor.extract", lambda self, p: fake_librosa
+        "src.features.build_features.DiscogsEmbedder.embed",
+        lambda self, p: _FAKE_EMBEDDING.copy(),
+    )
+    monkeypatch.setattr(
+        "src.features.build_features.LibrosaExtractor.extract",
+        lambda self, p: _FAKE_LIBROSA_FEATS.copy(),
     )
     monkeypatch.setattr("src.features.build_features.FEATURES_PATH", features_path)
+
+
+def _patch_discogs_only(monkeypatch, embeddings_path):
+    """Patch discogs extractor + EMBEDDINGS_PATH for --mode discogs-only tests."""
+    fake_muta = MagicMock()
+    fake_muta.info.length = 5.0
+    monkeypatch.setattr("src.features.build_features.MutaFile", lambda p: fake_muta)
+    monkeypatch.setattr(
+        "src.features.build_features.DiscogsEmbedder.__init__",
+        lambda self, *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "src.features.build_features.DiscogsEmbedder.embed",
+        lambda self, p: _FAKE_EMBEDDING.copy(),
+    )
+    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
+
+
+def _patch_librosa_only(monkeypatch, librosa_path):
+    """Patch librosa extractor + LIBROSA_FEATURES_PATH for --mode librosa-only tests."""
+    monkeypatch.setattr(
+        "src.features.build_features.LibrosaExtractor.extract",
+        lambda self, p: _FAKE_LIBROSA_FEATS.copy(),
+    )
+    monkeypatch.setattr("src.features.build_features.LIBROSA_FEATURES_PATH", librosa_path)
