@@ -6,7 +6,7 @@ into a ChromaDB persistent collection named "tracks".
 
 Each entry stores:
   id        — track_id (12-char MD5 hex, stable across runs)
-  embedding — MERT 768-dim vector (used for cosine nearest-neighbor search)
+  embedding — discogs-effnet 1280-dim vector (used for cosine nearest-neighbor search)
   metadata  — librosa features + genre + dj_name (joined from tracklist_clean.csv)
   document  — "Artist - Track Name" (human-readable label)
 
@@ -263,7 +263,7 @@ def query_hard_negatives(
 
     Args:
         collection:   ChromaDB collection to search.
-        embedding:    768-dim MERT vector of the anchor track.
+        embedding:    1280-dim discogs-effnet vector of the anchor track.
         n_results:    How many hard negatives to return.
         exclude_ids:  Track IDs to unconditionally exclude.
                       In Phase 5 this MUST include:
