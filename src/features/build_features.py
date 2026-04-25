@@ -210,7 +210,8 @@ class DiscogsEmbedderGPU:
     def _load_patches(self, args: tuple[int, str]) -> tuple[int, np.ndarray | None]:
         i, path = args
         try:
-            y, _ = _load_audio(path, self.SAMPLE_RATE)
+            # SIGALRM is not thread-safe; MutaFile pre-validates files so hangs are unlikely
+            y, _ = librosa.load(path, sr=self.SAMPLE_RATE, mono=True)
             return i, self._mel_patches(y)
         except Exception as e:
             log.warning("  audio load failed %s: %s", path, e)
