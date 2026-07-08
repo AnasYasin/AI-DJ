@@ -7,27 +7,21 @@ Input:   1280-dim discogs-effnet embedding + 7 normalised librosa features:
            encoding), energy_mean, onset_norm (onset/5), lufs_norm
 Loss:    NT-Xent (temperature-scaled cross-entropy)
 Signal:  consecutive tracks in a DJ mix = positive pairs
-Negatives: in-batch + semi-hard negatives mined from ChromaDB
-           (ChromaDB queries use raw 1280-dim discogs-effnet embeddings)
+Negatives: in-batch (genre-blocked batches, known positives masked)
+           + semi-hard negatives mined from ChromaDB (genre-filtered)
+Split:   mix-level, from data/processed/split_mixes.csv (15% val per genre)
 Output:  128-dim "mixability" embedding on the unit hypersphere
 Saved:   models/contrastive_encoder.pt
 
-Logs to MLflow (experiment registry) AND W&B (live dashboard).
-
-MLflow setup:
-  mlflow ui --port 5000          → http://localhost:5000
-  Or: docker-compose up mlflow
-
-W&B setup (one-time):
-  wandb login                    → paste API key from wandb.ai/settings
+Logs to MLflow (experiment registry) AND W&B (live dashboard, disabled if not
+logged in).
 
 Run:
-  conda activate djtest
   python src/models/train_model.py
 """
 
-import hashlib
 import logging
+from collections import defaultdict
 from pathlib import Path
 import time
 
@@ -39,17 +33,14 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 import wandb
 
 from src.features.vector_store import (
     CHROMA_PATH,
     COLLECTION_NAME,
-    HARD_NEG_MAX_DISTANCE,
-    HARD_NEG_MIN_DISTANCE,
     get_client,
     get_collection,
-    query_hard_negatives,
 )
 
 log = logging.getLogger(__name__)
@@ -57,6 +48,8 @@ log = logging.getLogger(__name__)
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
 FEATURES_PATH = Path("data/processed/features.parquet")
+TRACKLIST_PATH = Path("data/processed/tracklist_clean.csv")
+SPLIT_PATH = Path("data/processed/split_mixes.csv")
 MODELS_DIR = Path("models")
 ENCODER_PATH = MODELS_DIR / "contrastive_encoder.pt"
 
@@ -72,11 +65,13 @@ HPARAMS = {
     "encoder_epochs": 50,
     "encoder_batch_size": 128,
     "hard_neg_per_anchor": 5,
-    "hard_neg_min_dist": HARD_NEG_MIN_DISTANCE,
-    "hard_neg_max_dist": HARD_NEG_MAX_DISTANCE,
+    "hard_neg_refresh_epochs": 5,  # re-mine ChromaDB negatives every N epochs
+    # Semi-hard band calibrated on the fixed embeddings (2026-07-07):
+    # consecutive-pair cosine dist p10 = 0.147, within-genre random p60 = 0.413.
+    "hard_neg_min_dist": 0.15,
+    "hard_neg_max_dist": 0.40,
     # Shared
     "weight_decay": 1e-4,
-    "val_split": 0.2,
     "random_seed": 42,
 }
 
@@ -129,110 +124,83 @@ def _prepare_encoder_inputs(features: pd.DataFrame) -> tuple[np.ndarray, dict[st
       onset     / 5.0         → [0, 1] for librosa's raw onset scale
       lufs      (x+40)/40     → [0, 1] mapping −40…0 LUFS
 
+    Expensive (~10s for 28k tracks) — call ONCE and pass the result around.
+
     Returns:
         matrix     (N, 1287) float32 array, row order matches features rows
         tid_to_idx track_id → row index in matrix
     """
-    n = len(features)
-    matrix = np.zeros((n, 1280 + ENCODER_EXTRA_DIM), dtype=np.float32)
-    tid_to_idx: dict[str, int] = {}
+    emb = np.stack([np.asarray(e, dtype=np.float32) for e in features["embedding"]])
 
-    for idx, (_, row) in enumerate(features.iterrows()):
-        tid = row["track_id"]
-        tid_to_idx[tid] = idx
+    bpm_norm = features["bpm"].to_numpy(dtype=np.float32) / 200.0
+    keys = features["key"].astype(str)
+    camelot = keys.map(_CAMELOT).fillna(1).to_numpy(dtype=np.float32)
+    angle = 2 * np.pi * camelot / 12
+    key_sin = np.sin(angle).astype(np.float32)
+    key_cos = np.cos(angle).astype(np.float32)
+    key_mode = (~keys.str.endswith("m")).to_numpy(dtype=np.float32)  # minor=0, major=1
+    energy = features["energy_mean"].to_numpy(dtype=np.float32)
+    onset_norm = np.minimum(features["onset_strength"].to_numpy(dtype=np.float32) / 5.0, 1.0)
+    lufs_norm = np.clip(
+        (features["loudness_lufs"].to_numpy(dtype=np.float32) + 40.0) / 40.0, 0.0, 1.0
+    )
 
-        emb = np.asarray(row["embedding"], dtype=np.float32)
-
-        bpm_norm = float(row["bpm"]) / 200.0
-        camelot = _CAMELOT.get(str(row["key"]), 1)
-        angle = 2 * np.pi * camelot / 12
-        key_sin = float(np.sin(angle))
-        key_cos = float(np.cos(angle))
-        key_mode = 0.0 if str(row["key"]).endswith("m") else 1.0  # minor=0, major=1
-        energy = float(row["energy_mean"])
-        onset_norm = min(float(row["onset_strength"]) / 5.0, 1.0)
-        lufs_norm = float(np.clip((float(row["loudness_lufs"]) + 40.0) / 40.0, 0.0, 1.0))
-
-        extra = np.array(
-            [bpm_norm, key_sin, key_cos, key_mode, energy, onset_norm, lufs_norm], dtype=np.float32
-        )
-        matrix[idx] = np.concatenate([emb, extra])
-
+    extra = np.stack(
+        [bpm_norm, key_sin, key_cos, key_mode, energy, onset_norm, lufs_norm], axis=1
+    ).astype(np.float32)
+    matrix = np.concatenate([emb, extra], axis=1)
+    tid_to_idx = {tid: idx for idx, tid in enumerate(features["track_id"])}
     return matrix, tid_to_idx
 
 
 # ── Pair building ──────────────────────────────────────────────────────────────
 
 
-def _track_id(artist: str, track: str) -> str:
-    """Same deterministic ID as preview_fetcher.py."""
-    return hashlib.md5(f"{artist}|{track}".lower().encode()).hexdigest()[:12]
-
-
 def build_consecutive_pairs(
-    mix_csvs: list[Path],
+    tracklist_csv: str | Path,
     features: pd.DataFrame,
-    val_split: float = 0.2,
-    seed: int = 42,
+    split_csv: str | Path = SPLIT_PATH,
 ) -> tuple[list[tuple], list[tuple]]:
     """
-    Read mix CSVs (each has mix_id, artist_name, track_name, starting_time).
-    Return (train_pairs, val_pairs) where each pair = (track_id_A, track_id_B).
+    Build (track_id_A, track_id_B, genre) triples from consecutive tracks in each mix.
 
-    Splitting is done at the MIX level (not pair level) to prevent data leakage —
-    no mix appears in both train and val.
+    Split is read from split_mixes.csv (mix-level, stratified per genre) so
+    train/val is stable across runs and no mix leaks across the boundary.
     """
-    all_pairs: dict[str, list[tuple]] = {}
+    df = pd.read_csv(tracklist_csv)
+    split = pd.read_csv(split_csv).set_index("mix_id")["split"]
     feat_ids = set(features["track_id"])
 
-    for csv_path in mix_csvs:
-        df = pd.read_csv(csv_path)
+    pairs = {"train": [], "val": []}
+    for mix_id, group in df.groupby("mix_id"):
+        which = split.get(mix_id)
+        if which not in ("train", "val"):
+            continue
+        if "play_type" in group.columns:
+            group = group[group["play_type"] == "sequential"]
+        if not group["starting_time"].isna().any():
+            group = group.sort_values("starting_time")
 
-        for mix_id, group in df.groupby("mix_id"):
-            if "play_type" in group.columns:
-                group = group[group["play_type"] == "sequential"]
+        genre = group["genre"].iloc[0]
+        tids = group["track_id"].tolist()
+        pairs[which] += [
+            (a, b, genre)
+            for a, b in zip(tids, tids[1:])
+            if a != b and a in feat_ids and b in feat_ids
+        ]
 
-            if group["starting_time"].isna().any():
-                group = group.reset_index(drop=True)
-            else:
-                group = group.sort_values("starting_time").reset_index(drop=True)
-
-            all_tids = [_track_id(r["artist_name"], r["track_name"]) for _, r in group.iterrows()]
-
-            pairs = [
-                (all_tids[i], all_tids[i + 1])
-                for i in range(len(all_tids) - 1)
-                if all_tids[i] in feat_ids and all_tids[i + 1] in feat_ids
-            ]
-            if pairs:
-                all_pairs[str(mix_id)] = pairs
-
-    mix_ids = list(all_pairs.keys())
-    rng = np.random.default_rng(seed)
-    rng.shuffle(mix_ids)
-    split = int(len(mix_ids) * (1 - val_split))
-    train_mixes, val_mixes = mix_ids[:split], mix_ids[split:]
-
-    train_pairs = [p for mid in train_mixes for p in all_pairs[mid]]
-    val_pairs = [p for mid in val_mixes for p in all_pairs[mid]]
-
-    log.info(
-        "Pairs — train: %d (%d mixes), val: %d (%d mixes)",
-        len(train_pairs),
-        len(train_mixes),
-        len(val_pairs),
-        len(val_mixes),
-    )
-    return train_pairs, val_pairs
+    log.info("Pairs — train: %d, val: %d", len(pairs["train"]), len(pairs["val"]))
+    return pairs["train"], pairs["val"]
 
 
 def build_positive_index(pairs: list[tuple]) -> dict[str, set[str]]:
     """
     Build a lookup: track_id → set of track_ids that it positively pairs with.
-    Used in hard negative mining to exclude all known positives.
+    Used to exclude known positives from hard negatives AND to mask false
+    negatives inside in-batch similarity.
     """
     index: dict[str, set] = {}
-    for a, b in pairs:
+    for a, b, _genre in pairs:
         index.setdefault(a, set()).add(b)
         index.setdefault(b, set()).add(a)
     return index
@@ -243,73 +211,88 @@ def build_positive_index(pairs: list[tuple]) -> dict[str, set[str]]:
 
 class ContrastiveDataset(Dataset):
     """
-    Returns (anchor_emb, positive_emb, hard_neg_embs) tensors.
+    Returns (anchor_emb, positive_emb, hard_neg_embs, tid_a, tid_b).
 
-    Hard negatives are pre-mined at the start of each epoch by querying ChromaDB.
-    Pre-mining is faster than querying per-batch and produces stable negatives
-    within an epoch.
+    Hard negatives are pre-mined from ChromaDB (genre-filtered, semi-hard
+    distance band) every `hard_neg_refresh_epochs` epochs.
     """
 
     def __init__(
         self,
         pairs: list[tuple],
-        features: pd.DataFrame,
+        input_matrix: np.ndarray,
+        tid_to_idx: dict[str, int],
+        genre_of: dict[str, str],
         positive_index: dict[str, set],
         collection: chromadb.Collection,
-        hard_neg_per_anchor: int = 5,
+        hparams: dict,
+        query_matrix: np.ndarray | None = None,
     ):
         self.pairs = pairs
+        self.input_matrix = input_matrix
+        # raw effnet vectors for ChromaDB queries (index stores raw embeddings;
+        # input_matrix may be z-scored and would mismatch)
+        self.query_matrix = query_matrix if query_matrix is not None else input_matrix[:, :1280]
+        self.tid_to_idx = tid_to_idx
+        self.genre_of = genre_of
         self.pos_index = positive_index
         self.collection = collection
-        self.n_hard = hard_neg_per_anchor
-
-        # Augmented inputs for encoder training (discogs-effnet + librosa features)
-        self.input_matrix, self.tid_to_idx = _prepare_encoder_inputs(features)
-        # Raw 1280-dim discogs-effnet embeddings for ChromaDB ANN queries
-        raw = features.set_index("track_id")["embedding"]
-        self.raw_emb: dict[str, np.ndarray] = {
-            tid: np.asarray(raw.loc[tid], dtype=np.float32) for tid in raw.index
-        }
+        self.n_hard = hparams["hard_neg_per_anchor"]
+        self.min_dist = hparams["hard_neg_min_dist"]
+        self.max_dist = hparams["hard_neg_max_dist"]
         self.hard_neg_cache: dict[str, np.ndarray] = {}
+
+    _MINE_BATCH = 256  # anchors per ChromaDB query call
+    _FETCH_N = 48  # over-fetch: exclusions + distance-band filtering eat candidates
 
     def mine_hard_negatives(self) -> None:
         """
-        Query ChromaDB for hard negatives for every unique anchor.
-        Call this at the start of each epoch to refresh the cache.
+        Query ChromaDB for genre-filtered semi-hard negatives, batched per genre.
+        One query call per _MINE_BATCH anchors — per-anchor calls took ~85ms each
+        (~45min for 31k anchors on chromadb 0.5.3); batching brings it to ~1min.
         """
-        unique_anchors = set(a for a, _ in self.pairs)
-        log.info("Mining hard negatives for %d unique anchors...", len(unique_anchors))
+        by_genre: dict[str, list[str]] = defaultdict(list)
+        for a, _, g in self.pairs:
+            if a in self.tid_to_idx:
+                by_genre[g].append(a)
+        n_total = sum(len(set(v)) for v in by_genre.values())
+        log.info("Mining hard negatives for %d unique anchors...", n_total)
         t0 = time.time()
         found = 0
         enc_dim = self.input_matrix.shape[1]
-        for tid in unique_anchors:
-            if tid not in self.raw_emb:
-                continue
-            exclude = {tid} | self.pos_index.get(tid, set())
-            results = query_hard_negatives(
-                self.collection,
-                self.raw_emb[tid],
-                n_results=self.n_hard,
-                exclude_ids=list(exclude),
-            )
-            neg_ids = results["ids"][0]
-            if neg_ids:
-                neg_embs = np.stack(
-                    [
-                        self.input_matrix[self.tid_to_idx[nid]]
-                        for nid in neg_ids
-                        if nid in self.tid_to_idx
-                    ]
+
+        for genre, anchors in by_genre.items():
+            anchors = list(dict.fromkeys(anchors))
+            for start in range(0, len(anchors), self._MINE_BATCH):
+                chunk = anchors[start : start + self._MINE_BATCH]
+                embs = [self.query_matrix[self.tid_to_idx[t]].tolist() for t in chunk]
+                results = self.collection.query(
+                    query_embeddings=embs,
+                    n_results=min(self._FETCH_N, self.collection.count()),
+                    where={"genre": {"$eq": genre}},
+                    include=["distances"],
                 )
-                if len(neg_embs) < self.n_hard:
-                    pad = np.zeros((self.n_hard - len(neg_embs), enc_dim), dtype=np.float32)
-                    neg_embs = np.vstack([neg_embs, pad])
-                self.hard_neg_cache[tid] = neg_embs[: self.n_hard]
-                found += 1
+                for tid, ids, dists in zip(chunk, results["ids"], results["distances"]):
+                    exclude = {tid} | self.pos_index.get(tid, set())
+                    neg_ids = [
+                        i
+                        for i, d in zip(ids, dists)
+                        if i not in exclude
+                        and self.min_dist <= d <= self.max_dist
+                        and i in self.tid_to_idx
+                    ][: self.n_hard]
+                    if not neg_ids:
+                        continue
+                    neg_embs = np.stack([self.input_matrix[self.tid_to_idx[n]] for n in neg_ids])
+                    if len(neg_embs) < self.n_hard:
+                        pad = np.zeros((self.n_hard - len(neg_embs), enc_dim), dtype=np.float32)
+                        neg_embs = np.vstack([neg_embs, pad])
+                    self.hard_neg_cache[tid] = neg_embs[: self.n_hard]
+                    found += 1
         log.info(
             "Hard negative mining done: %d/%d anchors got negatives (%.1fs)",
             found,
-            len(unique_anchors),
+            n_total,
             time.time() - t0,
         )
 
@@ -317,22 +300,72 @@ class ContrastiveDataset(Dataset):
         return len(self.pairs)
 
     def __getitem__(self, idx: int):
-        tid_a, tid_b = self.pairs[idx]
-        if tid_a not in self.tid_to_idx or tid_b not in self.tid_to_idx:
-            enc_dim = self.input_matrix.shape[1]
-            z = torch.zeros(enc_dim)
-            return z, z, torch.zeros(self.n_hard, enc_dim)
-
-        anchor = torch.tensor(self.input_matrix[self.tid_to_idx[tid_a]])
-        positive = torch.tensor(self.input_matrix[self.tid_to_idx[tid_b]])
-
+        tid_a, tid_b, _genre = self.pairs[idx]
+        anchor = torch.from_numpy(self.input_matrix[self.tid_to_idx[tid_a]])
+        positive = torch.from_numpy(self.input_matrix[self.tid_to_idx[tid_b]])
         enc_dim = self.input_matrix.shape[1]
-        hard_neg_arr = self.hard_neg_cache.get(
-            tid_a, np.zeros((self.n_hard, enc_dim), dtype=np.float32)
+        hard_negs = torch.from_numpy(
+            self.hard_neg_cache.get(tid_a, np.zeros((self.n_hard, enc_dim), dtype=np.float32))
         )
-        hard_negs = torch.tensor(hard_neg_arr)
+        return anchor, positive, hard_negs, tid_a, tid_b
 
-        return anchor, positive, hard_negs
+
+class GenreBatchSampler(Sampler[list[int]]):
+    """
+    Yields batches whose pairs all share one genre, so in-batch negatives are
+    within-genre (hard) instead of cross-genre (trivial). Batch order is
+    shuffled across genres each epoch.
+    """
+
+    def __init__(self, pair_genres: list[str], batch_size: int, seed: int = 0):
+        self.by_genre: dict[str, list[int]] = defaultdict(list)
+        for i, g in enumerate(pair_genres):
+            self.by_genre[g].append(i)
+        self.batch_size = batch_size
+        self.seed = seed
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed + self.epoch)
+        batches = []
+        for idxs in self.by_genre.values():
+            idxs = rng.permutation(idxs)
+            for k in range(0, len(idxs), self.batch_size):
+                b = idxs[k : k + self.batch_size]
+                if len(b) >= 2:  # BatchNorm needs ≥2 rows
+                    batches.append([int(i) for i in b])
+        order = rng.permutation(len(batches))
+        for i in order:
+            yield batches[i]
+
+    def __len__(self) -> int:
+        return sum(
+            (len(v) + self.batch_size - 1) // self.batch_size for v in self.by_genre.values()
+        )
+
+
+def build_false_negative_mask(
+    tids_a: list[str], tids_b: list[str], pos_index: dict[str, set]
+) -> torch.Tensor:
+    """
+    (B, B) bool mask, True where anchor j must NOT be used as a negative for
+    anchor i: same track, or a known positive of i. Consecutive pairs overlap
+    ((t1,t2) and (t2,t3) coexist in a batch), so without this mask the loss
+    pushes apart genuine positive pairs.
+    """
+    B = len(tids_a)
+    mask = torch.zeros(B, B, dtype=torch.bool)
+    for i in range(B):
+        pos = pos_index.get(tids_a[i], set())
+        for j in range(B):
+            if i == j:
+                continue
+            if tids_a[j] == tids_a[i] or tids_a[j] == tids_b[i] or tids_a[j] in pos:
+                mask[i, j] = True
+    return mask
 
 
 # ── Models ─────────────────────────────────────────────────────────────────────
@@ -340,27 +373,38 @@ class ContrastiveDataset(Dataset):
 
 class ContrastiveEncoder(nn.Module):
     """
-    Projection head: 1280-dim discogs-effnet embeddings → 128-dim unit hypersphere.
+    Projection head: 1287-dim inputs → 128-dim unit hypersphere.
 
-    Architecture: Linear → BN → ReLU → Linear → L2-normalise
-    BatchNorm before ReLU stabilises training when input scale varies across tracks.
-    L2 normalisation forces all embeddings onto the unit sphere — required for
-    NT-Xent loss (cosine similarity = dot product on unit sphere).
+    Two branches so the 7 scalar features (BPM/key/energy — individually as
+    predictive as the whole raw embedding) are not drowned by the 1280 effnet
+    dims: effnet → hidden_dim, scalars → 64, fused → output.
 
-    discogs-effnet backbone stays frozen. Only this head is trained (~400K params).
+    Inputs are expected z-scored (see train(): stats saved to encoder_norm.npz —
+    inference MUST apply the same normalisation).
+    discogs-effnet backbone stays frozen. Only this head is trained.
     """
 
-    def __init__(self, input_dim: int = 1280, hidden_dim: int = 256, output_dim: int = 128):
+    SCALAR_DIM = ENCODER_EXTRA_DIM
+
+    def __init__(self, input_dim: int = 1287, hidden_dim: int = 256, output_dim: int = 128):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+        effnet_dim = input_dim - self.SCALAR_DIM
+        self.effnet_branch = nn.Sequential(
+            nn.Linear(effnet_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, output_dim),
         )
+        self.scalar_branch = nn.Sequential(
+            nn.Linear(self.SCALAR_DIM, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
+        )
+        self.fuse = nn.Linear(hidden_dim + 64, output_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.normalize(self.net(x), dim=1)  # → unit hypersphere
+        eff = self.effnet_branch(x[:, : -self.SCALAR_DIM])
+        sca = self.scalar_branch(x[:, -self.SCALAR_DIM :])
+        return F.normalize(self.fuse(torch.cat([eff, sca], dim=1)), dim=1)
 
 
 # ── NT-Xent Loss ───────────────────────────────────────────────────────────────
@@ -373,10 +417,11 @@ class NTXentLoss(nn.Module):
     For a batch of B (anchor, positive) pairs, the loss for anchor i is:
       -log( exp(sim(a_i, p_i) / τ) /
             [exp(sim(a_i, p_i) / τ)
-             + Σ_{j≠i} exp(sim(a_i, a_j) / τ)     ← in-batch negatives
-             + Σ_k     exp(sim(a_i, h_ik) / τ)] )  ← hard negatives
+             + Σ_{j≠i, not masked} exp(sim(a_i, a_j) / τ)   ← in-batch negatives
+             + Σ_k valid           exp(sim(a_i, h_ik) / τ)] ) ← hard negatives
 
-    All vectors must be L2-normalised so sim = dot product.
+    neg_mask marks in-batch entries that are known positives (false negatives).
+    hard_valid marks zero-padded hard-negative rows to exclude.
     """
 
     def __init__(self, temperature: float = 0.07):
@@ -388,6 +433,8 @@ class NTXentLoss(nn.Module):
         anchors: torch.Tensor,  # (B, D) — L2 normalised
         positives: torch.Tensor,  # (B, D) — L2 normalised
         hard_negs: torch.Tensor | None = None,  # (B, K, D) — L2 normalised
+        neg_mask: torch.Tensor | None = None,  # (B, B) bool, True = exclude
+        hard_valid: torch.Tensor | None = None,  # (B, K) bool, True = keep
     ) -> torch.Tensor:
         B = anchors.size(0)
 
@@ -395,14 +442,17 @@ class NTXentLoss(nn.Module):
 
         batch_sim = torch.mm(anchors, anchors.T) / self.temperature
         mask = torch.eye(B, device=anchors.device).bool()
+        if neg_mask is not None:
+            mask = mask | neg_mask.to(anchors.device)
         batch_sim = batch_sim.masked_fill(mask, float("-inf"))
 
         logits = torch.cat([pos_sim.unsqueeze(1), batch_sim], dim=1)  # (B, 1+B)
 
         if hard_negs is not None and hard_negs.size(1) > 0:
-            hard_negs = F.normalize(hard_negs, dim=2)
             hard_sim = torch.bmm(anchors.unsqueeze(1), hard_negs.transpose(1, 2))
             hard_sim = hard_sim.squeeze(1) / self.temperature  # (B, K)
+            if hard_valid is not None:
+                hard_sim = hard_sim.masked_fill(~hard_valid.to(anchors.device), float("-inf"))
             logits = torch.cat([logits, hard_sim], dim=1)  # (B, 1+B+K)
 
         targets = torch.zeros(B, dtype=torch.long, device=anchors.device)
@@ -415,11 +465,12 @@ class NTXentLoss(nn.Module):
 def compute_contrastive_metrics(
     encoder: ContrastiveEncoder,
     val_pairs: list[tuple],
-    features: pd.DataFrame,
+    input_matrix: np.ndarray,
+    tid_to_idx: dict[str, int],
     device: torch.device,
 ) -> dict:
     """
-    Evaluate contrastive encoder quality on validation pairs.
+    Evaluate on validation pairs (fully vectorised).
 
     Metrics:
       alignment       -mean||z_a - z_p||²  (higher = closer positives)
@@ -430,66 +481,49 @@ def compute_contrastive_metrics(
       emb_variance    mean per-dim variance (collapse early warning)
     """
     encoder.eval()
-    input_matrix, tid_to_idx = _prepare_encoder_inputs(features)
-
-    val_ids = list({tid for pair in val_pairs for tid in pair if tid in tid_to_idx})
+    val_ids = list({tid for a, b, _ in val_pairs for tid in (a, b) if tid in tid_to_idx})
     if not val_ids:
         return {}
+    id2i = {t: i for i, t in enumerate(val_ids)}
 
-    val_inputs = np.stack([input_matrix[tid_to_idx[tid]] for tid in val_ids])
-    raw_embs = torch.tensor(val_inputs, dtype=torch.float32).to(device)
+    inputs = torch.from_numpy(
+        np.stack([input_matrix[tid_to_idx[t]] for t in val_ids])
+    ).to(device)
     with torch.no_grad():
-        proj = encoder(raw_embs)  # (N, 128)
+        proj = encoder(inputs)  # (N, 128)
 
-    proj_idx = {tid: proj[i] for i, tid in enumerate(val_ids)}
-
-    valid_pairs = [(a, b) for a, b in val_pairs if a in proj_idx and b in proj_idx]
-    if not valid_pairs:
+    vp = [(a, b) for a, b, _ in val_pairs if a in id2i and b in id2i]
+    if not vp:
         return {}
+    ai = torch.tensor([id2i[a] for a, _ in vp], device=device)
+    bi = torch.tensor([id2i[b] for _, b in vp], device=device)
+    za, zp = proj[ai], proj[bi]
 
-    za = torch.stack([proj_idx[a] for a, _ in valid_pairs])
-    zp = torch.stack([proj_idx[b] for _, b in valid_pairs])
     alignment = -((za - zp) ** 2).sum(dim=1).mean().item()
-
     sample = proj[: min(1000, len(proj))]
     sq_dists = torch.cdist(sample, sample, p=2) ** 2
     uniformity = torch.log(torch.exp(-2 * sq_dists).mean()).item()
 
-    all_proj = torch.stack([proj_idx[tid] for tid in val_ids])
-    top1 = top5 = top10 = 0
-    pos_sims = []
-    neg_sims_list = []
+    pos_sim = (za * zp).sum(dim=1)  # (P,)
+    P = len(vp)
+    ranks = torch.empty(P, device=device)
+    neg_sims = torch.empty(P, device=device)
+    rand_j = torch.randint(0, len(val_ids), (P,), device=device)
+    for start in range(0, P, 2048):  # chunk to bound memory
+        end = min(start + 2048, P)
+        sims = za[start:end] @ proj.T  # (chunk, N)
+        sims[torch.arange(end - start, device=device), ai[start:end]] = -2.0  # exclude self
+        ranks[start:end] = (sims > pos_sim[start:end].unsqueeze(1)).sum(dim=1) + 1
+        neg_sims[start:end] = sims[torch.arange(end - start, device=device), rand_j[start:end]]
 
-    for tid_a, tid_b in valid_pairs:
-        if tid_a not in proj_idx or tid_b not in proj_idx:
-            continue
-        q = proj_idx[tid_a]
-        sims = torch.mv(all_proj, q)
-        self_idx = val_ids.index(tid_a)
-        sims[self_idx] = -2.0
-        ranked = sims.argsort(descending=True).tolist()
-        pos_rank = val_ids.index(tid_b)
-        pos_sims.append(sims[pos_rank].item())
-        rank = ranked.index(pos_rank) + 1
-        if rank <= 1:
-            top1 += 1
-        if rank <= 5:
-            top5 += 1
-        if rank <= 10:
-            top10 += 1
-        rand_idx = np.random.randint(0, len(val_ids))
-        if val_ids[rand_idx] not in {tid_a, tid_b}:
-            neg_sims_list.append(sims[rand_idx].item())
-
-    n = len(valid_pairs)
     return {
         "val/alignment": alignment,
         "val/uniformity": uniformity,
-        "val/top1_retrieval": top1 / n,
-        "val/top5_retrieval": top5 / n,
-        "val/top10_retrieval": top10 / n,
-        "val/mean_pos_sim": float(np.mean(pos_sims)),
-        "val/mean_neg_sim": float(np.mean(neg_sims_list)) if neg_sims_list else 0.0,
+        "val/top1_retrieval": (ranks <= 1).float().mean().item(),
+        "val/top5_retrieval": (ranks <= 5).float().mean().item(),
+        "val/top10_retrieval": (ranks <= 10).float().mean().item(),
+        "val/mean_pos_sim": pos_sim.mean().item(),
+        "val/mean_neg_sim": neg_sims.mean().item(),
         "val/emb_variance": proj.var(dim=0).mean().item(),
     }
 
@@ -502,20 +536,17 @@ def train_contrastive(
     criterion: NTXentLoss,
     train_ds: ContrastiveDataset,
     val_pairs: list[tuple],
-    features: pd.DataFrame,
+    input_matrix: np.ndarray,
+    tid_to_idx: dict[str, int],
     device: torch.device,
     hparams: dict,
 ) -> ContrastiveEncoder:
     """
-    Train the contrastive encoder for encoder_epochs epochs.
-
     Each epoch:
-      1. Mine hard negatives from ChromaDB (refreshes the cache)
-      2. Forward pass: encode anchor + positive + hard negatives
+      1. Refresh hard negatives every hard_neg_refresh_epochs epochs
+      2. Genre-blocked batches; known positives masked out of in-batch negatives
       3. NT-Xent loss with in-batch + hard negatives
-      4. Log train loss to MLflow + W&B every batch
-      5. Evaluate val metrics every epoch
-      6. Save best model by val/top1_retrieval
+      4. Eval + save best model by val/top1_retrieval
     """
     optimizer = torch.optim.AdamW(
         encoder.parameters(),
@@ -526,10 +557,14 @@ def train_contrastive(
         optimizer, T_max=hparams["encoder_epochs"]
     )
 
+    sampler = GenreBatchSampler(
+        [g for _, _, g in train_ds.pairs],
+        hparams["encoder_batch_size"],
+        seed=hparams["random_seed"],
+    )
     loader = DataLoader(
         train_ds,
-        batch_size=hparams["encoder_batch_size"],
-        shuffle=True,
+        batch_sampler=sampler,
         num_workers=0,
         pin_memory=device.type == "cuda",
     )
@@ -538,23 +573,27 @@ def train_contrastive(
     MODELS_DIR.mkdir(exist_ok=True)
 
     for epoch in range(1, hparams["encoder_epochs"] + 1):
-        train_ds.mine_hard_negatives()
+        if (epoch - 1) % hparams["hard_neg_refresh_epochs"] == 0:
+            train_ds.mine_hard_negatives()
+        sampler.set_epoch(epoch)
 
         encoder.train()
         epoch_loss = 0.0
         grad_norms = []
 
-        for _batch_idx, (anchors, positives, hard_negs) in enumerate(loader):
+        for anchors, positives, hard_negs, tids_a, tids_b in loader:
             anchors = anchors.to(device)
             positives = positives.to(device)
+            hard_valid = hard_negs.abs().sum(dim=2) > 0  # (B, K) — zero rows are padding
             hard_negs = hard_negs.to(device)
+            neg_mask = build_false_negative_mask(list(tids_a), list(tids_b), train_ds.pos_index)
 
             z_a = encoder(anchors)
             z_p = encoder(positives)
             B, K, D = hard_negs.shape
             z_h = encoder(hard_negs.view(B * K, D)).view(B, K, -1)
 
-            loss = criterion(z_a, z_p, z_h)
+            loss = criterion(z_a, z_p, z_h, neg_mask=neg_mask, hard_valid=hard_valid)
 
             optimizer.zero_grad()
             loss.backward()
@@ -579,18 +618,21 @@ def train_contrastive(
         mlflow.log_metric("train/epoch_loss", avg_loss, step=epoch)
         mlflow.log_metric("train/grad_norm", avg_grad, step=epoch)
 
-        val_metrics = compute_contrastive_metrics(encoder, val_pairs, features, device)
+        val_metrics = compute_contrastive_metrics(
+            encoder, val_pairs, input_matrix, tid_to_idx, device
+        )
         for k, v in val_metrics.items():
             mlflow.log_metric(k, v, step=epoch)
         wandb.log({"epoch": epoch, **val_metrics})
 
         top1 = val_metrics.get("val/top1_retrieval", 0.0)
         log.info(
-            "[Encoder] epoch %d/%d  loss=%.4f  top1=%.3f  alignment=%.4f  uniformity=%.4f",
+            "[Encoder] epoch %d/%d  loss=%.4f  top1=%.3f  top10=%.3f  alignment=%.4f  uniformity=%.4f",
             epoch,
             hparams["encoder_epochs"],
             avg_loss,
             top1,
+            val_metrics.get("val/top10_retrieval", 0),
             val_metrics.get("val/alignment", 0),
             val_metrics.get("val/uniformity", 0),
         )
@@ -609,20 +651,15 @@ def train_contrastive(
 
 
 def train(
-    mix_csvs: list[str | Path] | None = None,
+    tracklist_csv: str | Path = TRACKLIST_PATH,
     hparams: dict | None = None,
 ) -> None:
     """
     Full training pipeline: contrastive encoder.
 
     mlflow: logs to ./mlruns/ — view with `mlflow ui --port 5000`
-    wandb:  logs to wandb.ai  — run `wandb login` once before calling this
-
-    mix_csvs: list of CSV paths with mix tracklists. Defaults to romanFlugel.csv.
-              Each CSV must have columns: mix_id, artist_name, track_name, starting_time.
+    wandb:  logs to wandb.ai — run `wandb login` once; falls back to disabled.
     """
-    if mix_csvs is None:
-        mix_csvs = [Path("data/interim/romanFlugel.csv")]
     if hparams is None:
         hparams = HPARAMS
 
@@ -630,28 +667,56 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
 
-    features = pd.read_parquet(FEATURES_PATH)
+    features = pd.read_parquet(FEATURES_PATH).drop_duplicates("track_id").reset_index(drop=True)
     log.info("Features loaded: %d tracks, %d columns", len(features), len(features.columns))
 
-    train_pairs, val_pairs = build_consecutive_pairs(
-        [Path(p) for p in mix_csvs],
-        features,
-        val_split=hparams["val_split"],
-        seed=hparams["random_seed"],
-    )
+    log.info("Preparing encoder inputs (once)...")
+    input_matrix, tid_to_idx = _prepare_encoder_inputs(features)
+
+    # ChromaDB stores raw effnet vectors — mining queries must stay in that space
+    raw_effnet = input_matrix[:, :1280].copy()
+
+    # z-score all input dims — otherwise the 1280 effnet dims (varied scale)
+    # drown the 7 [0,1] scalars. Stats saved for inference-time normalisation.
+    norm_mu = input_matrix.mean(axis=0)
+    norm_sd = input_matrix.std(axis=0) + 1e-6
+    input_matrix = (input_matrix - norm_mu) / norm_sd
+    MODELS_DIR.mkdir(exist_ok=True)
+    np.savez(MODELS_DIR / "encoder_norm.npz", mu=norm_mu, sd=norm_sd)
+    log.info("Input z-scoring applied; stats saved to %s", MODELS_DIR / "encoder_norm.npz")
+
+    train_pairs, val_pairs = build_consecutive_pairs(tracklist_csv, features)
     positive_index = build_positive_index(train_pairs + val_pairs)
+
+    genre_of = (
+        pd.read_csv(tracklist_csv, usecols=["track_id", "genre"])
+        .drop_duplicates("track_id")
+        .set_index("track_id")["genre"]
+        .to_dict()
+    )
 
     client = get_client(CHROMA_PATH)
     collection = get_collection(client)
-    log.info("ChromaDB collection '%s': %d tracks", COLLECTION_NAME, collection.count())
+    n_indexed = collection.count()
+    log.info("ChromaDB collection '%s': %d tracks", COLLECTION_NAME, n_indexed)
+    if n_indexed < len(features) * 0.9:
+        raise RuntimeError(
+            f"ChromaDB has {n_indexed} tracks but features has {len(features)} — "
+            "rebuild the index first: rm -rf data/processed/chromadb && "
+            "python src/features/vector_store.py"
+        )
 
     mlflow.set_experiment("ai-dj-training")
-    wandb.init(
-        project="ai-dj",
-        name=f"run-{int(time.time())}",
-        config=hparams,
-        tags=["contrastive"],
-    )
+    try:
+        wandb.init(
+            project="ai-dj",
+            name=f"run-{int(time.time())}",
+            config=hparams,
+            tags=["contrastive"],
+        )
+    except Exception as e:  # not logged in / offline — don't block training
+        log.warning("wandb init failed (%s) — continuing with wandb disabled", e)
+        wandb.init(mode="disabled")
 
     with mlflow.start_run():
         mlflow.log_params(hparams)
@@ -667,22 +732,27 @@ def train(
 
         train_ds = ContrastiveDataset(
             pairs=train_pairs,
-            features=features,
+            input_matrix=input_matrix,
+            tid_to_idx=tid_to_idx,
+            genre_of=genre_of,
             positive_index=positive_index,
             collection=collection,
-            hard_neg_per_anchor=hparams["hard_neg_per_anchor"],
+            hparams=hparams,
+            query_matrix=raw_effnet,
         )
 
         wandb.watch(encoder, log="gradients", log_freq=100)
         encoder = train_contrastive(
-            encoder, criterion, train_ds, val_pairs, features, device, hparams
+            encoder, criterion, train_ds, val_pairs, input_matrix, tid_to_idx, device, hparams
         )
 
-        # Project all embeddings and persist to features.parquet
-        log.info("Projecting all embeddings with trained encoder...")
+        # Project all embeddings and persist to features.parquet.
+        # Use the BEST checkpoint, not the final epoch — long runs overfit
+        # (150-epoch run: final model val AUC 0.655 vs best-epoch 0.667).
+        log.info("Projecting all embeddings with best checkpoint...")
+        encoder.load_state_dict(torch.load(ENCODER_PATH, weights_only=True))
         encoder.eval()
-        input_matrix, _ = _prepare_encoder_inputs(features)
-        all_raw = torch.tensor(input_matrix, dtype=torch.float32).to(device)
+        all_raw = torch.from_numpy(input_matrix).to(device)
         with torch.no_grad():
             all_proj = encoder(all_raw).cpu().numpy()  # (N, 128)
 
