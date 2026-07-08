@@ -11,9 +11,9 @@ Modes (--mode flag):
   both          — discogs-effnet + features → features.parquet  (default)
   discogs-only  — discogs-effnet only       → embeddings.parquet  (run on GPU instance)
   librosa-only  — features only             → librosa_features.parquet  (any machine with audio files)
-  merge         — join embeddings.parquet + librosa_features.parquet → features.parquet
 
 All modes are resumable: re-running skips already-processed tracks.
+Merge embeddings + librosa features: src/data/preprocess_features.py
 """
 
 import argparse
@@ -36,7 +36,6 @@ import pyloudnorm as pyln
 log = logging.getLogger(__name__)
 
 MANIFEST_PATH = Path("data/raw/preview_manifest.csv")
-FEATURES_PATH = Path("data/processed/features.parquet")
 EMBEDDINGS_PATH = Path("data/processed/embeddings.parquet")
 DISCOGS_MODEL_PATH = Path("models/essentia/discogs-effnet-bs64-1.pb")
 LIBROSA_FEATURES_PATH = Path("data/processed/librosa_features.parquet")
@@ -137,8 +136,6 @@ class DiscogsEmbedderGPU:
     N_FFT = 512
     HOP_LENGTH = 256
     N_MELS = 96
-    FMIN = 0.0
-    FMAX = 8000.0
     PATCH_FRAMES = 128
     MODEL_BATCH = 64  # fixed batch size baked into the .pb graph
     EMBEDDING_DIM = 1280
@@ -188,26 +185,29 @@ class DiscogsEmbedderGPU:
         )
 
     def _mel_patches(self, y: np.ndarray) -> np.ndarray | None:
-        """Float32 mono 16 kHz → (N_patches, 128, 96) float32 — model input format."""
-        mel = librosa.feature.melspectrogram(
-            y=y.astype(np.float32),
-            sr=self.SAMPLE_RATE,
-            n_fft=self.N_FFT,
-            hop_length=self.HOP_LENGTH,
-            n_mels=self.N_MELS,
-            fmin=self.FMIN,
-            fmax=self.FMAX,
-            power=2.0,
-            norm=None,
-        )
-        mel = np.log10(np.maximum(mel, 1e-6))  # (96, T)
-        n = mel.shape[1] // self.PATCH_FRAMES
+        """Float32 mono 16 kHz → (N_patches, 128, 96) float32 — model input format.
+
+        Mel frames MUST come from essentia's TensorflowInputMusiCNN — the same
+        frontend TensorflowPredictEffnetDiscogs applies internally (512/256 STFT,
+        96 mel bands, log10(1 + 10000·x) compression). A librosa reimplementation
+        (plain log10, different filterbank) fed the network out-of-distribution
+        input and produced garbage embeddings that still looked shape-valid.
+        """
+        mel_input = es.TensorflowInputMusiCNN()  # fresh instance: not thread-safe
+        frames = [
+            mel_input(frame)
+            for frame in es.FrameGenerator(
+                y.astype(np.float32),
+                frameSize=self.N_FFT,
+                hopSize=self.HOP_LENGTH,
+                startFromZero=True,
+            )
+        ]
+        n = len(frames) // self.PATCH_FRAMES
         if n == 0:
             return None
-        mel = mel[:, : n * self.PATCH_FRAMES]
-        # reshape to (N, PATCH_FRAMES, N_MELS) = (N, 128, 96)
-        patches = mel.reshape(self.N_MELS, n, self.PATCH_FRAMES).transpose(1, 2, 0)
-        return patches.astype(np.float32)
+        mel = np.array(frames[: n * self.PATCH_FRAMES], dtype=np.float32)  # (T, 96)
+        return mel.reshape(n, self.PATCH_FRAMES, self.N_MELS)
 
     def _load_patches(self, args: tuple[int, str]) -> tuple[int, np.ndarray | None]:
         i, path = args
@@ -368,27 +368,6 @@ def _do_checkpoint(
     return existing
 
 
-# ── Merge ─────────────────────────────────────────────────────────────────────
-
-
-def _merge_features() -> pd.DataFrame:
-    """Join embeddings.parquet + librosa_features.parquet → features.parquet."""
-    for path in (EMBEDDINGS_PATH, LIBROSA_FEATURES_PATH):
-        if not path.exists():
-            raise FileNotFoundError(f"{path} not found — run the corresponding mode first")
-    emb = pd.read_parquet(EMBEDDINGS_PATH)
-    feats = pd.read_parquet(LIBROSA_FEATURES_PATH)
-    log.info("embeddings: %d tracks | librosa_features: %d tracks", len(emb), len(feats))
-    merged = emb.merge(feats, on="track_id", how="inner")
-    lost = len(emb) - len(merged)
-    if lost:
-        log.warning("  %d tracks in embeddings have no librosa features yet", lost)
-    FEATURES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    merged.to_parquet(FEATURES_PATH, index=False)
-    log.info("Merged %d tracks → %s", len(merged), FEATURES_PATH)
-    return merged
-
-
 # ── Main pipeline ──────────────────────────────────────────────────────────────
 
 
@@ -403,13 +382,10 @@ def build_features(
     mode="both"          — discogs-effnet + features → features.parquet  (default)
     mode="discogs-only"  — discogs-effnet only       → embeddings.parquet
     mode="librosa-only"  — features only             → librosa_features.parquet (no embeddings needed)
-    mode="merge"         — join embeddings.parquet + librosa_features.parquet → features.parquet
     workers              — parallel processes for librosa extraction (default 1 = sequential)
-                           discogs-only and merge always run sequentially.
+                           discogs-only always runs sequentially.
     Extract modes resumable: re-running skips already-processed track_ids.
     """
-    if mode == "merge":
-        return _merge_features()
     assert mode in ("both", "discogs-only", "librosa-only"), f"Unknown mode: {mode}"
     out_path = (
         EMBEDDINGS_PATH
@@ -655,13 +631,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract discogs-effnet embeddings and features.")
     parser.add_argument(
         "--mode",
-        choices=["both", "discogs-only", "librosa-only", "merge"],
+        choices=["both", "discogs-only", "librosa-only"],
         default="both",
         help=(
             "both (default): discogs-effnet + features → features.parquet | "
             "discogs-only: discogs-effnet → embeddings.parquet (GPU instance) | "
-            "librosa-only: features → librosa_features.parquet (any machine with audio) | "
-            "merge: join embeddings.parquet + librosa_features.parquet → features.parquet"
+            "librosa-only: features → librosa_features.parquet (any machine with audio)"
         ),
     )
     parser.add_argument(
@@ -712,7 +687,7 @@ if __name__ == "__main__":
     log.info("Logging to %s", _log_path)
 
     manifest_path = args.manifest
-    if args.sample and args.mode != "merge":
+    if args.sample:
         import tempfile
 
         df = pd.read_csv(args.manifest)
