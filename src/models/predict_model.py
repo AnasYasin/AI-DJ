@@ -98,6 +98,7 @@ def plan_mix(
     n_tracks: int = 10,
     curve: str = "build",
     seed_track: str | None = None,
+    track_ids: list[str] | None = None,
 ) -> dict:
     f = pd.read_parquet(FEATURES_PATH).drop_duplicates("track_id")
     meta = (
@@ -105,10 +106,15 @@ def plan_mix(
         .drop_duplicates("track_id")
         .set_index("track_id")
     )
-    f = f[f["track_id"].map(meta["genre"]) == genre]
-    f = f[(f["bpm"] >= bpm_range[0]) & (f["bpm"] <= bpm_range[1])]
-    if len(f) < n_tracks * 5:
-        raise ValueError(f"only {len(f)} candidates for {genre} {bpm_range} — widen the range")
+    if track_ids is not None:  # explicit pool (e.g. locally available audio)
+        f = f[f["track_id"].isin(track_ids)]
+    else:
+        f = f[f["track_id"].map(meta["genre"]) == genre]
+        f = f[(f["bpm"] >= bpm_range[0]) & (f["bpm"] <= bpm_range[1])]
+        if len(f) < n_tracks * 5:
+            raise ValueError(f"only {len(f)} candidates for {genre} {bpm_range} — widen the range")
+    if len(f) < n_tracks:
+        raise ValueError(f"pool has only {len(f)} tracks")
     A = TrackArrays(f)
     artist_code = pd.factorize(A.df["track_id"].map(meta["artist_name"]).fillna(""))[0]
     log.info("pool: %d %s tracks in %.0f–%.0f BPM", len(f), genre, *bpm_range)
