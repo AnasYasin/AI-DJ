@@ -36,6 +36,7 @@ import pyloudnorm as pyln
 log = logging.getLogger(__name__)
 
 MANIFEST_PATH = Path("data/raw/preview_manifest.csv")
+FEATURES_PATH = Path("data/processed/features.parquet")
 EMBEDDINGS_PATH = Path("data/processed/embeddings.parquet")
 DISCOGS_MODEL_PATH = Path("models/essentia/discogs-effnet-bs64-1.pb")
 LIBROSA_FEATURES_PATH = Path("data/processed/librosa_features.parquet")
@@ -142,7 +143,12 @@ class DiscogsEmbedderGPU:
     INPUT_TENSOR = "serving_default_melspectrogram:0"
     OUTPUT_TENSOR = "PartitionedCall:1"
 
-    def __init__(self, model_path: Path = DISCOGS_MODEL_PATH, batch_tracks: int = 64, loader_workers: int = 8):
+    def __init__(
+        self,
+        model_path: Path = DISCOGS_MODEL_PATH,
+        batch_tracks: int = 64,
+        loader_workers: int = 8,
+    ):
         import tensorflow as tf
 
         if not Path(model_path).exists():

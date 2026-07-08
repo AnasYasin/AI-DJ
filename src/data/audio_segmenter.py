@@ -30,8 +30,8 @@ training genres are 4/4.
 
 import json
 import logging
-import sys
 from pathlib import Path
+import sys
 
 import librosa
 import numpy as np
@@ -40,9 +40,9 @@ from scipy.ndimage import gaussian_filter1d
 log = logging.getLogger(__name__)
 
 SR = 22_050
-PHRASE_BARS = 4          # boundaries snap to multiples of this
-MIN_SECTION_BARS = 8     # merge sections shorter than this
-KICK_BAND = (20, 150)    # Hz
+PHRASE_BARS = 4  # boundaries snap to multiples of this
+MIN_SECTION_BARS = 8  # merge sections shorter than this
+KICK_BAND = (20, 150)  # Hz
 
 
 # ── Beat / bar grid ────────────────────────────────────────────────────────────
@@ -60,9 +60,7 @@ def _bpm(y: np.ndarray, sr: int) -> float:
             return bpm
     except Exception as e:  # model missing/failed — librosa is good enough for 4/4
         log.warning("DeepRhythm unavailable (%s) — falling back to librosa", e)
-    return float(
-        librosa.feature.tempo(y=y, sr=sr, aggregate=np.median, start_bpm=128)[0]
-    )
+    return float(librosa.feature.tempo(y=y, sr=sr, aggregate=np.median, start_bpm=128)[0])
 
 
 def _beat_grid(y: np.ndarray, sr: int, bpm: float) -> tuple[np.ndarray, np.ndarray]:
@@ -135,9 +133,9 @@ def _boundaries(F: np.ndarray) -> list[int]:
     ssm = F @ F.T / F.shape[1]
     novelty = np.zeros(n)
     for L in (4, 8):  # multi-scale kernels catch both phrase and section changes
-        kernel = np.outer(
-            np.r_[-np.ones(L), np.ones(L)], np.r_[-np.ones(L), np.ones(L)]
-        ) / (4 * L * L)
+        kernel = np.outer(np.r_[-np.ones(L), np.ones(L)], np.r_[-np.ones(L), np.ones(L)]) / (
+            4 * L * L
+        )
         pad = np.pad(ssm, L, mode="edge")
         for i in range(n):
             novelty[i] += (pad[i : i + 2 * L, i : i + 2 * L] * kernel).sum()

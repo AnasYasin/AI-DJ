@@ -13,10 +13,10 @@ Train + persist:  python -m src.models.edge_scorer
 Use:              scorer = EdgeScorer.load(); scorer.score(feats)
 """
 
-import logging
-import pickle
 from collections import defaultdict
+import logging
 from pathlib import Path
+import pickle
 
 import numpy as np
 import pandas as pd

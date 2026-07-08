@@ -22,15 +22,15 @@ Run:
 
 import argparse
 import logging
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-from pathlib import Path
 
 import librosa
 import numpy as np
-import soundfile as sf
 from scipy.signal import butter, sosfilt
+import soundfile as sf
 
 from src.data.audio_segmenter import segment
 
@@ -49,9 +49,30 @@ HARM_PERFECT, HARM_COMPATIBLE, HARM_CLASH = 1, 2, 5
 LOUD_MELT, ONSET_HIGH = 3.0, 0.35
 
 _CAMELOT = {
-    "C": 8, "Cm": 5, "C#": 3, "C#m": 12, "D": 10, "Dm": 7, "D#": 5, "D#m": 2,
-    "E": 12, "Em": 9, "F": 7, "Fm": 4, "F#": 2, "F#m": 11, "G": 9, "Gm": 6,
-    "G#": 4, "G#m": 1, "A": 11, "Am": 8, "A#": 6, "A#m": 3, "B": 1, "Bm": 10,
+    "C": 8,
+    "Cm": 5,
+    "C#": 3,
+    "C#m": 12,
+    "D": 10,
+    "Dm": 7,
+    "D#": 5,
+    "D#m": 2,
+    "E": 12,
+    "Em": 9,
+    "F": 7,
+    "Fm": 4,
+    "F#": 2,
+    "F#m": 11,
+    "G": 9,
+    "Gm": 6,
+    "G#": 4,
+    "G#m": 1,
+    "A": 11,
+    "Am": 8,
+    "A#": 6,
+    "A#m": 3,
+    "B": 1,
+    "Bm": 10,
 }
 
 
@@ -105,14 +126,14 @@ RECIPES = {
         "A_vol": [(0.0, 1), (0.92, 1), (1.0, 0)],
         "B_vol": [(0.0, 0), (0.08, 1), (1.0, 1)],
         "A_bands": {
-            "low": [(0.0, 1), (0.82, 1), (0.88, 0)],           # keeps bass until end swap
-            "mid": [(0.0, 1), (0.6, 1), (1.0, 0.2)],           # thins upward (HPF-out)
+            "low": [(0.0, 1), (0.82, 1), (0.88, 0)],  # keeps bass until end swap
+            "mid": [(0.0, 1), (0.6, 1), (1.0, 0.2)],  # thins upward (HPF-out)
             "high": [(0.0, 1), (1.0, 0.5)],
         },
         "B_bands": {
-            "low": [(0.0, 0), (0.82, 0), (0.88, 1)],           # end bass swap
-            "mid": [(0.0, 0), (0.3, 0), (0.75, 1)],            # HPF-in opens downward
-            "high": [(0.0, 0), (0.18, 1)],                     # airy entry
+            "low": [(0.0, 0), (0.82, 0), (0.88, 1)],  # end bass swap
+            "mid": [(0.0, 0), (0.3, 0), (0.75, 1)],  # HPF-in opens downward
+            "high": [(0.0, 0), (0.18, 1)],  # airy entry
         },
         "duck": 0.85,
     },
@@ -134,13 +155,13 @@ RECIPES = {
         "A_vol": [(0.0, 1), (0.9, 1), (1.0, 0)],
         "B_vol": [(0.0, 0), (0.1, 1), (1.0, 1)],
         "A_bands": {
-            "low": [(0.0, 1), (0.46, 1), (0.54, 0)],           # center bass swap
-            "mid": [(0.0, 1), (0.55, 1), (1.0, 0.3)],          # LPF-out (darkens late)
+            "low": [(0.0, 1), (0.46, 1), (0.54, 0)],  # center bass swap
+            "mid": [(0.0, 1), (0.55, 1), (1.0, 0.3)],  # LPF-out (darkens late)
             "high": [(0.0, 1), (0.5, 1), (0.95, 0.1)],
         },
         "B_bands": {
             "low": [(0.0, 0), (0.46, 0), (0.54, 1)],
-            "mid": [(0.0, 0.3), (0.45, 1)],                    # LPF-in (opens early)
+            "mid": [(0.0, 0.3), (0.45, 1)],  # LPF-in (opens early)
             "high": [(0.0, 0.1), (0.05, 0.1), (0.5, 1)],
         },
         "duck": 0.85,
@@ -361,8 +382,9 @@ def render_mix(
         log.info("target BPM (median): %.1f  (tracks: %s)", target_bpm, bpms)
 
     bar_dur_t = 4 * 60.0 / target_bpm
-    play_bars = max(int(round(play_minutes * 60 / bar_dur_t / PHRASE_BARS)) * PHRASE_BARS,
-                    MIN_BODY_BARS)
+    play_bars = max(
+        int(round(play_minutes * 60 / bar_dur_t / PHRASE_BARS)) * PHRASE_BARS, MIN_BODY_BARS
+    )
 
     tracks = []
     for i, p in enumerate(track_paths):
@@ -370,8 +392,14 @@ def render_mix(
         t = _prepare_track(p, target_bpm, max_tail, play_bars, et)
         log.info(
             "  %s: %.0f→%.0f bpm, window bars %d–%d (%.1f min), e=%.2f key=%s",
-            t["name"][:40], t["bpm"], target_bpm, t["cue_in_bar"], t["cue_out_bar"],
-            (t["cue_out_bar"] - t["cue_in_bar"]) * bar_dur_t / 60, t["energy"], t["key"],
+            t["name"][:40],
+            t["bpm"],
+            target_bpm,
+            t["cue_in_bar"],
+            t["cue_out_bar"],
+            (t["cue_out_bar"] - t["cue_in_bar"]) * bar_dur_t / 60,
+            t["energy"],
+            t["key"],
         )
         tracks.append(t)
 
@@ -382,8 +410,9 @@ def render_mix(
         t["audio"] = t["audio"] * min(g, 2.0)
 
     mix = tracks[0]["audio"][
-        int(tracks[0]["bars"][tracks[0]["cue_in_bar"]] * SR)
-        : int(tracks[0]["bars"][tracks[0]["cue_out_bar"]] * SR)
+        int(tracks[0]["bars"][tracks[0]["cue_in_bar"]] * SR) : int(
+            tracks[0]["bars"][tracks[0]["cue_out_bar"]] * SR
+        )
     ].copy()
 
     trans_report = []
@@ -402,19 +431,20 @@ def render_mix(
         avail_prev = len(prev["audio"]) / SR - prev["bars"][prev["cue_out_bar"]]
         avail_cur = (len(cur["audio"]) / SR - cur["bars"][in_bar]) - MIN_BODY_BARS * bar_dur
         n_bars = max(min(n_bars, int(avail_prev / bar_dur), int(avail_cur / bar_dur)), 2)
-        O = int(n_bars * bar_dur * SR)
+        n_ov = int(n_bars * bar_dur * SR)
 
         a0 = int(prev["bars"][prev["cue_out_bar"]] * SR)
         b0 = int(cur["bars"][in_bar] * SR)
-        tail, head = prev["audio"][a0 : a0 + O], cur["audio"][b0 : b0 + O]
-        O = min(len(tail), len(head))
-        tail, head = tail[:O], head[:O]
+        tail, head = prev["audio"][a0 : a0 + n_ov], cur["audio"][b0 : b0 + n_ov]
+        n_ov = min(len(tail), len(head))
+        tail, head = tail[:n_ov], head[:n_ov]
 
         duck = recipe["duck"]
-        overlap = _apply_recipe(tail, recipe["A_vol"], recipe["A_bands"], "out", duck) + \
-            _apply_recipe(head, recipe["B_vol"], recipe["B_bands"], "in", duck)
+        overlap = _apply_recipe(
+            tail, recipe["A_vol"], recipe["A_bands"], "out", duck
+        ) + _apply_recipe(head, recipe["B_vol"], recipe["B_bands"], "in", duck)
 
-        body = cur["audio"][b0 + O : int(cur["bars"][cur["cue_out_bar"]] * SR)]
+        body = cur["audio"][b0 + n_ov : int(cur["bars"][cur["cue_out_bar"]] * SR)]
         mix = np.concatenate([mix, overlap, body])
         trans_report.append(
             {"from": prev["name"][:30], "to": cur["name"][:30], "type": ttype, "bars": n_bars}
@@ -429,8 +459,19 @@ def render_mix(
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         sf.write(tmp.name, mix, SR)
         subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", tmp.name,
-             "-codec:a", "libmp3lame", "-b:a", "192k", str(out_path)],
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                tmp.name,
+                "-codec:a",
+                "libmp3lame",
+                "-b:a",
+                "192k",
+                str(out_path),
+            ],
             check=True,
         )
         Path(tmp.name).unlink()
@@ -455,8 +496,13 @@ if __name__ == "__main__":
     p.add_argument("--bpm", type=float, default=None)
     p.add_argument("--play-minutes", type=float, default=3.2)
     args = p.parse_args()
-    rep = render_mix(args.tracks, args.out, target_bpm=args.bpm, genre=args.genre,
-                     play_minutes=args.play_minutes)
-    print(f"\n{rep['out']}  {rep['duration_s']/60:.1f} min @ {rep['target_bpm']:.0f} bpm")
+    rep = render_mix(
+        args.tracks,
+        args.out,
+        target_bpm=args.bpm,
+        genre=args.genre,
+        play_minutes=args.play_minutes,
+    )
+    print(f"\n{rep['out']}  {rep['duration_s'] / 60:.1f} min @ {rep['target_bpm']:.0f} bpm")
     for tr in rep["transitions"]:
         print(f"  {tr['from']}  →  {tr['to']}   {tr['type'].upper()} {tr['bars']} bars")
