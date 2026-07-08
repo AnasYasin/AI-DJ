@@ -236,6 +236,9 @@ def segment(audio_path: str | Path) -> dict:
         "beats": [round(float(t), 3) for t in beats],
         "bars": [round(float(t), 3) for t in bars],
         "sections": sections,
+        # per-bar energy (z-scored rms+kick) — used by the mixer to pick which
+        # window of the track to play against the set's energy curve
+        "bar_energy": [round(float(v), 3) for v in (F[:, 0] + F[:, 3])],
     }
 
 
