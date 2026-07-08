@@ -52,14 +52,28 @@ stem separation — park until core loop ships.
   validated): phase 2, for critic + played-segment fine-tune.
 - Val split: `data/processed/split_mixes.csv` — mix-level, 15% per genre, frozen.
 
-## Status
+## Status (2026-07-08)
 - [x] embeddings fixed & re-embedded (`embeddings.parquet` = fixed; corrupt kept
-      as `*_corrupt_backup.parquet`)
-- [x] features merged (28,460 × [embedding + bpm/key/energy/…])
-- [x] split file written
-- [x] train_model.py: 7 bugs fixed (default dataset, false-neg masking,
-      genre-blocked batches, genre-filtered mining, recalibrated band, cached
-      inputs, vectorised metrics)
-- [ ] ChromaDB re-index (`python src/features/vector_store.py` after `rm -rf data/processed/chromadb`)
-- [ ] Train Model A: `conda activate aidj && python src/models/train_model.py`
-- [ ] Eval vs 0.688 probe / 0.624 BPM baselines → then Model B
+      as `*_corrupt_backup.parquet`); ChromaDB re-indexed
+- [x] features merged (28,460 × [embedding + bpm/key/energy/…]); split frozen
+- [x] **Model A** trained (z-scored inputs + scalar branch): val adjacency AUC
+      0.663 vs raw 0.622 / BPM 0.624. 50 epochs is the sweet spot (150 overfits).
+      Inference must apply `models/encoder_norm.npz`.
+- [x] **Model B** (train_sequence.py, causal transformer + genre token, InfoNCE):
+      val next-track MRR 0.0428 vs 0.0365 context-free baseline (+17%),
+      median rank 870 vs 1138 (~4,700 candidates)
+- [x] **Edge scorer** (edge_scorer.py → models/edge_gbm.pkl): val AUC ~0.69
+- [x] **Planner** (predict_model.py): beam search over Model B context + GBM +
+      hard rules (BPM ≤5%, Camelot ≤2, one track per artist) + energy curves
+- [x] **Segmenter** (audio_segmenter.py): phrase-aligned sections, tested on 4 tracks
+- [x] **Mixer** (audio_mixer.py): first mix rendered — 6.6 min @ 117 BPM,
+      16-bar bass-swap transitions (data/external/first_mix.mp3)
+
+## Next
+- [ ] Listen-test the mix; tune segmenter/mixer from what the ears say
+- [ ] Wire transition-type → overlap length (genre params in CLAUDE.md)
+- [ ] Jamendo full-audio source → connect planner to mixer end-to-end
+- [ ] Claude intent parsing + FastAPI (Phase 10)
+- [ ] DJ style archetypes (48 multi-mix DJs → ~10-15 clusters)
+- [ ] v2: mix-audio corpus (downloader/aligner validated), transition critic,
+      learned cue-point priors
