@@ -200,11 +200,13 @@ def test_librosa_only_is_resumable(tmp_path, monkeypatch):
     assert len(result) == 1, f"Expected 1 row, got {len(result)} — resumability broken"
 
 
-# ── build_features --mode merge ───────────────────────────────────────────────
+# ── preprocess_features (merge step, moved out of build_features) ─────────────
 
 
 def test_merge_joins_on_track_id(tmp_path, monkeypatch):
     """merge must inner-join embeddings + librosa features on track_id → features.parquet."""
+    from src.data import preprocess_features as pf
+
     embeddings_path = tmp_path / "embeddings.parquet"
     librosa_path = tmp_path / "librosa_features.parquet"
     features_path = tmp_path / "features.parquet"
@@ -216,11 +218,11 @@ def test_merge_joins_on_track_id(tmp_path, monkeypatch):
         {"track_id": ["t1", "t2"], **{k: [v, v] for k, v in _FAKE_LIBROSA_FEATS.items()}}
     ).to_parquet(librosa_path, index=False)
 
-    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
-    monkeypatch.setattr("src.features.build_features.LIBROSA_FEATURES_PATH", librosa_path)
-    monkeypatch.setattr("src.features.build_features.FEATURES_PATH", features_path)
+    monkeypatch.setattr(pf, "EMBEDDINGS_PATH", embeddings_path)
+    monkeypatch.setattr(pf, "LIBROSA_FEATURES_PATH", librosa_path)
+    monkeypatch.setattr(pf, "FEATURES_PATH", features_path)
 
-    result = build_features(mode="merge")
+    result = pf.run()
 
     assert features_path.exists()
     assert len(result) == 2
@@ -231,6 +233,8 @@ def test_merge_joins_on_track_id(tmp_path, monkeypatch):
 
 def test_merge_inner_joins_partial_librosa(tmp_path, monkeypatch):
     """merge must drop tracks missing from librosa_features (inner join)."""
+    from src.data import preprocess_features as pf
+
     embeddings_path = tmp_path / "embeddings.parquet"
     librosa_path = tmp_path / "librosa_features.parquet"
     features_path = tmp_path / "features.parquet"
@@ -242,38 +246,36 @@ def test_merge_inner_joins_partial_librosa(tmp_path, monkeypatch):
         {"track_id": ["t1"], **{k: [v] for k, v in _FAKE_LIBROSA_FEATS.items()}}
     ).to_parquet(librosa_path, index=False)
 
-    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
-    monkeypatch.setattr("src.features.build_features.LIBROSA_FEATURES_PATH", librosa_path)
-    monkeypatch.setattr("src.features.build_features.FEATURES_PATH", features_path)
+    monkeypatch.setattr(pf, "EMBEDDINGS_PATH", embeddings_path)
+    monkeypatch.setattr(pf, "LIBROSA_FEATURES_PATH", librosa_path)
+    monkeypatch.setattr(pf, "FEATURES_PATH", features_path)
 
-    result = build_features(mode="merge")
+    result = pf.run()
 
     assert len(result) == 1
     assert result.iloc[0]["track_id"] == "t1"
 
 
 def test_merge_raises_if_embeddings_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "src.features.build_features.EMBEDDINGS_PATH", tmp_path / "missing_emb.parquet"
-    )
-    monkeypatch.setattr(
-        "src.features.build_features.LIBROSA_FEATURES_PATH", tmp_path / "missing_lib.parquet"
-    )
+    from src.data import preprocess_features as pf
+
+    monkeypatch.setattr(pf, "EMBEDDINGS_PATH", tmp_path / "missing_emb.parquet")
+    monkeypatch.setattr(pf, "LIBROSA_FEATURES_PATH", tmp_path / "missing_lib.parquet")
     with pytest.raises(FileNotFoundError):
-        build_features(mode="merge")
+        pf.run()
 
 
 def test_merge_raises_if_librosa_features_missing(tmp_path, monkeypatch):
+    from src.data import preprocess_features as pf
+
     embeddings_path = tmp_path / "embeddings.parquet"
     pd.DataFrame({"track_id": ["t1"], "embedding": [_FAKE_EMBEDDING.tolist()]}).to_parquet(
         embeddings_path, index=False
     )
-    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
-    monkeypatch.setattr(
-        "src.features.build_features.LIBROSA_FEATURES_PATH", tmp_path / "missing.parquet"
-    )
+    monkeypatch.setattr(pf, "EMBEDDINGS_PATH", embeddings_path)
+    monkeypatch.setattr(pf, "LIBROSA_FEATURES_PATH", tmp_path / "missing.parquet")
     with pytest.raises(FileNotFoundError):
-        build_features(mode="merge")
+        pf.run()
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
