@@ -18,8 +18,8 @@ Run:
   python -m src.models.train_sequence
 """
 
-import logging
 from collections import defaultdict
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -160,9 +160,7 @@ class SequenceModel(nn.Module):
         x = torch.cat([g, x], dim=1)  # genre prefix token
         x = x + self.pos_emb(torch.arange(L + 1, device=x.device)).unsqueeze(0)
         causal = nn.Transformer.generate_square_subsequent_mask(L + 1, device=x.device)
-        pad = torch.cat(
-            [torch.zeros(B, 1, dtype=torch.bool, device=x.device), pad_mask], dim=1
-        )
+        pad = torch.cat([torch.zeros(B, 1, dtype=torch.bool, device=x.device), pad_mask], dim=1)
         h = self.encoder(x, mask=causal, src_key_padding_mask=pad)
         return F.normalize(self.head(h[:, 1:]), dim=-1)  # drop genre token
 
@@ -292,9 +290,7 @@ def train():
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=hp["epochs"])
     batcher = MixBatcher(seqs["train"], hp["batch_mixes"], hp["seed"])
 
-    pool_by_genre = {
-        g: np.stack([proj[t] for t in ts]) for g, ts in genre_tracks.items()
-    }
+    pool_by_genre = {g: np.stack([proj[t] for t in ts]) for g, ts in genre_tracks.items()}
 
     best_r10 = 0.0
     for epoch in range(1, hp["epochs"] + 1):

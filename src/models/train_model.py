@@ -20,8 +20,8 @@ Run:
   python src/models/train_model.py
 """
 
-import logging
 from collections import defaultdict
+import logging
 from pathlib import Path
 import time
 
@@ -486,9 +486,7 @@ def compute_contrastive_metrics(
         return {}
     id2i = {t: i for i, t in enumerate(val_ids)}
 
-    inputs = torch.from_numpy(
-        np.stack([input_matrix[tid_to_idx[t]] for t in val_ids])
-    ).to(device)
+    inputs = torch.from_numpy(np.stack([input_matrix[tid_to_idx[t]] for t in val_ids])).to(device)
     with torch.no_grad():
         proj = encoder(inputs)  # (N, 128)
 
