@@ -21,11 +21,14 @@ import argparse
 import json
 import logging
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
 import torch
 
+from src.data.preprocess_tracklist import is_unidentified
+from src.features.compatibility import compatibility
 from src.models.edge_scorer import EdgeScorer, TrackArrays, camelot_distance, pair_features
 from src.models.train_sequence import TOKEN_EXTRA, SequenceModel
 
@@ -39,6 +42,12 @@ BEAM_WIDTH = 8
 MAX_BPM_LOG_RATIO = 0.05  # ≈ ±5% — pyrubberband stretches this cleanly
 MAX_CAMELOT_DIST = 2.0
 W_CTX, W_GBM, W_ENERGY = 1.0, 1.0, 0.7
+
+# Weight on pair compatibility, which is what decides how LONG the mixer is
+# allowed to hold two records together. The default is 0: without it the planner
+# optimises for what fits next, not for what can be blended slowly. Raise it to
+# plan a set built for long overlaps.
+W_COMPAT_DEFAULT = 0.0
 
 CURVES = {
     "build": lambda t: t,
@@ -89,6 +98,25 @@ def make_tokens(A: TrackArrays, track_idxs: list[int], n_total: int) -> np.ndarr
     return np.concatenate([emb, extra], axis=1).astype(np.float32)
 
 
+# ── Artists ────────────────────────────────────────────────────────────────────
+
+# Credit strings join collaborators in a dozen ways. Splitting on all of them is
+# what makes "one track per artist" mean one track per *person*.
+# Symbols may sit tight against the names; words must be surrounded by spaces,
+# and take any trailing period with them ("pres." must not leave a "." behind).
+_ARTIST_SPLIT = re.compile(
+    r"\s*[&+/,]\s*"
+    r"|\s+(?:x|vs\.?|with|and|feat\.?|ft\.?|pres\.?|presents|meets)\s+",
+    re.I,
+)
+
+
+def split_artists(credit: str) -> frozenset[str]:
+    """ "A & B pres. C" → {"a", "b", "c"}. Empty credits yield an empty set."""
+    parts = (p.strip().lower() for p in _ARTIST_SPLIT.split(str(credit)))
+    return frozenset(p for p in parts if p)
+
+
 # ── Planner ────────────────────────────────────────────────────────────────────
 
 
@@ -99,13 +127,53 @@ def plan_mix(
     curve: str = "build",
     seed_track: str | None = None,
     track_ids: list[str] | None = None,
+    exclude_ids: set[str] | None = None,
+    min_energy_pct: float | None = None,
+    compat_weight: float = W_COMPAT_DEFAULT,
 ) -> dict:
+    """
+    Plan a set.
+
+    `exclude_ids` drops tracks a previous attempt could not fetch, so the caller
+    can replan around them instead of rendering a short set.
+
+    `min_energy_pct` (0-100) drops the quietest tail of the pool before planning.
+    The energy curve is mapped onto the pool's own quantiles, so it shapes the
+    set relative to whatever is in the pool; raising the floor is what makes a
+    set loud in absolute terms.
+
+    `compat_weight` adds pair compatibility to the beam score. The mixer caps
+    overlap length by that same measure, so a set planned without it will be
+    rendered with short transitions however smooth the ordering looks.
+    """
     f = pd.read_parquet(FEATURES_PATH).drop_duplicates("track_id")
     meta = (
         pd.read_csv(TRACKLIST_PATH, usecols=["track_id", "genre", "artist_name", "track_name"])
         .drop_duplicates("track_id")
         .set_index("track_id")
     )
+    # "Massano – ID" is a placeholder for an unreleased track. It has no
+    # searchable name, so it can never be fetched or played, and it must not
+    # reach a plan.
+    named = ~meta.apply(lambda r: is_unidentified(r["artist_name"], r["track_name"]), axis=1)
+    n_before = len(f)
+    f = f[f["track_id"].map(named).fillna(False)]
+    if n_before != len(f):
+        log.info("dropped %d unidentified (ID/Unknown) tracks from the pool", n_before - len(f))
+
+    if min_energy_pct is not None:
+        floor = float(np.percentile(f["energy_mean"], min_energy_pct))
+        n_before = len(f)
+        f = f[f["energy_mean"] >= floor]
+        log.info(
+            "energy floor p%.0f = %.3f: %d → %d tracks", min_energy_pct, floor, n_before, len(f)
+        )
+
+    if exclude_ids:
+        n_before = len(f)
+        f = f[~f["track_id"].isin(exclude_ids)]
+        log.info("excluded %d previously unfetchable tracks", n_before - len(f))
+
     if track_ids is not None:  # explicit pool (e.g. locally available audio)
         f = f[f["track_id"].isin(track_ids)]
     else:
@@ -116,7 +184,15 @@ def plan_mix(
     if len(f) < n_tracks:
         raise ValueError(f"pool has only {len(f)} tracks")
     A = TrackArrays(f)
-    artist_code = pd.factorize(A.df["track_id"].map(meta["artist_name"]).fillna(""))[0]
+
+    # One track per artist, counting every artist on a collaboration. Comparing
+    # the credit string as a whole let "Reinier Zonneveld & Miro" and "Reinier
+    # Zonneveld" both into the same three-track set.
+    artist_sets = [split_artists(a) for a in A.df["track_id"].map(meta["artist_name"]).fillna("")]
+    artist_tracks: dict[str, list[int]] = {}
+    for i, names in enumerate(artist_sets):
+        for name in names:
+            artist_tracks.setdefault(name, []).append(i)
     log.info("pool: %d %s tracks in %.0f–%.0f BPM", len(f), genre, *bpm_range)
 
     scorer = EdgeScorer.load()
@@ -147,7 +223,9 @@ def plan_mix(
                 <= MAX_CAMELOT_DIST
             )
             mask[tracks] = False
-            mask &= ~np.isin(artist_code, artist_code[tracks])  # one track per artist
+            for t in tracks:  # one track per artist, collaborations included
+                for name in artist_sets[t]:
+                    mask[artist_tracks[name]] = False
             cand = np.flatnonzero(mask)
             if len(cand) == 0:
                 continue
@@ -156,6 +234,15 @@ def plan_mix(
             e_fit = 1.0 - np.abs(A.energy[cand] - targets[step]) / (2 * e_scale)
             z = (ctx_sim - ctx_sim.mean()) / (ctx_sim.std() + 1e-9)
             total = W_CTX * z + W_GBM * gbm + W_ENERGY * e_fit
+            if compat_weight:
+                total = total + compat_weight * compatibility(
+                    camelot_distance(
+                        A.cam_pos[last], A.cam_mode[last], A.cam_pos[cand], A.cam_mode[cand]
+                    ),
+                    np.abs(A.energy[last] - A.energy[cand]),
+                    np.abs(A.loud[last] - A.loud[cand]),
+                    np.abs(np.log(A.bpm[last] / A.bpm[cand])) * 100,
+                )
             order = np.argsort(-total)[:BEAM_WIDTH]
             for c, s in zip(cand[order], total[order]):
                 expansions.append((tracks + [int(c)], score + float(s)))
@@ -186,6 +273,12 @@ def plan_mix(
             "key": str(A.df["key"].iloc[ti]),
             "energy": round(float(A.energy[ti]), 3),
             "target_energy": round(float(targets[i]), 3),
+            # The curve value itself, 0-1, before it is mapped onto the pool's
+            # energy range. This is what the mixer needs to pick which window of
+            # the track to play; `target_energy` above is in absolute energy
+            # units and is for display only. Passing that one to the mixer
+            # silently flattens the curve.
+            "energy_target01": round(float(shape[i]), 3),
         }
         if i > 0:
             prev = tracks[i - 1]
@@ -210,10 +303,27 @@ if __name__ == "__main__":
     p.add_argument("--n", type=int, default=10)
     p.add_argument("--curve", choices=list(CURVES), default="build")
     p.add_argument("--seed-track", default=None)
+    p.add_argument(
+        "--min-energy-pct", type=float, default=None, help="drop the quietest N%% of the pool"
+    )
+    p.add_argument(
+        "--compat-weight",
+        type=float,
+        default=W_COMPAT_DEFAULT,
+        help="weight on pair compatibility — raise it to plan for long overlaps",
+    )
     p.add_argument("--json", default=None, help="write full plan to this path")
     args = p.parse_args()
 
-    plan = plan_mix(args.genre, tuple(args.bpm), args.n, args.curve, args.seed_track)
+    plan = plan_mix(
+        args.genre,
+        tuple(args.bpm),
+        args.n,
+        args.curve,
+        args.seed_track,
+        min_energy_pct=args.min_energy_pct,
+        compat_weight=args.compat_weight,
+    )
     print(f"\n{plan['genre']} | curve={plan['curve']} | beam score {plan['score']}")
     for t in plan["tracks"]:
         trans = f"  Δbpm {t['d_bpm']:+.1f} cam {t['cam_dist']:.1f}" if t["n"] > 1 else ""

@@ -10,6 +10,7 @@ Steps:
 
 import logging
 from pathlib import Path
+import re
 
 import pandas as pd
 
@@ -22,6 +23,33 @@ MIN_TRACKS = 4
 MAX_TRACKS = 30
 MAX_MIXES_PER_GENRE = 500
 SEED = 42
+
+
+# ── Unidentified tracks ────────────────────────────────────────────────────────
+# DJs list unreleased or unrecognised tracks as "ID". The name carries no
+# information, so the track cannot be searched for, fetched, or played. Anything
+# whose title reduces to one of these placeholders is unusable at inference.
+
+_PLACEHOLDER = re.compile(r"^(id\s*\d*|unknown|untitled|unreleased|n/?a|tba|\?+|-+)$", re.I)
+_TRAILING_PARENS = re.compile(r"\s*\([^)]*\)\s*$")
+_LEADING_FEAT = re.compile(r"^(feat\.?|ft\.?)\s+.*?\s+-\s+", re.I)
+
+
+def _reduce_title(text: str) -> str:
+    """Strip remix/working-title brackets and feature credits down to the base title."""
+    t = str(text).strip()
+    prev = None
+    while t != prev:  # "ID (Sara Landry Remix) (Extended)" → "ID"
+        prev = t
+        t = _TRAILING_PARENS.sub("", t).strip()
+    return _LEADING_FEAT.sub("", t).strip()
+
+
+def is_unidentified(artist: str, title: str) -> bool:
+    """True when the artist or the title is a placeholder rather than a real name."""
+    return bool(
+        _PLACEHOLDER.match(_reduce_title(title)) or _PLACEHOLDER.match(_reduce_title(artist))
+    )
 
 
 def _load(path: Path) -> pd.DataFrame:

@@ -36,6 +36,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Sampler
 import wandb
 
+from src.features.transition_labeler import normalise_onset
 from src.features.vector_store import (
     CHROMA_PATH,
     COLLECTION_NAME,
@@ -121,7 +122,7 @@ def _prepare_encoder_inputs(features: pd.DataFrame) -> tuple[np.ndarray, dict[st
 
     Normalisation:
       bpm       / 200         → [0, 1] for typical 80–180 BPM range
-      onset     / 5.0         → [0, 1] for librosa's raw onset scale
+      onset     normalise_onset → [0, 1] for librosa's raw onset scale
       lufs      (x+40)/40     → [0, 1] mapping −40…0 LUFS
 
     Expensive (~10s for 28k tracks) — call ONCE and pass the result around.
@@ -140,7 +141,7 @@ def _prepare_encoder_inputs(features: pd.DataFrame) -> tuple[np.ndarray, dict[st
     key_cos = np.cos(angle).astype(np.float32)
     key_mode = (~keys.str.endswith("m")).to_numpy(dtype=np.float32)  # minor=0, major=1
     energy = features["energy_mean"].to_numpy(dtype=np.float32)
-    onset_norm = np.minimum(features["onset_strength"].to_numpy(dtype=np.float32) / 5.0, 1.0)
+    onset_norm = normalise_onset(features["onset_strength"].to_numpy(dtype=np.float32))
     lufs_norm = np.clip(
         (features["loudness_lufs"].to_numpy(dtype=np.float32) + 40.0) / 40.0, 0.0, 1.0
     )

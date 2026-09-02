@@ -69,9 +69,24 @@ HARM_CLASH = 5  # ≥ 5 steps  → harsh clash
 # Loudness delta = loudness_lufs_b - loudness_lufs_a  (dBLUFS)
 LOUD_MELT_MAX = 3.0  # |delta| below this → melt candidate
 
-# Onset strength (librosa mean): proxy for rhythmic punchiness / danceability
-# Typical dance-music range: 0.2–0.7; 0.35 separates punchy from mellow.
-ONSET_HIGH_MIN = 0.35  # both tracks need onset_strength > this for wave
+# Onset strength: proxy for rhythmic punchiness / danceability.
+#
+# build_features.py stores librosa's RAW mean onset_strength, which runs about
+# 1.1 to 2.5 across the catalog. Every threshold in this project is written
+# against the NORMALISED scale (raw / ONSET_SCALE), where the same catalog runs
+# 0.22 to 0.51 and 0.35 sits at the median. Normalise before comparing, always.
+#
+# This was a live bug: the rules below read the raw column and compared it to
+# 0.35, which 100% of tracks exceed, so the `wave` rule collapsed into
+# "tight BPM and not rise and not fade" and the confidence bump always applied.
+ONSET_SCALE = 5.0
+ONSET_HIGH_MIN = 0.35  # both tracks need normalised onset > this for wave
+
+
+def normalise_onset(raw):
+    """Raw librosa onset_strength → the 0-1 scale every threshold is written for."""
+    return np.minimum(np.asarray(raw, dtype=np.float32) / ONSET_SCALE, 1.0)
+
 
 # Time gap between consecutive mix entries (minutes)
 # starting_time rolls over each hour; pairs with gap > this are skipped.
@@ -145,8 +160,8 @@ def _pair_features(row_a: pd.Series, row_b: pd.Series, time_gap: float) -> dict:
     energy_delta = float(row_b["energy_mean"]) - float(row_a["energy_mean"])
     loudness_delta = float(row_b["loudness_lufs"]) - float(row_a["loudness_lufs"])
     harm_dist = _harmonic_dist(str(row_a["key"]), str(row_b["key"]))
-    onset_a = float(row_a.get("onset_strength", 0.0))
-    onset_b = float(row_b.get("onset_strength", 0.0))
+    onset_a = float(normalise_onset(row_a.get("onset_strength", 0.0)))
+    onset_b = float(normalise_onset(row_b.get("onset_strength", 0.0)))
     time_gap_norm = float(np.clip(time_gap / TIME_GAP_MAX_MIN, 0.0, 1.0))
 
     return {

@@ -27,7 +27,8 @@ essentia-tensorflow    # TensorflowPredictEffnetDiscogs (discogs-effnet 1280-dim
 deeprhythm             # DeepRhythm CNN BPM estimator (replaces RhythmExtractor2013)
 
 # ── audio preview fetching ─────────────────────────────────────────────────────
-yt-dlp                 # SoundCloud fallback previews (30s MP3 via scsearch + ffmpeg)
+yt-dlp>=2026.8.19      # preview fallback + full-track fetch. Keep current: YouTube
+                       # breaks older builds with HTTP 403 on every download.
 httpx==0.27.0          # async HTTP client — iTunes preview downloads
 mutagen               # audio file header validation (MP3/M4A) — used in validate_previews + build_features
 
