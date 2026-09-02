@@ -1,10 +1,14 @@
 name: CI
 
+# Only on the way into main. Feature branches (dev) push often and the suite
+# needs ffmpeg, rubberband and model weights, so running it on every push was
+# noise rather than signal.
 on:
-  push:
-    branches: [dev, main]
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   lint-and-test:
@@ -28,16 +32,16 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libsndfile1
+          sudo apt-get install -y ffmpeg libsndfile1 rubberband-cli
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
       - name: Lint (ruff check)
-        run: ruff check src/ tests/ --output-format=github
+        run: ruff check src/ tests/ scripts/ dags/ --output-format=github
 
       - name: Format check (ruff format)
-        run: ruff format --check src/ tests/
+        run: ruff format --check src/ tests/ scripts/
 
       - name: Run tests
         run: pytest tests/ -v
