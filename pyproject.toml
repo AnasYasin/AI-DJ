@@ -20,7 +20,7 @@ requires-python = "~=3.10.0"
 line-length = 99
 # Point at the actual source directory
 src = ["src"]
-include = ["pyproject.toml", "src/**/*.py", "tests/**/*.py", "dags/**/*.py"]
+include = ["pyproject.toml", "src/**/*.py", "tests/**/*.py", "dags/**/*.py", "scripts/**/*.py"]
 
 [tool.ruff.lint]
 extend-select = ["I"]   # I = isort (import sorting)

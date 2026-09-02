@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html{color-scheme:light dark}body{margin:0}img{max-width:100%}</style>
+<title>Prompt to Mixdown</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --paper:      #f4f6f8;
+    --surface:    #ffffff;
+    --surface-2:  #eaeef2;
+    --ink:        #10151b;
+    --ink-2:      #3d4954;
+    --ink-3:      #6b7885;
+    --rule:       #d3dae1;
+    --accent:     #0b7f96;
+    --accent-dim: #d3edf3;
+    --ok:         #1a7f42;
+    --partial:    #a86a08;
+    --missing:    #b4322a;
+    --shadow:     0 1px 2px rgba(16,21,27,.06), 0 8px 24px rgba(16,21,27,.05);
+    color-scheme: light;
+  }
+  :root:not([data-theme="light"]) { }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0d1116;
+      --surface:    #141a21;
+      --surface-2:  #1c242c;
+      --ink:        #e6edf3;
+      --ink-2:      #a9b7c4;
+      --ink-3:      #74838f;
+      --rule:       #27313a;
+      --accent:     #45c5dd;
+      --accent-dim: #12313a;
+      --ok:         #56c98a;
+      --partial:    #e0a338;
+      --missing:    #ef7a70;
+      --shadow:     0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #0d1116;
+    --surface:    #141a21;
+    --surface-2:  #1c242c;
+    --ink:        #e6edf3;
+    --ink-2:      #a9b7c4;
+    --ink-3:      #74838f;
+    --rule:       #27313a;
+    --accent:     #45c5dd;
+    --accent-dim: #12313a;
+    --ok:         #56c98a;
+    --partial:    #e0a338;
+    --missing:    #ef7a70;
+    --shadow:     0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 56px 28px 96px; }
+  .col  { max-width: 68ch; }
+
+  h1, h2, h3 { font-family: Archivo, ui-sans-serif, system-ui, sans-serif; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(2rem, 4.6vw, 3rem); font-weight: 700; letter-spacing: -.022em; line-height: 1.08; }
+  h2 { font-size: 1.5rem; font-weight: 600; letter-spacing: -.014em; margin-bottom: .5rem; }
+  h3 { font-size: 1.03rem; font-weight: 600; letter-spacing: -.006em; margin-bottom: .3rem; }
+  p  { margin: 0 0 1rem; color: var(--ink-2); }
+  strong { color: var(--ink); font-weight: 600; }
+  a { color: var(--accent); }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .72rem; font-weight: 500; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--accent);
+    display: flex; align-items: center; gap: .7rem; margin-bottom: .55rem;
+  }
+  .eyebrow::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+
+  .lede { font-size: 1.16rem; line-height: 1.55; color: var(--ink-2); margin-top: 1.1rem; }
+
+  section { margin-top: 68px; }
+  .stack { display: flex; flex-direction: column; gap: 1.15rem; }
+
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: .875em; }
+  code { background: var(--surface-2); padding: .1em .38em; border-radius: 3px; color: var(--ink); }
+
+  /* stat strip — the channel-strip idea, read left to right */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px;
+           background: var(--rule); border: 1px solid var(--rule); border-radius: 6px;
+           overflow: hidden; margin-top: 2.2rem; }
+  .stat { background: var(--surface); padding: .85rem 1rem; }
+  .stat b { display: block; font-family: Archivo, sans-serif; font-size: 1.35rem; font-weight: 700;
+            letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--ink); }
+  .stat span { font-family: "IBM Plex Mono", monospace; font-size: .68rem; letter-spacing: .08em;
+               text-transform: uppercase; color: var(--ink-3); }
+
+  figure { margin: 1.6rem 0 1rem; }
+  .figbox { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
+            padding: 20px 18px; overflow-x: auto; box-shadow: var(--shadow); }
+  svg { display: block; max-width: 100%; height: auto; margin: 0 auto; color: var(--ink); }
+  figcaption { font-size: .86rem; color: var(--ink-3); margin-top: .7rem; max-width: 68ch; }
+
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; margin: .4rem 0 1rem; }
+  th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-family: "IBM Plex Mono", monospace; font-size: .7rem; letter-spacing: .09em;
+       text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
+  td.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tablewrap { overflow-x: auto; }
+
+  /* status: a severity stripe, not a coloured card */
+  .item { border-left: 3px solid var(--rule); padding: .1rem 0 .1rem 1rem; }
+  .item.ok      { border-left-color: var(--ok); }
+  .item.partial { border-left-color: var(--partial); }
+  .item.missing { border-left-color: var(--missing); }
+  .item p { margin: .15rem 0 0; font-size: .93rem; }
+  .tag { font-family: "IBM Plex Mono", monospace; font-size: .66rem; letter-spacing: .09em;
+         text-transform: uppercase; padding: .12em .5em; border-radius: 3px; margin-left: .5rem;
+         vertical-align: .12em; }
+  .tag.ok      { background: var(--ok);      color: var(--paper); }
+  .tag.partial { background: var(--partial); color: var(--paper); }
+  .tag.missing { background: var(--missing); color: var(--paper); }
+
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.4rem 2rem; }
+
+  .callout { background: var(--accent-dim); border: 1px solid var(--rule);
+             border-radius: 6px; padding: 1rem 1.15rem; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout p { color: var(--ink); }
+
+  ul { margin: 0 0 1rem; padding-left: 1.15rem; color: var(--ink-2); }
+  li { margin-bottom: .38rem; }
+  li::marker { color: var(--ink-3); }
+
+  footer { margin-top: 76px; padding-top: 1.4rem; border-top: 1px solid var(--rule);
+           font-family: "IBM Plex Mono", monospace; font-size: .72rem; color: var(--ink-3);
+           display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="col">
+    <div class="eyebrow">AI-DJ · system reference · 2 Sep 2026</div>
+    <h1>Prompt to Mixdown</h1>
+    <p class="lede">A text prompt becomes a continuous, beat-matched, stereo DJ mix. Three stages do the work, and one of them does not exist yet.</p>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><b>28,460</b><span>tracks in catalog</span></div>
+    <div class="stat"><b>2,834</b><span>mixes scraped</span></div>
+    <div class="stat"><b>3</b><span>trained models</span></div>
+    <div class="stat"><b>214</b><span>tests passing</span></div>
+    <div class="stat"><b>±0.2 ms</b><span>seam alignment</span></div>
+  </div>
+
+  <section>
+    <div class="eyebrow">01 — the flow</div>
+    <h2>Prompt in, one file out</h2>
+    <div class="col"><p>Everything below the intent parser is built and works end to end. The parser itself is not, so today the parameters are typed on a command line.</p></div>
+
+    <figure>
+      <div class="figbox">
+        <svg viewBox="0 0 680 610" role="img" aria-label="Vertical pipeline: text prompt, then an unbuilt intent parser, then planner, fetcher and mixer, producing a stereo FLAC. Unfetchable tracks loop back to the planner.">
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+            </marker>
+            <marker id="ar-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+            </marker>
+          </defs>
+
+          <!-- 1 prompt -->
+          <rect x="150" y="14" width="280" height="62" rx="6" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"/>
+          <text x="290" y="40" text-anchor="middle" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="currentColor">Text prompt</text>
+          <text x="290" y="59" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">“15 min high energy techno”</text>
+          <line x1="290" y1="76" x2="290" y2="106" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+          <text x="446" y="95" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">free text</text>
+
+          <!-- 2 intent parser, not built -->
+          <rect x="150" y="108" width="280" height="62" rx="6" fill="none" stroke="var(--ink-3)" stroke-width="1.2" stroke-dasharray="5 4"/>
+          <text x="290" y="134" text-anchor="middle" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="var(--ink-3)">Intent parser</text>
+          <text x="290" y="153" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">not built — Phase 10</text>
+          <line x1="290" y1="170" x2="290" y2="200" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+          <text x="446" y="182" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">genre · bpm range · curve</text>
+          <text x="446" y="196" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">n tracks · energy floor</text>
+
+          <!-- 3 planner -->
+          <rect x="150" y="202" width="280" height="62" rx="6" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"/>
+          <text x="290" y="228" text-anchor="middle" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="currentColor">Planner</text>
+          <text x="290" y="247" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">beam search · 3 models · hard rules</text>
+          <line x1="290" y1="264" x2="290" y2="294" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+          <text x="446" y="283" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">ordered tracklist</text>
+
+          <!-- 4 fetcher -->
+          <rect x="150" y="296" width="280" height="62" rx="6" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"/>
+          <text x="290" y="322" text-anchor="middle" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="currentColor">Fetcher</text>
+          <text x="290" y="341" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">YouTube · duration + fingerprint gate</text>
+          <line x1="290" y1="358" x2="290" y2="388" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+          <text x="446" y="377" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">verified full audio</text>
+
+          <!-- 5 mixer -->
+          <rect x="150" y="390" width="280" height="62" rx="6" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"/>
+          <text x="290" y="416" text-anchor="middle" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="currentColor">Mixer</text>
+          <text x="290" y="435" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">segment · stretch · align · blend</text>
+          <line x1="290" y1="452" x2="290" y2="482" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+          <text x="446" y="471" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">one continuous file</text>
+
+          <!-- 6 output -->
+          <rect x="150" y="484" width="280" height="62" rx="6" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="1.4"/>
+          <text x="290" y="510" text-anchor="middle" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="currentColor">Stereo FLAC</text>
+          <text x="290" y="529" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">15:34 @ 138 BPM · −14 LUFS</text>
+
+          <!-- replan feedback -->
+          <path d="M 150 340 L 96 340 L 96 236 L 144 236" fill="none" stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ar-a)"/>
+          <text x="88" y="300" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--accent)">unfetchable</text>
+          <text x="88" y="314" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--accent)">→ replan</text>
+        </svg>
+      </div>
+      <figcaption>The whole path. Only the dashed stage is missing. The feedback arrow is why a plan can be discarded and rebuilt mid-run: a track with no findable full version is excluded and the planner is asked again.</figcaption>
+    </figure>
+
+    <div class="col stack">
+      <div>
+        <h3>Planner — picks the tracks and their order</h3>
+        <p>Pool is genre plus BPM range, optionally with an energy floor. Then a beam search of width 8 walks the set forward, scoring each candidate on four things and vetoing on hard rules: BPM within 5%, Camelot distance ≤ 2, one track per artist, none repeated.</p>
+      </div>
+      <div>
+        <h3>Fetcher — turns names into audio it can trust</h3>
+        <p>Searches YouTube, then applies two gates. Duration must be 4 to 15 minutes, checked on the decoded file and not just the metadata. Then a constellation fingerprint has to find the track's own 30-second preview inside the download. Real pairs score 457 to 14,466 matching hashes; wrong recordings score 21 or fewer.</p>
+      </div>
+      <div>
+        <h3>Mixer — renders the audio</h3>
+        <p>Segments each track, picks which window of it to play, stretches everything to one tempo, then makes four independent decisions at every seam.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">02 — one seam</div>
+    <h2>What happens where two records meet</h2>
+    <div class="col"><p>This is the part that is hard to hold in your head. Four decisions, each made by a different mechanism, all landing on the same few bars of audio.</p></div>
+
+    <figure>
+      <div class="figbox">
+        <svg viewBox="0 0 860 300" role="img" aria-label="Level envelopes across one overlap: track A leads at full while track B enters underneath at minus eight decibels, the lead changes hands over a fixed number of bars, then A falls away and B leads.">
+          <defs>
+            <marker id="tick" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+              <circle cx="5" cy="5" r="3" fill="var(--accent)"/>
+            </marker>
+          </defs>
+
+          <!-- overlap band -->
+          <rect x="260" y="26" width="360" height="212" fill="var(--accent-dim)" opacity=".55"/>
+          <line x1="260" y1="26" x2="260" y2="252" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3"/>
+          <line x1="620" y1="26" x2="620" y2="252" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3"/>
+          <line x1="490" y1="26" x2="490" y2="252" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3"/>
+          <line x1="560" y1="26" x2="560" y2="252" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3"/>
+
+          <!-- track A lane -->
+          <text x="16" y="52" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink-3)">track A</text>
+          <line x1="60" y1="130" x2="800" y2="130" stroke="var(--rule)" stroke-width="1"/>
+          <path d="M 60 60 L 490 60 L 560 104 L 620 130" fill="none" stroke="currentColor" stroke-width="2.4"/>
+          <path d="M 60 60 L 490 60 L 560 104 L 620 130 L 60 130 Z" fill="currentColor" opacity=".07"/>
+          <text x="150" y="52" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">full</text>
+
+          <!-- track B lane -->
+          <text x="16" y="230" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink-3)">track B</text>
+          <line x1="60" y1="248" x2="800" y2="248" stroke="var(--rule)" stroke-width="1"/>
+          <path d="M 260 248 L 300 214 L 490 214 L 560 172 L 800 172" fill="none" stroke="var(--accent)" stroke-width="2.4"/>
+          <path d="M 260 248 L 300 214 L 490 214 L 560 172 L 800 172 L 800 248 Z" fill="var(--accent)" opacity=".1"/>
+          <text x="330" y="207" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--accent)">−8 dB bed</text>
+          <text x="700" y="165" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--accent)">full</text>
+
+          <!-- markers -->
+          <text x="260" y="272" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">B enters</text>
+          <text x="525" y="272" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">lead swaps</text>
+          <text x="620" y="290" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">A out</text>
+          <text x="525" y="288" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-3)">fixed bars</text>
+
+          <!-- overlap span -->
+          <line x1="260" y1="16" x2="620" y2="16" stroke="var(--accent)" stroke-width="1.2" marker-start="url(#tick)" marker-end="url(#tick)"/>
+          <text x="440" y="12" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--accent)">overlap — length set by pair compatibility</text>
+        </svg>
+      </div>
+      <figcaption>One record is in front at all times. The incoming track sits underneath as a bed, the lead changes hands over a fixed number of bars, then the outgoing one clears. Because the handover is measured in bars rather than as a fraction, a 115-second melt hands over just as quickly as a 29-second blend.</figcaption>
+    </figure>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Decision</th><th>Made by</th><th>Grounded in</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Which type</strong><br><span class="mono">slam / rise / fade / melt / wave / blend / drop</span></td>
+              <td>Rules on the two tracks' measured energy, onset, key and BPM, then demoted to what the set's energy curve allows</td>
+              <td>A chill set never fires a slam</td></tr>
+          <tr><td><strong>How long</strong></td>
+              <td>Pair compatibility score → a ceiling of 16, 32, 60 or 90 seconds. Stretchable types may run to 2× their genre default</td>
+              <td>43,073 real consecutive pairs; AUC 0.643 vs random</td></tr>
+          <tr><td><strong>Who leads</strong></td>
+              <td>Outgoing track in front, incoming at −5 to −8 dB with its mids cut, swap over a fixed bar count</td>
+              <td>Ambiguous time cut from 163 s to 35 s across all types</td></tr>
+          <tr><td><strong>Beat alignment</strong></td>
+              <td>Kick-envelope cross-correlation over ±½ beat, corrected and re-measured until it settles</td>
+              <td>Seams land 180–215 ms out, corrected to ≤ 0.3 ms</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">03 — status</div>
+    <h2>Where it stands</h2>
+
+    <div class="grid2" style="margin-top:1.4rem">
+      <div class="stack">
+        <div class="item ok"><h3>Catalog and models<span class="tag ok">done</span></h3>
+          <p>2,834 mixes, 28,460 tracks with embeddings and features. Model A (0.663 AUC), Model B (+17% MRR), GBM edge scorer (0.69 AUC).</p></div>
+        <div class="item ok"><h3>Planner<span class="tag ok">done</span></h3>
+          <p>Beam search with hard rules, energy curves, an energy floor and an optional compatibility weight.</p></div>
+        <div class="item ok"><h3>Fetcher<span class="tag ok">done</span></h3>
+          <p>Duration and fingerprint gates, automatic replan around anything unfetchable.</p></div>
+        <div class="item ok"><h3>Mixer<span class="tag ok">done</span></h3>
+          <p>Stereo, LUFS-matched, zero-phase EQ, real swept filters, per-seam beat correction, lead-and-support blending.</p></div>
+      </div>
+      <div class="stack">
+        <div class="item partial"><h3>DJ profiles<span class="tag partial">partial</span></h3>
+          <p><code>mix_profiler.py</code> exists; <code>dj_profiler.py</code> and <code>dj_profiles.json</code> do not. 48 DJs have 5+ mixes each, so the data is there. Worth roughly double what genre gives for play length.</p></div>
+        <div class="item partial"><h3>Duration control<span class="tag partial">partial</span></h3>
+          <p>You get within about 10% of a requested length. Total time is not a parameter; windows flex to land on section boundaries.</p></div>
+        <div class="item missing"><h3>Intent parser<span class="tag missing">missing</span></h3>
+          <p>Phase 10. No natural language input at all today, and no API service. Everything is command-line arguments.</p></div>
+        <div class="item missing"><h3>Transition critic<span class="tag missing">missing</span></h3>
+          <p>Model C, plus the mix-audio corpus and learned cue points. There is no learned judgement of whether a rendered transition is good.</p></div>
+      </div>
+    </div>
+
+    <div class="col" style="margin-top:2rem">
+      <h3>Known weak points</h3>
+      <ul>
+        <li>The beam deduplicates on the unordered set, so two orderings of the same tracks collide and only one survives. Ordering is never actually compared.</li>
+        <li>The opening track is chosen by energy distance alone, with no model involved.</li>
+        <li>The three beam weights were set by hand and have never been tuned.</li>
+        <li>A failed fetch replans the whole set rather than replacing the one slot, which can discard a well-matched plan.</li>
+        <li>No way to ask for a named artist, an era, or a mood outside the five energy curves.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">04 — live demo</div>
+    <h2>Prefetching to S3</h2>
+    <div class="col">
+      <p><strong>Yes, and you should — but it solves the reliability problem, not the speed one.</strong> The bucket <code>ai-dj-data</code> already exists in eu-north-1.</p>
+      <p>Fetching is the fragile stage. Building the last 15-minute mix took about six minutes of fetching, including three candidates rejected by the fingerprint and one full replan. Separately, <code>yt-dlp</code> went stale and returned HTTP 403 on <em>every</em> download until it was upgraded. Neither is something you want happening in front of an audience.</p>
+      <p>Prefetching removes all of it, and the hook already exists: <code>plan_mix(track_ids=...)</code> restricts the pool to an explicit list, so the planner can only ever choose tracks you already hold.</p>
+    </div>
+
+    <div class="callout col" style="margin: 1.4rem 0 1.6rem">
+      <p><strong>But rendering is still slow.</strong> With every track local and every segmentation cached, a 15.6-minute mix took <span class="mono">192 s</span> of compute. Prefetching does not touch that.</p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Per track, 6.5 min of audio</th><th class="num">time</th><th>note</th></tr></thead>
+        <tbody>
+          <tr><td>Segmentation</td><td class="num">0.0 s</td><td>cached on disk, 20.1 s cold</td></tr>
+          <tr><td>Decode</td><td class="num">2.1 s</td><td></td></tr>
+          <tr><td><strong>Time-stretch</strong></td><td class="num">18.6 s</td><td><strong>80% of the cost</strong> — rubberband, stereo</td></tr>
+          <tr><td>Grid phase calibration</td><td class="num">1.1 s</td><td></td></tr>
+          <tr><td>Body analysis</td><td class="num">1.5 s</td><td></td></tr>
+          <tr><td>Six tracks</td><td class="num">141 s</td><td>the rest is blending and the FLAC write</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col stack" style="margin-top:1.2rem">
+      <div><h3>What to actually do</h3></div>
+      <div class="item ok"><h3>Prefetch a verified pool to S3</h3>
+        <p>Two or three hundred tracks across the genres you will demo, plus the segment JSON cache. Removes the six minutes, the 403 risk and the replan entirely.</p></div>
+      <div class="item ok"><h3>Cache the stretched audio</h3>
+        <p>The stretch depends only on the track and the target BPM. Pre-stretch each track at a few canonical tempos and 80% of the per-track cost disappears.</p></div>
+      <div class="item ok"><h3>Parallelise track preparation</h3>
+        <p>The six tracks are prepared independently and in series. On a multi-core box that phase drops from 141 s to roughly the cost of one track.</p></div>
+      <div class="item partial"><h3>Or pre-render for a truly instant demo</h3>
+        <p>Honest trade-off: a canned mix per prompt shows the output but not the system. Good for a first impression, weak if anyone asks to change the prompt.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>AI-DJ · pipeline reference</span>
+    <span>214 tests passing</span>
+    <span>2 September 2026</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -28,6 +28,7 @@ Designed for 4/4 electronic music — the inference pool (Jamendo) and all six
 training genres are 4/4.
 """
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -211,8 +212,41 @@ def _label_sections(F: np.ndarray, bounds: list[int]) -> list[dict]:
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 
-def segment(audio_path: str | Path) -> dict:
-    """Full analysis of one track → section map (see module docstring)."""
+CACHE_DIR = Path("data/interim/segments")
+
+
+def _cache_key(path: Path) -> str:
+    """Identify a file by path, size and mtime, so an edited file re-analyses."""
+    st = path.stat()
+    raw = f"{path.resolve()}|{st.st_size}|{int(st.st_mtime)}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+def segment(audio_path: str | Path, use_cache: bool = True) -> dict:
+    """
+    Full analysis of one track → section map (see module docstring).
+
+    Results are cached on disk. Beat tracking and HPSS take tens of seconds per
+    track, and the mixer analyses the same files on every render.
+    """
+    audio_path = Path(audio_path)
+    cache_path = None
+    if use_cache and audio_path.exists():
+        cache_path = CACHE_DIR / f"{_cache_key(audio_path)}.json"
+        if cache_path.exists():
+            try:
+                return json.loads(cache_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                log.warning("discarding unreadable segment cache %s", cache_path.name)
+
+    result = _segment_uncached(audio_path)
+    if cache_path is not None:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(result))
+    return result
+
+
+def _segment_uncached(audio_path: str | Path) -> dict:
     y, sr = librosa.load(str(audio_path), sr=SR, mono=True)
     bpm = _bpm(y, sr)
     beats, bars = _beat_grid(y, sr, bpm)

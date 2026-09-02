@@ -208,3 +208,10 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 PLAN.md
+data/interim/segments/
+
+# Rendered mixes, fetched audio and run logs — large binaries, regenerate with scripts/make_mix.py
+data/external/
+data/interim/mixes/
+logs/
+.claude/
