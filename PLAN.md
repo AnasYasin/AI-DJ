@@ -490,3 +490,15 @@ render to data/external/regression_set/ (README for Anas), then run the kick-hit
   not a shift error that one number fixes; a grid residual of ~70 ms cannot be excluded (hats in the mid section cluster
   at −60..−80 ms) but cannot be proven with kicks. Fix direction: recipe/EQ (take A's highs out earlier) or pair choice.
   Scripts: scratchpad p11_detail.py / p11_hats.py.
+
+### Kick-hit verifier — BUILT 2026-09-08 night (Anas: "do it")
+- `kick_hit_residual(tail, head, bpm)` in audio_mixer: one strong kick per beat per record (loudest rising kick-band frame
+  within ±0.6 beat, > 6× median, ≥ 0.75 beat apart), nearest-neighbour offsets per 4-bar window. Gate: ≥ 0.8 kicks/beat both
+  sides, ≥ 4 hits per window, window medians within 40 ms, |residual| ≤ beat/3. Applied after the correlation's shift passes:
+  if the gate passes and |residual| > 30 ms, b0 moves by the residual (+ = head late → earlier); report `kick_verify_ms`,
+  `seam_shift_total_ms`, seam_band gets "+kick-hits". 4 synthetic tests (late head, sparse gate, > beat/3 refused, aligned).
+- Regression set re-rendered: only p01 corrected (+121 → total +14 ms; kicks now within ±6 ms in 7/8 windows); p07 and c03
+  confirmed; the other 12 untouched (gate closed). p04 (+41 ms, two break windows at +150 break the 40 ms agreement) and
+  p10 (−180 in 6/8 windows, two at −84) stay uncorrected by design — candidates for a "majority of windows" gate later,
+  after Anas hears p01. Levels unchanged. results_before_kickverify.json keeps the previous numbers.
+- Offline check scripts/diag/regression_kick_hits.py now measures at `seam_shift_total_ms`.

@@ -78,7 +78,8 @@ for pid, p in man.items():
         tuple(p["B"]["cue"]) if p["B"].get("cue") else None,
     )
     a0 = int(A["bars"][r["out_bar"]] * SR)
-    b0 = int(B["bars"][r["in_bar"]] * SR) + int(round(r["seam_offset_before_ms"] / 1000 * SR))
+    applied_ms = r.get("seam_shift_total_ms", r["seam_offset_before_ms"])
+    b0 = int(B["bars"][r["in_bar"]] * SR) + int(round(applied_ms / 1000 * SR))
     n_ov = int(r["bars"] * bar * SR)
     tail = M._to_mono(A["audio"][a0 : a0 + n_ov])
     head = M._to_mono(B["audio"][b0 : b0 + n_ov])
@@ -102,7 +103,7 @@ for pid, p in man.items():
     med = np.median(alld) if alld else float("nan")
     iqr = (np.percentile(alld, 75) - np.percentile(alld, 25)) if alld else float("nan")
     print(
-        f"{pid} {p['seam_at'] // 60:3d}:00 {r['type']:5s} {r['bars']:2d}b applied {r['seam_offset_before_ms']:+5.0f} ms "
+        f"{pid} {p['seam_at'] // 60:3d}:00 {r['type']:5s} {r['bars']:2d}b applied {applied_ms:+5.0f} ms "
         f"({r['seam_band'][:10]:10s}) | kick-hit residual median {med:+6.0f} ms  IQR {iqr:4.0f}  "
         f"A kicks/beat {len(ka) / (r['bars'] * 4):.2f} B {len(kb) / (r['bars'] * 4):.2f} | windows: {' '.join(rows)}",
         flush=True,
