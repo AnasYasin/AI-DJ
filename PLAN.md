@@ -305,3 +305,188 @@ Then: finalize beat mixing; later rebuild start/end slot logic; model leakage/re
 
 Working style Anas asked for: explain a code-changing command before running it; no full test suite;
 do not re-render clips he has not heard; ear overrules numbers; ask on design decisions.
+
+## Hand-off, end of 2026-09-08 (second restart)
+- New since the last hand-off: seam decision rule verified on a NEW set, techno_build_15min.flac (15.0 min,
+  Amelie Lens / Mikael Jonasson / Tiger Stripes / The Reason Y, seams shifted +121 / −24 / −115 ms). Anas has
+  NOT reported on it yet; ask what he heard at 3:43–4:42 and 11:22–12:22 first. plan.json entries now carry
+  `seam_shift_ms` and `seam_decided_by` (from the next render on).
+- Committed and pushed: 4cb3741 on dev. After that commit, one small uncommitted change: scripts/make_mix.py
+  (seam fields in add_times). Commit it with the key work.
+
+## KEY REDESIGN — full design, agreed with Anas, NOT built. Implement next.
+Evidence (2026-09-08, 43,073 real consecutive pairs vs 36k random same-genre pairs, keys from essentia on
+30 s previews): real 14 % same key / 36 % 1–2 Camelot steps / 50 % >2 steps; random 9 / 34 / 57. DJs treat
+key as a weak preference. Our planner today: 62 % same key, 0 % >2 steps → monotone sets. With the veto off
+but compat_weight kept: still 65 % same key (the key term inside `compatibility()` dominates). With the veto
+off and key out of the planning score: 15 / 44 / 41 — matches the DJs.
+
+1. Planner (`src/models/predict_model.py`, `plan_mix` and `repair_candidates`):
+   a. Remove the hard veto `camelot_distance(...) <= MAX_CAMELOT_DIST` from the candidate mask (keep the BPM veto).
+   b. Planning compatibility must NOT include key: call `compatibility()` with the key distance replaced by 0,
+      or add a `key_weight` argument to `src/features/compatibility.py` and pass 0 from the planner. The MIXER
+      keeps the full compatibility (key included) for overlap length — a clash still gets a short overlap.
+   c. Per-genre soft key penalty added to the beam score: `− KEY_SOFT[genre] · max(cam_dist − 2, 0)`, tuned so
+      planned sets land near the genre's real clash share: melodic house 42 %, trance 43 %, techno 53 %,
+      tech house 55 %, drum and base 54 %, afro house 51 %. Tune by running plan_mix over the 6 genres × 3
+      curves (the script in the session log did exactly this) and adjusting KEY_SOFT until the >2-step share
+      is within ±5 % of the target. Start at 0.3 and sweep.
+   d. Cap per set inside the beam expansion: a beam may not add a candidate if it would make
+      (clashing joins) > floor(n_joins / 2), or if the previous join already clashed (never two in a row).
+      Clash = cam_dist > 2.
+   e. Plan JSON: write `cam_dist` for every join (already there) and a set-level `n_clashes`.
+2. Mixer (`src/audio/audio_mixer.py`, per transition, after `measured_transition`):
+   a. Compute Camelot distance A→B from the played windows (already done: `_camelot_dist(ta["key"], tb["key"])`).
+   b. If distance > 1: find the semitone shift s ∈ {−2, −1, +1, +2} that minimises the Camelot distance of
+      B's key shifted by s (a shift of k semitones moves the Camelot number by 7k mod 12; +1 st = +7 = −5 steps,
+      +2 st = +2 steps). If the best shift brings the distance to ≤ 1, apply it to B's audio with rubberband
+      pitch shift (`pyrubberband.pitch_shift(y, SR, s, rbargs={"-3": ""})`, or fold it into the existing
+      time_stretch call: rubberband CLI `-p <semitones>` alongside `-t`), BEFORE `_analyse_body` so the key
+      used downstream is the shifted one. Record `key_shift_semitones` in the track dict and the report.
+   c. If no shift within ±2 fixes it: no shift; the pair is a clash. The compatibility ceiling already shortens
+      the overlap; additionally move the bass swap to the FIRST half-phrase of the overlap (early swap) so the
+      two harmonies overlap as little as possible. Report `clash: true`.
+   d. Tests: Camelot arithmetic (5 steps → 1 st, 2 steps → 2 st, 3/4/6 steps → no fix), shift applied only when
+      it lands ≤ 1 step, key string updated after shift, planner cap (no two clashes in a row, ≤ floor(n/2)),
+      per-genre share within tolerance on the real pool (skipif no catalog).
+3. Verification for Anas: render one set that contains at least one shifted pair and one unshifted clash
+   (the plan will say which), and let him listen. Expect ~1 join in 3 shifted, ~1 in 5 a clash mix.
+4. Open constants to revisit by ear: ±2 semitone cap, the 60/40 clash cap for short sets, KEY_SOFT per genre.
+
+## 2026-09-08 (third session) — overlap loudness anchor
+Anas: techno_build seams at 3:43–4:42 and 11:22–12:22 are fine. Complaint: loudness "goes up and down
+suddenly", e.g. around 4:43. Measured (per-bar RMS, both sources aligned to the mix): both records sat at
+-10/-11 dB through the second half of overlap 1, the mix slid from -12.5 (4:11) to -20.0 (4:42), then
+Mosaic's own 8-bar breakdown (-21..-25) and its drop at 4:57 came up 17 dB in one bar. Cause: the ride's end
+anchor read Mosaic's first 8 body bars, which are all breakdown, so it aimed the overlap at -16.7.
+Fix (src/audio/audio_mixer.py `_overlap_gain_ride`): anchors are now each record's BODY level over its
+whole played window (`_anchor_level_db`, break-skipping median), not the 8 bars beside the seam. Call site
+passes prev's played window and cur's full body. Cap left at ±9 dB (a measured case, Farrago, needs +7 in).
+Re-render (same plan.json, cached tracks): overlap gains +5.0/0.0, +6.7/0.0, +5.4/0.0. Overlap 1 second
+half now -9.7..-11.4 (was -15.7..-20.0); break and drop are the record's own (-21 → -11, 10 dB).
+Side effect to judge by ear: the +5 dB start lift (A's cue-out lands in A's 8-bar break) now decays
+linearly to 0 across 32 bars, so A's drop inside the overlap (3:56–4:05) plays ~3 dB above body, was ~1.
+Files: data/external/listen/techno_build_seam1_loudfix_3m30-5m10.flac (clip for Anas),
+techno_build_15min_v2.flac (full, for later), work_techno_build/techno_build_15min/render_v2.log.
+Tests: 11 targeted gain-ride tests pass; new test `test_gain_ride_anchors_to_the_body_not_to_a_breakdown_after_the_seam`;
+Farrago test expectation 7→6 dB (body median vs max-of-two-bars anchor). UNCOMMITTED with make_mix seam fields.
+Lesson: for one seam, render the pair with scripts/diag/ear_test.py's route, not the whole set.
+
+### Seam 1 of techno_build: NOT drift, a wrong single shift (measured 2026-09-08, not fixed)
+Anas heard beats not matched near 4:20 in the loudness-fixed render. Measured:
+- Tempo: Amelie Lens 131.00 BPM and Mosaic 130.00 BPM constant across their whole files (kick ACF at 8/16-bar
+  lags, per minute); stretched tails read 129.000 / 128.998. No tempo drift.
+- Per-window xcorr readings after the +121 ms shift swing -75/+43/0/+158/+38 ms; grid readings differ again.
+  Both read different layers per window. Neither is a measurement of the kicks.
+- One-strong-kick-per-beat onsets (kick band, one peak per beat): after the mixer's +121 ms shift Mosaic's kicks
+  sit 105-117 ms EARLY against Amelie Lens in all 8 windows (IQR a few ms). With shift 0: +4 vs -8 ms.
+  With +16 ms: -3 to +12 ms. The seam decision ("kick(offbeat layers)", +121 ms) moved an aligned pair a 16th
+  note out. Same shift was in the original render; the old 8 dB downward tilt hid it.
+- Diagnostic: scratchpad kicks_seam1.py (prepare A/B as the render does, kick onsets one per beat, per-window
+  nearest-kick offset + phase against the 129 BPM lattice).
+Proposed fix, awaiting Anas: after the seam decision, verify the residual with the one-kick-per-beat onset
+phase (A vs B) and, if it exceeds ~30 ms, use the onset-phase shift instead. Candidate to replace the
+xcorr/consensus decision entirely if it holds on the other seams.
+
+## Regression set (agreed 2026-09-08) and the things it must be able to test later
+Anas's future list, kept here so the set and its manifest are shaped for them (each gets its own design pass later):
+- Mixing different BPMs like DJs do; a model-compatible pair must not be dropped only because tempo is out of range.
+- Overall loudness of the mix must not change (level stays flat across the set).
+- Overall energy curve of the mix — how it is handled and verified.
+- Model retrain (after the leakage/re-split).
+- DJ profiling (recipes, lengths and choices that follow a DJ's style).
+- Play length per track: tracks are ~3 min windows today; a mechanism to decide how long each track plays.
+- Key correction (KEY REDESIGN above).
+- Looping parts of tracks the way DJs do.
+- Transition recipe chosen per pair, style, genre, DJ profile and tracks, not per type alone.
+Consequences for the set: one long file of independent pairs in fixed slots, seams on round minutes, 10 s lead-in,
+~20 s after; per pair the manifest stores track ids, cue bars, overlap bars, transition type, slot, applied shift,
+gains, and Anas's verdict + approved shift once heard. Recipe/type/length are manifest fields so the same pairs
+can be re-rendered under a different recipe, loop, tempo rule or profile. New real failures are added as pairs.
+Plain controls (clean four-on-the-floor) at the end of the file.
+
+### Regression set — build progress (2026-09-08, in flight)
+Done and verified:
+- Stretch cache: `_stretch` caches rubberband output by audio content hash + rate + engine args + version
+  (data/interim/stretch/*.npy). Verified identical to uncached; hit 0.3 s vs 38 s. 40 of 45 s per track prep was the stretch.
+- Test hooks in `render_mix`: `force_bars` (final say on overlap length, clamped to audio) and `cue_overrides`
+  (per track (cue_in_bar, cue_out_bar) or None) → `_prepare_track(cue=...)`. Report now carries `at_s`/`end_s`.
+- `scripts/regression_set.py`: manifest → renders each pair in full, cuts 10 s + overlap + 20 s, places the seam exactly on
+  the pair's `seam_at` (whole minutes), writes regression_set.flac + README.md + results.json; `--only ids` re-renders
+  some pairs and keeps the others' audio. Verified on a 2-pair mini manifest: seams at 1:00.000 and 3:00.000, lead-in
+  10.00 s; Amelie→Mosaic reproduces the +121 ms fault exactly.
+- `tests/test_regression_set.py` (marker `regression`, excluded by default in pyproject addopts): numbers-only check of
+  every pair with an `approved` block (shift ±20 ms, gains ±1.5 dB, bars equal) + manifest well-formedness.
+- `scripts/diag/regression_scan.py` (sharded, resumable) measures per 8-bar block: kick_share, offlow (low-band onset
+  energy off the beat), hat_off8, ghost, kpb (kick peaks per bar), level; per track: tempo, downbeat conf, LUFS, sections.
+  `scripts/diag/regression_pick.py` ranks candidates per edge case with the block to cue on.
+Known pairs to include (ids): Amelie c9a1c5963da5→Mosaic 7f0290e636d0 (listen/work_techno_build); Sin Sin dc549025561c→Nova
+98ccb1974095; Farrago 2ac6c5e5d611→Heil b96e58ca1b40 (test_tracks/techno); Wigbert 4900eb25d876→Joyhauser af90f79242e8
+(listen/work_techno_high); Materium 7eb26f5ddeb6→Vale 1ab15822e184 (test_tracks/melodic_house); DnB ear-test pairs
+3ef523169490→06b288f1a9f9, 7462d65de9f6→ed13dcecc9ab.
+Next: finish scan (running, ~144 tracks), pick 10 hard + 4 controls with cue blocks, write tests/regression/manifest.json,
+render to data/external/regression_set/ (README for Anas), then run the kick-hit verifier idea against the set.
+
+### Regression set v1 — BUILT 2026-09-08, awaiting Anas's verdicts
+- Files: data/external/regression_set/{regression_set.flac (33.0 min, ~19 min of audio), README.md, results.json}.
+  Manifest: tests/regression/manifest.json (15 pairs: p01–p11 hard, c01–c04 plain controls; seams at 1:00, 3:00 … 29:00,
+  10 s lead-in, ~20 s after). Rebuild: `python -m scripts.regression_set` (all, ~10 min with caches) or `--only p03,c01`.
+- Pins used (cue overrides) are in the manifest with the reason appended. Verified: every seam starts at exactly N:00.000
+  with a 10.00 s lead-in; all overlaps have the requested bar counts.
+- First-render numbers worth his ear: p01 +121 (the known false shift), p02 +103 kick(offbeat), p03 −59 consensus (was +203 on
+  the mixer's own window), p04 gain +9.0 in (cap) breakdown cue-out, p05 gain +9.0 in, p06 drop-aligned +78 consensus into
+  Safar's break, p07 gains +5.2/+3.2 weak kicks, p08 −143 consensus DnB, p09 −180 consensus DnB ghost kicks, c04 −94 consensus
+  on a "plain" trance pair (suspicious for a control). Controls c01–c03 within ±14 ms.
+- Workflow from here: Anas listens, writes verdict + approved shift/gains into each pair's `approved` block (or tells me and I
+  write it); then `pytest -m regression tests/test_regression_set.py` guards those numbers (renders each approved pair to tmp).
+  The kick-hit verifier (one strong kick per beat, scratchpad kicks_seam1.py) is the first method to test against this set.
+- Not yet committed. Files touched today: src/audio/audio_mixer.py (loudness anchors, stretch cache, force_bars, cue_overrides,
+  at_s/end_s), scripts/make_mix.py, scripts/regression_set.py, scripts/diag/regression_scan.py, scripts/diag/regression_pick.py,
+  tests/test_audio_mixer.py, tests/test_regression_set.py, tests/regression/manifest.json, pyproject.toml (regression marker).
+
+### Gain ride v3 (2026-09-08 evening, agreed with Anas): start = last real bars + 1.5 dB continuity cap, end = unity
+- Why: the morning's body-level anchor lifted the Farrago → Heil overlap +9 dB (cap) while Farrago had gone into its break
+  2 bars before the seam → a 4.6 dB step exactly at 7:00 of the regression set. The end anchor on B's post-overlap bars was
+  the Mosaic fault. Every recipe has A at 0 volume by the last bar, so the overlap end IS B at its matched gain: g1 = 0.
+- Rule now in `_overlap_gain_ride`: g0 = A's edge level (louder of the last two non-drop-out bars, counted back from the
+  seam) minus the overlap opening's edge level, clipped ±9 dB, and if positive also capped so the first overlap bar is
+  ≤ last-heard bar + SEAM_STEP_MAX_DB (1.5). g1 = 0 always. b_body/anchor_end kept in the signature, unused.
+- Tests: 11 targeted gain tests pass; `test_overlap_gain_anchors_to_both_bodies` now expects g1 = 0;
+  new `test_gain_ride_opens_at_the_last_bars_not_the_body` (Farrago shape, g0 ≈ +6.5 by the cap).
+- Regeneration time with caches: 15 pairs in 8 min (was 21 min first build); Mosaic 15-min set 4 min.
+- Numbers after regen (scripts/diag/regression_seam_levels.py): all end gains 0; Farrago lift 9.0 → 5.4 (seam step +2.8,
+  cap missed because a_body bars were chunked from the window start; fixed by chunking from the seam, p04 re-rendered);
+  Materium 9.0 → 0.0; p07 5.2/3.2 → 1.0/0. Flagged "steps" that are CONTENT, not gain: c02/c03 one-bar drop-out before
+  the phrase line (correct), c01 seam on RSquared's own drop (+7.5 → control replaced by Andruss → Binga with measured-steady
+  cue bars), c03 re-pinned (A 152 / B 64), p06 A's outro starts at the seam (cue choice), end steps p01/p02/p03/p10 = B's
+  section change on the phrase after the overlap (natural).
+- Anas has NOT yet listened to v3. Files: data/external/regression_set/ (flac + mp3 + README + results.json,
+  results_before_edge_unity.json = numbers before v3); listen/techno_build_15min_v2.flac and the 3:30–5:10 clip are v3.
+- Final v3 numbers (4-bar medians each side, scripts/diag/regression_seam_levels.py): no gain-caused step remains. Controls
+  c01–c04 within ±0.4 dB at the seam. Content steps to ear-test: p04 7:00 overlap sits 8–12 dB under body (Farrago cue-out in
+  its break, cue problem); p10 19:00 Katoff's own drop hits at the seam (+6, my cue pin at the drop start); p06 11:00 −2 dB
+  into the seam (Nduduzo outro at cue-out); end-of-overlap jumps p02 4:00 (+8), p03 6:10 (+11), p09 17:45 (−10), p01 1:59
+  (−14, Mosaic break) = B's section change on the phrase after the overlap. Beat suspicion (not loudness): p08 −143, p09 −180,
+  c04 −94 ms consensus shifts. c01 replaced (Andruss → Binga), c03 re-pinned; both by measured-steady cue bars.
+- DJ mixes downloaded for analysis: data/raw/dj_mixes/ (28 sets, 2.2 GB, manifest.csv; scripts/data/fetch_dj_mixes.py).
+  Two are shared bills: Fred again.. & Thomas Bangalter (USB002), Sub Focus/Dimension/Culture Shock/1991 livestream.
+
+### Anas's verdicts on regression set v3 (2026-09-08 night) + kick-hit measurement
+- Loudness: "fixed now" (gain ride v3 approved by ear). Beat matching "pretty good"; 11:00 (p06, drop type) "so good".
+  21:00 (p11) "off", and he heard misalignment "around 20:40" — 20:40 is silence in the file (p10 audio ends 20:19, p11
+  starts 20:50); asked him which seam he meant. 29:00 (c04): seam quieter than the music before/after — measured: Factor B's
+  first 16 bars are 3–5 dB under its own later body and the LUFS match uses the whole window, AND the blend hands A over at
+  60 % while B sits at −6 dB support until 100 % → bars 10–12 of the overlap are B alone at −6 dB (−20 dB hole at 29:18).
+- Transition TYPE choice needs work (his note; some seams flawless, some types inappropriate) — later.
+- Kick-hit check over all 15 pairs at the applied shifts (scripts/diag/regression_kick_hits.py, output kick_hits_v3.txt):
+  decisive (IQR ≤ 40 ms, ≥ 0.8 kicks/beat both sides) on p01 −104 (false shift confirmed), p04 +41, p07 0, c03 −3, and p10
+  −174..−192 in 6/8 windows; unreliable (IQR > 100) on p02, p03, p05, p06, p08, p09, p11, c01, c02, c04 — sparse/irregular
+  kick detection, DnB. Conclusion: usable as a gated VERIFIER (confidence gate), not a replacement for the correlation.
+- 21:40 (p11 PARAFRAME → Koyah, corrected from "20:40"): kick hits are unusable on this pair (PARAFRAME kick share 0.19,
+  Koyah low end syncopated → detections scattered in every window). Hat hits: A's loudest hat sits −190 ms off its own
+  grid (off-8th pattern) for bars 0–18, then moves ON the beat from bar 20 (21:37); Koyah's hat placement wanders bar to
+  bar (+96, −86, +204, +211 …). From 21:41–21:52 the two records' loudest hats sit half a beat apart in 21 of 21 hits.
+  So what Anas hears at 21:40 is the hat patterns of two off-8th-hat records changing against each other while B leads,
+  not a shift error that one number fixes; a grid residual of ~70 ms cannot be excluded (hats in the mid section cluster
+  at −60..−80 ms) but cannot be proven with kicks. Fix direction: recipe/EQ (take A's highs out earlier) or pair choice.
+  Scripts: scratchpad p11_detail.py / p11_hats.py.

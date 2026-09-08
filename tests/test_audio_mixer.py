@@ -1023,8 +1023,8 @@ def test_swept_filter_adds_no_broadband_artefacts():
 
 
 def test_overlap_gain_anchors_to_both_bodies():
-    """A ends at -14 dB, B starts at -18 dB: the overlap must start at A's level
-    and end at B's, whatever the summed records measure in between."""
+    """A ends at -14 dB: the overlap must open at A's level whatever the summed
+    records measure, and end at unity (B alone at its matched level)."""
     from src.audio.audio_mixer import _overlap_gain_ride
 
     bar_n = SR // 2
@@ -1038,8 +1038,8 @@ def test_overlap_gain_anchors_to_both_bodies():
         return 20 * np.log10(np.sqrt((x**2).mean()))
 
     assert db(out[:bar_n]) == pytest.approx(-14, abs=0.7)
-    assert db(out[-bar_n:]) == pytest.approx(-18, abs=0.7)
-    assert g0 == pytest.approx(6, abs=0.7) and g1 == pytest.approx(2, abs=0.7)
+    assert db(out[-bar_n:]) == pytest.approx(-20, abs=0.7)
+    assert g0 == pytest.approx(6, abs=0.7) and g1 == 0.0
 
 
 def test_overlap_gain_is_clamped_and_leaves_a_level_overlap_alone():
@@ -1053,7 +1053,7 @@ def test_overlap_gain_is_clamped_and_leaves_a_level_overlap_alone():
     assert np.abs(same - level).max() < 0.1 * 0.1
     quiet = level * 10 ** (-30 / 20)
     _, g0, g1 = _overlap_gain_ride(quiet, level, level, bar_n)
-    assert g0 == OVERLAP_GAIN_MAX_DB and g1 == OVERLAP_GAIN_MAX_DB
+    assert g0 == OVERLAP_GAIN_MAX_DB and g1 == 0.0
 
 
 def test_kick_periodicity_separates_a_running_kick_from_noise():
@@ -1426,6 +1426,42 @@ def test_edge_level_is_the_last_two_real_bars():
     assert _edge_level_db(last8, "end") == pytest.approx(-16.9)
     assert _edge_level_db([-16.9, -25.1, -43.9, -21.4], "start") == pytest.approx(-16.9)
     assert _edge_level_db([-16, -16, -16, -16], "end") == pytest.approx(-16)
+
+
+def test_gain_ride_ignores_a_breakdown_after_the_seam():
+    """techno_build, Amelie Lens → Mosaic: Mosaic's first 8 body bars are an 8-bar
+    breakdown (-21..-25) under a -11 body. The end is unity, so a level overlap is
+    left alone and the breakdown stays a breakdown."""
+    from src.audio.audio_mixer import _overlap_gain_ride
+
+    bar_n = SR // 2
+    rng = np.random.default_rng(15)
+    a_body = rng.standard_normal((32 * bar_n, 2)).astype(np.float32) * 10 ** (-11 / 20)
+    b_body = rng.standard_normal((48 * bar_n, 2)).astype(np.float32) * 10 ** (-11 / 20)
+    b_body[: 8 * bar_n] *= 10 ** (-12 / 20)  # the breakdown right after the seam
+    overlap = rng.standard_normal((32 * bar_n, 2)).astype(np.float32) * 10 ** (-11 / 20)
+    _, g0, g1 = _overlap_gain_ride(overlap, a_body, b_body, bar_n)
+    assert abs(g0) < 0.7, g0
+    assert abs(g1) < 0.7, g1
+
+
+def test_gain_ride_opens_at_the_last_bars_not_the_body():
+    """Regression p04, Farrago → Heil: A's body is -12 but its last 2 bars are a
+    break at -19; anchoring on the body lifted the first overlap bar +9 dB, a step
+    exactly at the seam. The start must follow what the ear just heard (-19)."""
+    from src.audio.audio_mixer import _overlap_gain_ride
+
+    bar_n = SR // 2
+    rng = np.random.default_rng(16)
+    a_body = rng.standard_normal((32 * bar_n, 2)).astype(np.float32) * 10 ** (-12 / 20)
+    a_body[-2 * bar_n :] *= 10 ** (-7 / 20)  # the break begins two bars before the seam
+    b_body = rng.standard_normal((16 * bar_n, 2)).astype(np.float32) * 10 ** (-12 / 20)
+    overlap = rng.standard_normal((16 * bar_n, 2)).astype(np.float32) * 10 ** (-24 / 20)
+    _, g0, g1 = _overlap_gain_ride(overlap, a_body, b_body, bar_n)
+    # the edge rule skips the -19 bars as drop-outs and would lift +9 (cap); the
+    # continuity cap holds the first bar to last-heard -19 + 1.5 → +6.5
+    assert g0 == pytest.approx(6.5, abs=0.7), g0
+    assert g1 == 0.0
 
 
 def test_gain_ride_start_anchor_reads_the_overlap_opening_not_its_loud_end():

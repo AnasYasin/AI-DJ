@@ -37,5 +37,6 @@ asyncio_mode = "auto"   # makes pytest-asyncio work without @pytest.mark.asyncio
 markers = [
     "api: test calls a live external API — requires network and credentials",
     "dl_model: test loads a DL model file from disk — not available in CI",
+    "regression: renders pairs of the seam regression set (minutes) — opt in with -m regression",
 ]
-addopts = "-m 'not api and not dl_model'"  # default: no API calls, no DL models
+addopts = "-m 'not api and not dl_model and not regression'"  # default: no API calls, no DL models, no renders
