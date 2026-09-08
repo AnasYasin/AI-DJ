@@ -585,7 +585,26 @@ def _check_stretch_rate(rate: float, name: str) -> None:
         )
 
 
-def _stretch(y: np.ndarray, rate: float) -> np.ndarray:
+# Stretching a 6-minute record with rubberband R3 takes ~40 s, nine tenths of
+# preparing a track, and every render of the same pair repeats it. The result
+# is cached by the audio's content hash, the rate and the engine settings, so a
+# changed tempo measurement or engine flag misses the cache by construction.
+STRETCH_CACHE_DIR = Path("data/interim/stretch")
+STRETCH_CACHE_VERSION = 1
+
+
+def _stretch_cache_path(y: np.ndarray, rate: float) -> Path:
+    import hashlib
+
+    h = hashlib.sha1()
+    h.update(np.ascontiguousarray(y, dtype=np.float32).tobytes())
+    h.update(
+        f"|{y.shape}|{SR}|{rate:.7f}|{sorted(STRETCH_ENGINE_ARGS.items())}|v{STRETCH_CACHE_VERSION}".encode()
+    )
+    return STRETCH_CACHE_DIR / f"{h.hexdigest()[:20]}.npy"
+
+
+def _stretch(y: np.ndarray, rate: float, use_cache: bool = True) -> np.ndarray:
     """
     Time-stretch to the mix tempo. rubberband preserves transients; the librosa
     phase vocoder smears every kick, which is audible on a 4/4 mix, so the
@@ -596,11 +615,23 @@ def _stretch(y: np.ndarray, rate: float) -> np.ndarray:
     if shutil.which("rubberband"):
         import pyrubberband
 
+        cache = _stretch_cache_path(y, rate) if use_cache else None
+        if cache is not None and cache.exists():
+            try:
+                return np.load(cache)
+            except (OSError, ValueError):
+                log.warning("discarding unreadable stretch cache %s", cache.name)
         # rubberband stretches the channels together, so the stereo image stays
         # phase-locked instead of drifting apart.
-        return pyrubberband.time_stretch(y, SR, rate, rbargs=dict(STRETCH_ENGINE_ARGS)).astype(
+        out = pyrubberband.time_stretch(y, SR, rate, rbargs=dict(STRETCH_ENGINE_ARGS)).astype(
             np.float32
         )
+        if cache is not None:
+            STRETCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_suffix(".tmp.npy")
+            np.save(tmp, out)
+            tmp.replace(cache)
+        return out
     log.warning(
         "rubberband CLI not found — falling back to the librosa phase vocoder, "
         "which smears transients. Install it: apt install rubberband-cli"
@@ -752,6 +783,14 @@ def _apply_recipe(
 # the overlap's gain is anchored at both ends: A's level going in, B's level
 # coming out, linear in dB between. The interior is left alone so a drop that
 # lands inside the overlap still hits.
+# Start anchor: the level of A's last real bars, i.e. what the ear just heard, so
+# the overlap never opens with a step. Measured on Farrago → Heil (regression p04):
+# anchoring the start on A's BODY level while A had gone into its breakdown two bars
+# before the seam lifted the first overlap bar +9 dB, a 4.6 dB step exactly at the seam.
+# End: unity. Every recipe has A at zero volume by the last bar, so the overlap's end
+# IS B at its matched level and the bar after it is the same B at the same gain; there
+# is nothing to anchor to. Anchoring the end on B's bars after the overlap tilted the
+# techno_build overlap 8 dB down into Mosaic's 8-bar breakdown (2026-09-08).
 OVERLAP_ANCHOR_BARS = 4  # bars measured on each side of each seam edge
 OVERLAP_ANCHOR_BARS_WIDE = 8  # look this far back so drop-out bars can be skipped
 DROPOUT_BELOW_DB = 6.0  # a reference bar this far under the loudest one is a break, not the level
@@ -787,6 +826,11 @@ def _edge_level_db(levels: np.ndarray, edge: str) -> float:
 
 
 OVERLAP_GAIN_MAX_DB = 9.0
+# The first overlap bar may not sit more than this above the bar the ear just heard.
+# `_edge_level_db` skips one-bar drop-outs on purpose (Materium), but a record that
+# goes into its break two bars before the seam (Farrago → Heil) must not be lifted back
+# to its pre-break level at the seam: that is heard as a step, not a ride.
+SEAM_STEP_MAX_DB = 1.5
 
 
 def _bar_levels_db(y: np.ndarray, bar_n: int) -> np.ndarray:
@@ -802,28 +846,20 @@ def _overlap_gain_ride(
     anchor_end: bool = True,
 ) -> tuple[np.ndarray, float, float]:
     """
-    Gain the overlap so it starts at A's body level and ends at B's.
+    Gain the overlap so it opens at the level of A's last real bars and ends at unity.
 
-    a_body: the last bars of A before the overlap (already track-gained).
-    b_body: the first bars of B after the overlap. Returns (overlap, g0_db, g1_db).
-    anchor_end=False leaves the end at unity: when the overlap ends ON the
-    incoming drop, the buildup under it must not be lifted to the drop's level,
-    or the drop has nothing to hit from.
+    a_body: A's played window (already track-gained); the start anchor is the
+    louder of its last two non-break bars (`_edge_level_db`). b_body and
+    anchor_end are kept for the call signature; the end gain is always 0 dB
+    (see the note above). Returns (overlap, g0_db, g1_db).
     """
     k = OVERLAP_ANCHOR_BARS_WIDE
     ov = _bar_levels_db(overlap, bar_n)
-    la = (
-        _edge_level_db(_bar_levels_db(a_body, bar_n)[-k:], "end") if len(a_body) >= bar_n else None
-    )
-    lb = (
-        _edge_level_db(_bar_levels_db(b_body, bar_n)[:k], "start")
-        if len(b_body) >= bar_n
-        else None
-    )
-    if la is None and lb is None:
+    if len(a_body) < bar_n:
         return overlap, 0.0, 0.0
-    la = lb if la is None else la
-    lb = la if lb is None else lb
+    # bars counted back from the seam, so the last chunk IS the last bar heard
+    a_levels = _bar_levels_db(a_body[len(a_body) % bar_n :], bar_n)
+    la = _edge_level_db(a_levels[-k:], "end")
     # The overlap's own edges are judged within their end of the overlap only. An
     # overlap legitimately ramps (A's tail out, B in), so against the whole
     # overlap its quiet opening bars all look like drop-outs and the start
@@ -832,11 +868,9 @@ def _overlap_gain_ride(
     g0 = float(
         np.clip(la - _edge_level_db(ov[:k], "start"), -OVERLAP_GAIN_MAX_DB, OVERLAP_GAIN_MAX_DB)
     )
-    g1 = float(
-        np.clip(lb - _edge_level_db(ov[-k:], "end"), -OVERLAP_GAIN_MAX_DB, OVERLAP_GAIN_MAX_DB)
-    )
-    if not anchor_end:
-        g1 = 0.0
+    if g0 > 0:  # continuity at the seam: no step up beyond what the ear just heard
+        g0 = min(g0, max(0.0, float(a_levels[-1] + SEAM_STEP_MAX_DB - ov[0])))
+    g1 = 0.0  # unity: the overlap ends as B alone at its matched level
     gain_db = np.linspace(g0, g1, len(overlap), dtype=np.float32)
     gain = (10 ** (gain_db / 20)).astype(np.float32)
     if overlap.ndim == 2:
@@ -1524,6 +1558,7 @@ def _prepare_track(
     e_target01: float | None = None,
     phrase_bars: int = DEFAULT_PHRASE_BARS,
     quiet_tail: bool = False,
+    cue: tuple[int | None, int | None] | None = None,
 ) -> dict:
     info = segment(path)
     y = load_audio(path)  # (samples, channels)
@@ -1537,6 +1572,14 @@ def _prepare_track(
     cue_in_bar, cue_out_bar = _choose_window(
         info, target_bars, max_tail_bars, e_target01, phrase_bars, quiet_tail
     )
+    if cue is not None:  # test hook: the regression set pins the window on a chosen part
+        cue_in_bar = cue_in_bar if cue[0] is None else int(cue[0])
+        cue_out_bar = cue_out_bar if cue[1] is None else int(cue[1])
+        if not 0 <= cue_in_bar < cue_out_bar <= len(bars) - 1:
+            raise ValueError(
+                f"{Path(path).stem}: cue override {cue} outside the track's {len(bars)} bars"
+            )
+        log.info("  %s: window pinned to bars %d–%d", Path(path).stem[:30], cue_in_bar, cue_out_bar)
     if info.get("downbeat_source", "kick-phase") != "beat_this":
         log.warning(
             "  %s: downbeats from kick phase (confidence %.2f) — bar alignment is a guess",
@@ -1620,6 +1663,8 @@ def render_mix(
     force_type: str | None = None,
     drop_align: bool = True,
     total_minutes: float | None = None,
+    force_bars: int | None = None,
+    cue_overrides: list | None = None,
 ) -> dict:
     """
     total_minutes: when given, the LAST track keeps playing past its window until
@@ -1638,6 +1683,10 @@ def render_mix(
     set's intent (a chill set never fires a slam).
     force_type: override the classifier and render every transition as this
     type. For A/B testing recipes, not for real sets.
+    force_bars: override the overlap length (bars) of every transition; still
+    clamped to the audio available and to whole phrases. Test hook.
+    cue_overrides: per track, None or (cue_in_bar, cue_out_bar) with None for
+    "keep the mixer's choice". Pins a track's window on a chosen part. Test hook.
     drop_align: let a rise become a drop-aligned filter blend when the incoming
     track has a drop to aim the bass swap at.
     """
@@ -1681,7 +1730,8 @@ def render_mix(
         et = energy_targets[i] if energy_targets else None
         next_et = energy_targets[i + 1] if energy_targets and i + 1 < len(track_paths) else None
         quiet_tail = structure_regime(next_et) == "low"
-        t = _prepare_track(p, target_bpm, max_tail, target_bars, et, phrase, quiet_tail)
+        cue = cue_overrides[i] if cue_overrides and i < len(cue_overrides) else None
+        t = _prepare_track(p, target_bpm, max_tail, target_bars, et, phrase, quiet_tail, cue)
         played_bars = t["cue_out_bar"] - t["cue_in_bar"]
         log.info(
             "  %s: %.0f→%.0f bpm, window bars %d–%d (%d bars, %.2f min vs %.2f target),"
@@ -1822,6 +1872,8 @@ def render_mix(
         n_bars = max(min(n_bars, int(avail_prev / bar_dur), int(avail_cur / bar_dur)), 2)
         if ttype != "slam":
             n_bars = max(_whole_phrases(n_bars, phrase), 2)
+        if force_bars is not None:  # test hook: final say on the length, within the audio available
+            n_bars = max(min(int(force_bars), int(avail_prev / bar_dur), int(avail_cur / bar_dur)), 2)
         # a shortened overlap moves the entry with it, or the drop stops
         # landing on the seam and the whole point is lost
         if lands_on_drop and cur["drop_bar"] is not None:
@@ -1975,10 +2027,14 @@ def render_mix(
             )
         body = cur["audio"][b0 + n_ov : int(cur["bars"][end_bar] * SR)]
         bar_n = int(bar_dur * SR)
+        # anchors: each record's body level over the window it plays in this mix
+        a_played = prev["audio"][
+            int(prev["bars"][prev["cue_in_bar"]] * SR) : int(prev["bars"][prev["cue_out_bar"]] * SR)
+        ]
         overlap, gain_in_db, gain_out_db = _overlap_gain_ride(
             overlap,
-            mix[-OVERLAP_ANCHOR_BARS_WIDE * bar_n :],
-            body[: OVERLAP_ANCHOR_BARS_WIDE * bar_n],
+            a_played,
+            body,
             bar_n,
             anchor_end=not lands_on_drop,
         )
@@ -2012,6 +2068,8 @@ def render_mix(
                 "downbeats": [prev["downbeat_source"], cur["downbeat_source"]],
                 "at": f"{int(at // 60)}:{int(at % 60):02d}",
                 "end": f"{int((at + n_ov / SR) // 60)}:{int((at + n_ov / SR) % 60):02d}",
+                "at_s": round(at, 3),
+                "end_s": round(at + n_ov / SR, 3),
             }
         )
         log.info("  transition %d: %s (%d bars) at %s", i, ttype, n_bars, trans_report[-1]["at"])

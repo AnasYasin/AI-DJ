@@ -214,3 +214,6 @@ data/external/
 data/interim/mixes/
 logs/
 .claude/
+
+# stretched-audio cache (regenerable, large)
+/data/interim/stretch/
