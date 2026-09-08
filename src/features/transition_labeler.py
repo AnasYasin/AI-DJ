@@ -88,6 +88,19 @@ def normalise_onset(raw):
     return np.minimum(np.asarray(raw, dtype=np.float32) / ONSET_SCALE, 1.0)
 
 
+# Essentia's KeyExtractor names five keys with flats (Db Eb Gb Ab Bb). The
+# catalog and the Camelot table use sharps. build_features.py normalised the
+# catalog; the mixer did not, so ~20% of played windows came back as an unknown
+# key (Camelot distance 2.5), which blocked melt and rise for those pairs.
+_FLAT_TO_SHARP = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
+
+
+def normalise_key(note: str, scale: str) -> str:
+    """Essentia (note, scale) → the catalog's key string, e.g. ("Eb", "minor") → "D#m"."""
+    note = _FLAT_TO_SHARP.get(note, note)
+    return f"{note}{'m' if scale == 'minor' else ''}"
+
+
 # Time gap between consecutive mix entries (minutes)
 # starting_time rolls over each hour; pairs with gap > this are skipped.
 TIME_GAP_MAX_MIN = 15.0

@@ -201,3 +201,107 @@ A 15.6 min mix = 192 s with everything local. Stretch is 80% of it and depends o
 - [ ] DJ profiles (Phase 9) — best available win on play length
 - [ ] Intent parser + FastAPI (Phase 10)
 - [ ] Tune the beam weights against something real
+
+---
+
+# Session record — 2026-09-06 / 2026-09-07
+
+All changes are on disk and UNCOMMITTED (git status: requirements.txt, src/audio/audio_mixer.py,
+src/data/audio_segmenter.py, src/features/transition_labeler.py, tests/conftest.py,
+tests/test_audio_mixer.py modified; scripts/diag/ new). 250 tests pass, ruff clean.
+Full technical detail of every change is in CLAUDE.md (Mixer section). Short version:
+
+## Fixed and measured
+1. Tempo: `_measure_tempo` from the kick envelope (grid was 23 ms quantised; 134/135/137 BPM all read 136.05).
+2. Key names: essentia flats normalised (`normalise_key`), ~20% of tracks were "unknown key" in the mixer.
+3. Downbeats: `beat_this` tracker + `regular_bars()`; phrase offset from novelty peaks; cue points, overlap
+   lengths, bass swaps, handovers and slam cuts all on the phrase grid.
+4. Sound quality (Anas's choices): two-point overlap gain ride (no duck, no scalar guard), rubberband R3,
+   stretch warn 4%/error 8%, 1/3-octave grid swept filter, true-peak limiter −1 dBTP.
+5. Structure by intent (Anas: "not every cue-in on the drop"): energy_target01 < 0.35 low / ≥ 0.65 high.
+6. Seam measurement band-aware + kick energy floor; drift = median of judged 4-bar windows.
+
+## Ear-test clips (for Anas to listen to)
+`data/external/ear_test_2026-09-07/` — 32 FLAC clips, README.md with tables, report*.json.
+11 system-chosen pairs (tech house 4, techno 3, dnb 4) + 21 type-sweep clips (7 types × 3 genres, `types/`).
+Each clip = 2 min A + overlap + 2 min B; overlap starts at 2:00 unless README says otherwise.
+Tech house type sweep is clamped to 8 bars (pair 1 has little tail); techno sweep has full lengths.
+
+## OPEN — found by diagnosis, NOT fixed (needs Anas's go-ahead)
+Techno pair 2 (Sin Sin – Break Down (Tom Laws Remix) → Mathias Kaden – Nova) is misaligned ~150 ms:
+- Track A has a weak syncopated low end and off-beat open hats. Its beat_this grid is right (bass on the
+  grid), but `_calibrate_grid_phase` (kick band only, ±¼ beat) moved the grid +64 ms late.
+- At the seam the kick correlation read +103 ms (corr 0.12, A kick periodicity 0.12) while lowmid/mid/hats/
+  full all said −116 (corr up to 0.67). The mixer trusted the kick (it passed the 0.12 gate by a hair).
+- Evidence: scripts/diag/seam_diag2.txt, seam_diag1.txt, grid_phase_diag.py output in the session log.
+Proposed fix (design change, not applied): drop A-vs-B audio cross-correlation for the seam. Measure each
+record's residual against its OWN tracker grid within ±40 ms using the band with the best correlation, shift
+by the difference. ±40 ms can never produce a half-beat jump; the tracker becomes the arbiter of "the beat".
+Same for `_calibrate_grid_phase` (multi-band, ±40 ms, only when downbeat_source == beat_this).
+Other clips with drift > 60 ms (tech house pairs 1, 2, 4; techno pair 1) probably share the cause.
+
+## Next (Anas's order)
+1. Anas listens to the clips, especially techno pair 2 and pair 1, and reports.
+2. Fix the seam/calibration as above if confirmed; re-render the affected clips.
+3. Key shift mechanism (none exists; time stretch is pitch-locked). Design to be agreed first.
+4. "Finalize beat mixing" and test end to end.
+5. Later: model leakage + track-level re-split (review found Model A/B/GBM inflated by leakage).
+
+## Diagnostics (copied from the session scratchpad into scripts/diag/)
+tempo_check.py, drift_check.py, verify_phrase.py, seam_diag.py, grid_phase_diag.py, ear_test.py,
+ear_test_types.py. Run from repo root in the `aidj` env. beat_this checkpoint is cached in
+~/.cache/torch/hub/checkpoints/beat_this-final0.ckpt (81 MB; the JKU server is slow, ~50 KB/s single stream).
+
+## 2026-09-08 (resumed after reboot)
+- Anas listened: beat matching "much better", techno pair 2 slightly off but tolerable, sound quality fine
+  (his BT headphones were the earlier problem). Loudness step at the seam on the house clip: real, fixed.
+- Grid-based seam method built and tested; he heard it as WORSE on techno pair 2 → default stays xcorr
+  (`SEAM_METHOD`). Lesson recorded in CLAUDE.md: ear overrules measurement; tracker grids can be half a beat off.
+- Gain-ride anchors: drop-out-aware, edge-based (last/first 2 real bars), overlap edges judged locally.
+  Verified on Materium→Vale (step gone) and on the worst case Farrago→Heil (render in progress at time of writing).
+- Listening mixes: data/external/listen/house_low_15min.flac (13.6 min, 4 tracks, all verified first pass);
+  minimal_mid_15min.flac rendering (tech house 122-128, arc, energy floor p40; one FISHER edit and one
+  African Roots copy rejected by the fingerprint, replanned).
+- Next: Anas listens to the listening mixes; then key shift mechanism (design first), then finalize beat mixing.
+- Slot repair implemented (Anas: never discard verified tracks; fit the empty slot to its neighbours, one
+  neighbour at the ends). Last track now runs on to the requested total length (±1 phrase). Both tested
+  with targeted tests only; Anas asked not to run the full suite (time). Edge-anchor worst case
+  (Farrago → Heil) verified: overlap opens at -16.4 dB against A's last real bar -16.9.
+- Next: key shift mechanism (design first), then finalize beat mixing; later rebuild start/end slot logic.
+- Seam decision rule (kick vs consensus, half-beat test) applied after A/B on Wigbert→Joyhauser (Anas: B/consensus
+  sounded good). Verified on numbers only, both real seams decide as his ear did. Listening sets: house_low_15min,
+  minimal_mid_15min, techno_high_15min (14.7 min, slot repair fired and worked), afro_20min (20.1 min).
+- Key redesign agreed in principle (drop veto, per-genre soft weight, cap floor(joins/2), no consecutive clashes,
+  ≤2 semitone shift in the mixer); not built yet — Anas to say go.
+
+## State at session end, 2026-09-08 (Anas restarting the session)
+All changes UNCOMMITTED. Targeted tests only (Anas: no full suite). Nothing running.
+
+Done today, all in code:
+- Seam decision rule (kick vs consensus of bass/mids/highs/full; half-beat test) — applied, verified on the
+  numbers of both A/B seams. NOT yet heard in a full set; Anas asked to generate the techno set again to test,
+  then stopped the session before the render started. Next session: render
+  `techno_high_15min_v2.flac` with the same command as techno_high (tracks cached in
+  data/external/listen/work_techno_high) and let him listen around 4:59.
+- Loudness anchors: edge bars, drop-out aware, overlap edges judged locally (Anas: "loudness is fixed").
+- Slot repair in make_mix (fired live on techno_high: Luis Miranda failed 3×, Wigbert repaired slot 1).
+- Last track runs on to the requested total length (techno 14.7 min vs 15 asked; afro 20.1 vs 20).
+- plan.json now carries per-track start / transition / bars / fully_in and a render block. No extra files.
+- SEAM_METHOD default back to "xcorr" (grid method kept for experiments; he heard it as worse on pair 2).
+
+Listening sets (all rendered BEFORE the seam decision rule except none): data/external/listen/
+  house_low_15min (13.6), minimal_mid_15min (13.1), techno_high_15min (14.7, seam at 4:14 is the Wigbert
+  case — now fixed in code, not re-rendered), afro_20min (20.1, all D#m, all 16-bar overlaps).
+A/B clips: data/external/ear_test_2026-09-07/seam_techno_high/ (A kick, B consensus — Anas: B sounds good).
+
+Agreed, not built: KEY REDESIGN — drop the Camelot veto in the planner, take key out of the planning
+score, add a per-genre soft key weight tuned to real clash shares (melodic house/trance ~42 %, techno/tech
+house/dnb ~53-55 %), cap clashing joins at floor(joins/2) with no two in a row, mixer shifts the incoming
+track ≤2 semitones when that lands within 1 Camelot step (about 1 join in 3), otherwise treats the pair as a
+clash (short overlap, early bass swap). Data: real DJ joins 14 % same key / 36 % 1-2 steps / 50 % >2 steps;
+our current sets 62 % same key. Anas asked for the final verdict and got it; he has not said go.
+
+Then: finalize beat mixing; later rebuild start/end slot logic; model leakage/re-split.
+
+Working style Anas asked for: explain a code-changing command before running it; no full test suite;
+do not re-render clips he has not heard; ear overrules numbers; ask on design decisions.

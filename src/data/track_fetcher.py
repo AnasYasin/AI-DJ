@@ -289,13 +289,18 @@ def fetch_track(
     return {"track_id": track_id, "status": "no_verified_candidate", "query": query}
 
 
+def preview_paths() -> dict[str, str]:
+    """track_id → local 30 s preview, the ground truth the fingerprint checks against."""
+    if not MANIFEST_PATH.exists():
+        return {}
+    m = pd.read_csv(MANIFEST_PATH).drop_duplicates("track_id")
+    return dict(zip(m["track_id"], m["local_path"]))
+
+
 def fetch_plan(plan_path: str | Path, out_dir: str | Path) -> dict:
     plan = json.loads(Path(plan_path).read_text())
     out_dir = Path(out_dir)
-    previews = {}
-    if MANIFEST_PATH.exists():
-        m = pd.read_csv(MANIFEST_PATH).drop_duplicates("track_id")
-        previews = dict(zip(m["track_id"], m["local_path"]))
+    previews = preview_paths()
 
     results = []
     for t in plan["tracks"]:
