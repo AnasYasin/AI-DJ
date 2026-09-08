@@ -44,7 +44,7 @@ import tempfile
 
 import librosa
 import numpy as np
-from scipy.ndimage import minimum_filter1d, uniform_filter1d
+from scipy.ndimage import maximum_filter1d, minimum_filter1d, uniform_filter1d
 from scipy.signal import butter, correlate, resample_poly, sosfiltfilt
 import soundfile as sf
 
@@ -1487,6 +1487,74 @@ def _lag_offset(ea: np.ndarray, eb: np.ndarray, bpm: float) -> tuple[float, floa
     return -float((k - max_lag) * ONSET_HOP / SR), peak
 
 
+# ── Kick-hit verifier ──────────────────────────────────────────────────────────
+# The band correlations above match PATTERNS: everything in 30–130 Hz, kick and
+# bass note alike. On Amelie Lens → Mosaic the best pattern match put her kick on
+# Mosaic's off-beat bass note and shifted an aligned pair +121 ms (a 16th). This
+# check compares the drums themselves: the single loudest low hit per beat in each
+# record, matched to its nearest neighbour in the other. It is only trusted when
+# both records give a clear kick on most beats and the 4-bar windows agree; then a
+# residual beyond KICK_VERIFY_MIN_CORRECTION_S corrects the correlation's shift.
+# Measured on the 15-pair regression set: decisive on 5 pairs (the false +121
+# among them), spread over 100 ms on the other 10 (sparse kicks, syncopated low
+# end, drum and bass), where it must stay silent.
+KICK_VERIFY_MIN_PER_BEAT = 0.8  # clear kick on at least this share of beats, both sides
+KICK_VERIFY_AGREE_S = 0.040  # 4-bar window medians within this of each other
+KICK_VERIFY_MIN_CORRECTION_S = 0.030  # below this the correlation was right
+KICK_VERIFY_MAX_BEAT_FRACTION = 1 / 3  # never flip to a neighbouring beat, only nudge
+KICK_VERIFY_WINDOW_BARS = 4
+
+
+def _strong_kicks(env: np.ndarray, beat_s: float) -> np.ndarray:
+    """One kick per beat: the loudest rising kick-band frame within ±0.6 beat, > 6× median."""
+    size = 2 * int(0.6 * beat_s * SR / ONSET_HOP) + 1
+    is_max = (env == maximum_filter1d(env, size=size, mode="nearest")) & (env > np.median(env) * 6)
+    t = np.flatnonzero(is_max) * ONSET_HOP / SR
+    keep, last = [], -1e9
+    for x in t:
+        if x - last >= 0.75 * beat_s:
+            keep.append(x)
+            last = x
+    return np.asarray(keep)
+
+
+def kick_hit_residual(tail: np.ndarray, head: np.ndarray, bpm: float) -> tuple[float, dict] | None:
+    """
+    Seconds the head must still move earlier so its kicks land on the tail's, or
+    None when the reading cannot be trusted (gate). detail carries the numbers.
+    """
+    beat = 60.0 / bpm
+    n = min(len(tail), len(head))
+    n_beats = n / SR / beat
+    if n_beats < 2 * KICK_VERIFY_WINDOW_BARS * 4:
+        return None
+    ka = _strong_kicks(_kick_envelope(tail[:n]), beat)
+    kb = _strong_kicks(_kick_envelope(head[:n]), beat)
+    detail = {"a_per_beat": round(len(ka) / n_beats, 2), "b_per_beat": round(len(kb) / n_beats, 2)}
+    if min(detail["a_per_beat"], detail["b_per_beat"]) < KICK_VERIFY_MIN_PER_BEAT:
+        return None
+    win = KICK_VERIFY_WINDOW_BARS * 4 * beat
+    medians, all_d = [], []
+    for w in range(int(n / SR // win)):
+        a = ka[(ka >= w * win) & (ka < (w + 1) * win)]
+        b = kb[(kb >= w * win) & (kb < (w + 1) * win)]
+        if len(a) < 4 or len(b) < 4:
+            return None
+        d = np.array([b[np.argmin(np.abs(b - x))] - x for x in a])
+        d = d[np.abs(d) < beat / 2]
+        if len(d) < 4:
+            return None
+        medians.append(float(np.median(d)))
+        all_d.extend(d.tolist())
+    detail["windows_ms"] = [round(m * 1000, 1) for m in medians]
+    if len(medians) < 2 or max(medians) - min(medians) > KICK_VERIFY_AGREE_S:
+        return None
+    residual = float(np.median(all_d))  # + : head's kicks land late → move the head earlier
+    if abs(residual) > KICK_VERIFY_MAX_BEAT_FRACTION * beat:
+        return None
+    return residual, detail
+
+
 def seam_decision(tail: np.ndarray, head: np.ndarray, bpm: float) -> tuple[float, str, dict]:
     """
     Seam offset (seconds the head must move earlier) and which reading decided.
@@ -1579,7 +1647,9 @@ def _prepare_track(
             raise ValueError(
                 f"{Path(path).stem}: cue override {cue} outside the track's {len(bars)} bars"
             )
-        log.info("  %s: window pinned to bars %d–%d", Path(path).stem[:30], cue_in_bar, cue_out_bar)
+        log.info(
+            "  %s: window pinned to bars %d–%d", Path(path).stem[:30], cue_in_bar, cue_out_bar
+        )
     if info.get("downbeat_source", "kick-phase") != "beat_this":
         log.warning(
             "  %s: downbeats from kick phase (confidence %.2f) — bar alignment is a guess",
@@ -1872,8 +1942,12 @@ def render_mix(
         n_bars = max(min(n_bars, int(avail_prev / bar_dur), int(avail_cur / bar_dur)), 2)
         if ttype != "slam":
             n_bars = max(_whole_phrases(n_bars, phrase), 2)
-        if force_bars is not None:  # test hook: final say on the length, within the audio available
-            n_bars = max(min(int(force_bars), int(avail_prev / bar_dur), int(avail_cur / bar_dur)), 2)
+        if (
+            force_bars is not None
+        ):  # test hook: final say on the length, within the audio available
+            n_bars = max(
+                min(int(force_bars), int(avail_prev / bar_dur), int(avail_cur / bar_dur)), 2
+            )
         # a shortened overlap moves the entry with it, or the drop stops
         # landing on the seam and the whole point is lost
         if lands_on_drop and cur["drop_bar"] is not None:
@@ -1947,6 +2021,31 @@ def render_mix(
                 after * 1000,
                 total_shift / SR * 1000,
             )
+
+        # Verify the correlation's shift against the kick hits themselves (gated).
+        kick_verify_ms = None
+        verify = kick_hit_residual(tail, head, target_bpm)
+        if verify is not None:
+            residual, vdetail = verify
+            step = int(round(residual * SR))
+            if abs(residual) > KICK_VERIFY_MIN_CORRECTION_S and b0 + step >= 0:
+                b0 += step
+                total_shift += step
+                tail = prev["audio"][a0 : a0 + n_ov]
+                head = cur["audio"][b0 : b0 + n_ov]
+                n_ov = min(len(tail), len(head))
+                tail, head = tail[:n_ov], head[:n_ov]
+                kick_verify_ms = round(residual * 1000, 1)
+                seam_band += "+kick-hits"
+                log.info(
+                    "  seam %d: kick hits %+.0f ms off after the shift (windows %s) — corrected, total %+.0f ms",
+                    i,
+                    residual * 1000,
+                    vdetail["windows_ms"],
+                    total_shift / SR * 1000,
+                )
+            else:
+                log.info("  seam %d: kick hits confirm the shift (%+.0f ms)", i, residual * 1000)
 
         # The single correlation above is the AVERAGE lag over the overlap. Two
         # records at slightly different tempos read as aligned on average while
@@ -2029,7 +2128,9 @@ def render_mix(
         bar_n = int(bar_dur * SR)
         # anchors: each record's body level over the window it plays in this mix
         a_played = prev["audio"][
-            int(prev["bars"][prev["cue_in_bar"]] * SR) : int(prev["bars"][prev["cue_out_bar"]] * SR)
+            int(prev["bars"][prev["cue_in_bar"]] * SR) : int(
+                prev["bars"][prev["cue_out_bar"]] * SR
+            )
         ]
         overlap, gain_in_db, gain_out_db = _overlap_gain_ride(
             overlap,
@@ -2056,6 +2157,8 @@ def render_mix(
                 "seam_offset_before_ms": round(before * 1000, 1),
                 "seam_drift_ms": None if seam_drift is None else round(seam_drift * 1000, 1),
                 "seam_band": seam_band,
+                "kick_verify_ms": kick_verify_ms,
+                "seam_shift_total_ms": round(total_shift / SR * 1000, 1),
                 "overlap_gain_db": [round(gain_in_db, 1), round(gain_out_db, 1)],
                 "seam_windows_off": [windows_off, len(judged), len(window_offsets)],
                 "regime": regime,

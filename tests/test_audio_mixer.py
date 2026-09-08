@@ -1589,3 +1589,56 @@ def test_seam_decision_rule_on_the_two_real_seams():
     assert (
         rule(0.075, 0.194, 137.0) == "consensus"
     )  # Wigbert → Joyhauser, Anas preferred the consensus
+
+
+# ── Kick-hit verifier ──────────────────────────────────────────────────────────
+
+
+def _kick_train(bpm, n_bars, offset_s=0.0, every=1, seed=0):
+    """Stereo click train: a 60 Hz burst on every `every`-th beat, plus a little noise."""
+    beat = 60.0 / bpm
+    n = int(n_bars * 4 * beat * SR)
+    rng = np.random.default_rng(seed)
+    y = rng.standard_normal(n).astype(np.float32) * 0.002
+    t = np.arange(int(0.05 * SR)) / SR
+    burst = (np.sin(2 * np.pi * 60 * t) * np.exp(-t / 0.02)).astype(np.float32)
+    for k in range(0, n_bars * 4, every):
+        i = int((k * beat + offset_s) * SR)
+        if 0 <= i < n - len(burst):
+            y[i : i + len(burst)] += burst
+    return np.stack([y, y], axis=1)
+
+
+def test_kick_hit_residual_reads_a_late_head():
+    from src.audio.audio_mixer import kick_hit_residual
+
+    tail = _kick_train(128, 16)
+    head = _kick_train(128, 16, offset_s=0.100, seed=1)  # B's kicks 100 ms late
+    out = kick_hit_residual(tail, head, 128)
+    assert out is not None
+    residual, detail = out
+    assert residual == pytest.approx(0.100, abs=0.006), residual
+    assert detail["a_per_beat"] >= 0.9 and detail["b_per_beat"] >= 0.9
+
+
+def test_kick_hit_residual_stays_silent_without_a_kick_per_beat():
+    from src.audio.audio_mixer import kick_hit_residual
+
+    tail = _kick_train(128, 16)
+    sparse = _kick_train(128, 16, offset_s=0.100, every=2, seed=1)  # half-time: gate must fail
+    assert kick_hit_residual(tail, sparse, 128) is None
+
+
+def test_kick_hit_residual_refuses_more_than_a_third_of_a_beat():
+    from src.audio.audio_mixer import kick_hit_residual
+
+    tail = _kick_train(128, 16)
+    far = _kick_train(128, 16, offset_s=0.200, seed=1)  # beat = 469 ms; 200 ms > a third
+    assert kick_hit_residual(tail, far, 128) is None
+
+
+def test_kick_hit_residual_confirms_an_aligned_pair():
+    from src.audio.audio_mixer import kick_hit_residual
+
+    out = kick_hit_residual(_kick_train(128, 16), _kick_train(128, 16, seed=1), 128)
+    assert out is not None and abs(out[0]) < 0.005
