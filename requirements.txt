@@ -25,6 +25,7 @@ numpy==1.26.4
 essentia               # KeyExtractor — installed via conda/pip
 essentia-tensorflow    # TensorflowPredictEffnetDiscogs (discogs-effnet 1280-dim)
 deeprhythm             # DeepRhythm CNN BPM estimator (replaces RhythmExtractor2013)
+beat_this              # Beat This! joint beat/downbeat tracker (audio_segmenter); checkpoint downloads on first use
 
 # ── audio preview fetching ─────────────────────────────────────────────────────
 yt-dlp>=2026.8.19      # preview fallback + full-track fetch. Keep current: YouTube

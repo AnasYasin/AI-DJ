@@ -120,32 +120,15 @@ def split_artists(credit: str) -> frozenset[str]:
 # ── Planner ────────────────────────────────────────────────────────────────────
 
 
-def plan_mix(
+def _load_pool(
     genre: str,
     bpm_range: tuple[float, float],
-    n_tracks: int = 10,
-    curve: str = "build",
-    seed_track: str | None = None,
-    track_ids: list[str] | None = None,
-    exclude_ids: set[str] | None = None,
-    min_energy_pct: float | None = None,
-    compat_weight: float = W_COMPAT_DEFAULT,
+    n_tracks: int,
+    track_ids: list[str] | None,
+    exclude_ids: set[str] | None,
+    min_energy_pct: float | None,
 ) -> dict:
-    """
-    Plan a set.
-
-    `exclude_ids` drops tracks a previous attempt could not fetch, so the caller
-    can replan around them instead of rendering a short set.
-
-    `min_energy_pct` (0-100) drops the quietest tail of the pool before planning.
-    The energy curve is mapped onto the pool's own quantiles, so it shapes the
-    set relative to whatever is in the pool; raising the floor is what makes a
-    set loud in absolute terms.
-
-    `compat_weight` adds pair compatibility to the beam score. The mixer caps
-    overlap length by that same measure, so a set planned without it will be
-    rendered with short transitions however smooth the ordering looks.
-    """
+    """Candidate pool + per-track artist sets, shared by plan_mix and repair_candidates."""
     f = pd.read_parquet(FEATURES_PATH).drop_duplicates("track_id")
     meta = (
         pd.read_csv(TRACKLIST_PATH, usecols=["track_id", "genre", "artist_name", "track_name"])
@@ -194,6 +177,48 @@ def plan_mix(
         for name in names:
             artist_tracks.setdefault(name, []).append(i)
     log.info("pool: %d %s tracks in %.0f–%.0f BPM", len(f), genre, *bpm_range)
+    return {
+        "f": f,
+        "meta": meta,
+        "A": A,
+        "artist_sets": artist_sets,
+        "artist_tracks": artist_tracks,
+    }
+
+
+def plan_mix(
+    genre: str,
+    bpm_range: tuple[float, float],
+    n_tracks: int = 10,
+    curve: str = "build",
+    seed_track: str | None = None,
+    track_ids: list[str] | None = None,
+    exclude_ids: set[str] | None = None,
+    min_energy_pct: float | None = None,
+    compat_weight: float = W_COMPAT_DEFAULT,
+) -> dict:
+    """
+    Plan a set.
+
+    `exclude_ids` drops tracks a previous attempt could not fetch, so the caller
+    can replan around them instead of rendering a short set.
+
+    `min_energy_pct` (0-100) drops the quietest tail of the pool before planning.
+    The energy curve is mapped onto the pool's own quantiles, so it shapes the
+    set relative to whatever is in the pool; raising the floor is what makes a
+    set loud in absolute terms.
+
+    `compat_weight` adds pair compatibility to the beam score. The mixer caps
+    overlap length by that same measure, so a set planned without it will be
+    rendered with short transitions however smooth the ordering looks.
+    """
+    pool = _load_pool(genre, bpm_range, n_tracks, track_ids, exclude_ids, min_energy_pct)
+    meta, A, artist_sets, artist_tracks = (
+        pool["meta"],
+        pool["A"],
+        pool["artist_sets"],
+        pool["artist_tracks"],
+    )
 
     scorer = EdgeScorer.load()
     ctx_model = ContextModel()
@@ -292,6 +317,126 @@ def plan_mix(
                 )[0]
             )
         out["tracks"].append(entry)
+    return out
+
+
+REPAIR_TRIES = 5  # candidates tried per empty slot before a full replan
+
+
+def _plan_entry(A: TrackArrays, meta, ti: int, n: int, target_energy: float, e01: float) -> dict:
+    tid = A.tid[ti]
+    m = meta.loc[tid]
+    return {
+        "n": n,
+        "track_id": tid,
+        "artist": m["artist_name"],
+        "title": m["track_name"],
+        "bpm": round(float(A.bpm[ti]), 1),
+        "key": str(A.df["key"].iloc[ti]),
+        "energy": round(float(A.energy[ti]), 3),
+        "target_energy": round(float(target_energy), 3),
+        "energy_target01": round(float(e01), 3),
+    }
+
+
+def _link(A: TrackArrays, prev_ti: int, ti: int) -> dict:
+    return {
+        "d_bpm": round(float(A.bpm[ti] - A.bpm[prev_ti]), 1),
+        "cam_dist": float(
+            camelot_distance(
+                A.cam_pos[prev_ti],
+                A.cam_mode[prev_ti],
+                np.array([A.cam_pos[ti]]),
+                np.array([A.cam_mode[ti]]),
+            )[0]
+        ),
+    }
+
+
+def repair_candidates(
+    plan: dict,
+    slot: int,
+    bpm_range: tuple[float, float],
+    exclude_ids: set[str],
+    n: int = REPAIR_TRIES,
+    compat_weight: float = W_COMPAT_DEFAULT,
+    min_energy_pct: float | None = None,
+    track_ids: list[str] | None = None,
+) -> list[dict]:
+    """
+    Replacements for one slot of a plan, best first, fitted to the slot's
+    verified neighbours. Every other track in the plan stays where it is.
+
+    A candidate must pass the hard rules against BOTH neighbours (BPM within
+    MAX_BPM_LOG_RATIO, Camelot within MAX_CAMELOT_DIST) and must not repeat a
+    track or an artist already in the plan. It is scored the way plan_mix
+    scores a step: Model B context from the tracks before the slot, the GBM
+    edge from the previous track, energy fit to the slot's target, and pair
+    compatibility with each neighbour. At the first or last slot there is one
+    neighbour and the fit is against that one plus the energy target.
+    """
+    tracks = plan["tracks"]
+    others = [t for i, t in enumerate(tracks) if i != slot]
+    pool = _load_pool(
+        plan["genre"], bpm_range, len(tracks), track_ids, exclude_ids, min_energy_pct
+    )
+    A, meta, artist_tracks = pool["A"], pool["meta"], pool["artist_tracks"]
+
+    mask = np.ones(len(A.tid), dtype=bool)
+    for t in others:
+        if t["track_id"] in A.idx:
+            mask[A.idx[t["track_id"]]] = False
+        for name in split_artists(t["artist"]):
+            for j in artist_tracks.get(name, []):
+                mask[j] = False
+    neighbours = []
+    for k in (slot - 1, slot + 1):
+        if 0 <= k < len(tracks) and tracks[k]["track_id"] in A.idx:
+            neighbours.append((k, A.idx[tracks[k]["track_id"]]))
+    for _, ni in neighbours:
+        mask &= np.abs(np.log(A.bpm[ni] / A.bpm)) <= MAX_BPM_LOG_RATIO
+        mask &= (
+            camelot_distance(A.cam_pos[ni], A.cam_mode[ni], A.cam_pos, A.cam_mode)
+            <= MAX_CAMELOT_DIST
+        )
+    cand = np.flatnonzero(mask)
+    if len(cand) == 0:
+        return []
+
+    target = float(tracks[slot]["target_energy"])
+    e_scale = A.energy.std() + 1e-9
+    total = W_ENERGY * (1.0 - np.abs(A.energy[cand] - target) / (2 * e_scale))
+
+    before = [A.idx[t["track_id"]] for t in tracks[:slot] if t["track_id"] in A.idx]
+    prev_ti = (
+        A.idx[tracks[slot - 1]["track_id"]]
+        if slot > 0 and tracks[slot - 1]["track_id"] in A.idx
+        else None
+    )
+    if before:
+        ctx = ContextModel().next_vectors([make_tokens(A, before, len(tracks))], plan["genre"])[0]
+        ctx_sim = A.proj[cand] @ ctx
+        total = total + W_CTX * (ctx_sim - ctx_sim.mean()) / (ctx_sim.std() + 1e-9)
+    if prev_ti is not None:
+        total = total + W_GBM * EdgeScorer.load().score(pair_features(A, prev_ti, cand))
+    for _, ni in neighbours:
+        c = compatibility(
+            camelot_distance(A.cam_pos[ni], A.cam_mode[ni], A.cam_pos[cand], A.cam_mode[cand]),
+            np.abs(A.energy[ni] - A.energy[cand]),
+            np.abs(A.loud[ni] - A.loud[cand]),
+            np.abs(np.log(A.bpm[ni] / A.bpm[cand])) * 100,
+        )
+        total = total + max(compat_weight, 1.0) * c / len(neighbours)
+
+    order = np.argsort(-total)[:n]
+    out = []
+    for ci in cand[order]:
+        entry = _plan_entry(A, meta, int(ci), slot + 1, target, tracks[slot]["energy_target01"])
+        if prev_ti is not None:
+            entry.update(_link(A, prev_ti, int(ci)))
+        if slot + 1 < len(tracks) and tracks[slot + 1]["track_id"] in A.idx:
+            entry["next_link"] = _link(A, int(ci), A.idx[tracks[slot + 1]["track_id"]])
+        out.append(entry)
     return out
 
 

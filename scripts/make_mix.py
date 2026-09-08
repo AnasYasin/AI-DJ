@@ -20,8 +20,8 @@ import logging
 from pathlib import Path
 
 from src.audio.audio_mixer import render_plan
-from src.data.track_fetcher import fetch_plan
-from src.models.predict_model import CURVES, plan_mix
+from src.data.track_fetcher import fetch_plan, fetch_track, preview_paths
+from src.models.predict_model import CURVES, REPAIR_TRIES, plan_mix, repair_candidates
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +43,68 @@ def make_mix(
     work_dir.mkdir(parents=True, exist_ok=True)
 
     excluded: set[str] = set()
+    plan_path = work_dir / "plan.json"
+    tracks_dir = work_dir / "tracks"
+    previews = preview_paths()
+
+    def write_plan(plan: dict) -> None:
+        for i, t in enumerate(plan["tracks"]):
+            t["n"] = i + 1
+        plan_path.write_text(json.dumps(plan, indent=1))
+
+    def repair_slot(plan: dict, slot: int) -> bool:
+        """Fill one empty slot against its verified neighbours. Never touches the rest."""
+        for cand in repair_candidates(
+            plan, slot, bpm, excluded, REPAIR_TRIES, compat_weight, min_energy_pct
+        ):
+            log.info("  slot %d: trying %s – %s", slot + 1, cand["artist"], cand["title"])
+            res = fetch_track(
+                cand["artist"],
+                cand["title"],
+                cand["track_id"],
+                tracks_dir,
+                previews.get(cand["track_id"]),
+            )
+            if res["status"] in ("ok", "cached"):
+                next_link = cand.pop("next_link", None)
+                plan["tracks"][slot] = cand
+                if next_link and slot + 1 < len(plan["tracks"]):
+                    plan["tracks"][slot + 1].update(next_link)
+                return True
+            excluded.add(cand["track_id"])
+        return False
+
+    plan = plan_mix(
+        genre, bpm, n_tracks, curve, min_energy_pct=min_energy_pct, compat_weight=compat_weight
+    )
+    write_plan(plan)
     for attempt in range(1, max_rounds + 1):
+        log.info(
+            "round %d: %s",
+            attempt,
+            " | ".join(f"{t['artist']} – {t['title']}" for t in plan["tracks"]),
+        )
+        report = fetch_plan(plan_path, tracks_dir)
+        failed = [
+            i for i, r in enumerate(report["results"]) if r["status"] not in ("ok", "cached")
+        ]
+        if not failed:
+            break
+        excluded |= {plan["tracks"][i]["track_id"] for i in failed}
+        # Keep every verified track. Ask the model for a replacement that fits the
+        # empty slot's neighbours, try up to REPAIR_TRIES of them, and only if
+        # none can be fetched fall back to replanning the whole set.
+        unrepaired = [i for i in failed if not repair_slot(plan, i)]
+        write_plan(plan)
+        if not unrepaired:
+            log.info("round %d: %d slot(s) repaired, set kept", attempt, len(failed))
+            break
+        log.warning(
+            "round %d: slot(s) %s could not be repaired after %d candidates each — replanning the set",
+            attempt,
+            [i + 1 for i in unrepaired],
+            REPAIR_TRIES,
+        )
         plan = plan_mix(
             genre,
             bpm,
@@ -53,33 +114,50 @@ def make_mix(
             min_energy_pct=min_energy_pct,
             compat_weight=compat_weight,
         )
-        plan_path = work_dir / "plan.json"
-        plan_path.write_text(json.dumps(plan, indent=1))
-        log.info(
-            "round %d: %s",
-            attempt,
-            " | ".join(f"{t['artist']} – {t['title']}" for t in plan["tracks"]),
-        )
-
-        report = fetch_plan(plan_path, work_dir / "tracks")
-        failed = {
-            plan["tracks"][i]["track_id"]
-            for i, r in enumerate(report["results"])
-            if r["status"] not in ("ok", "cached")
-        }
-        if not failed:
-            break
-        excluded |= failed
-        log.warning(
-            "round %d: %d of %d tracks unfetchable, replanning", attempt, len(failed), n_tracks
-        )
+        write_plan(plan)
     else:
-        log.warning("gave up replanning after %d rounds — rendering what verified", max_rounds)
+        log.warning("gave up after %d rounds — rendering what verified", max_rounds)
 
     # Each track contributes its own window to the mix, so the target length
     # divides across the set.
     play_minutes = minutes / n_tracks if minutes else None
-    return render_plan(plan_path, work_dir / "tracks", out_path, play_minutes=play_minutes)
+    report = render_plan(
+        plan_path, work_dir / "tracks", out_path, play_minutes=play_minutes, total_minutes=minutes
+    )
+    write_plan(add_times(plan, report))
+    return report
+
+
+def add_times(plan: dict, report: dict) -> dict:
+    """
+    Write the render's timing back into the plan's track entries: `start` (when
+    the track enters), `transition` and `bars` (the move that brought it in)
+    and `fully_in` (when the overlap ends). The planner cannot know these; the
+    windows and overlaps are decided at render time.
+    """
+    by_id = {t["track_id"]: t for t in plan["tracks"]}
+    first = plan["tracks"][0]
+    first.update({"start": "0:00", "transition": None, "bars": None, "fully_in": None})
+    for tr in report.get("transitions", []):
+        t = by_id.get(tr["to"])
+        if t is not None:
+            t.update(
+                {
+                    "start": tr["at"],
+                    "transition": tr["type"],
+                    "bars": tr["bars"],
+                    "fully_in": tr["end"],
+                }
+            )
+    if report:
+        plan["render"] = {
+            "out": report.get("out"),
+            "duration_min": round(report.get("duration_s", 0) / 60, 2),
+            "target_bpm": report.get("target_bpm"),
+            "lufs": report.get("lufs"),
+            "true_peak_dbtp": report.get("true_peak_dbtp"),
+        }
+    return plan
 
 
 if __name__ == "__main__":

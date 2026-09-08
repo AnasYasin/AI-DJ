@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from src.audio.audio_mixer import (
+    _CAMELOT,
     BPM_TIGHT,
     DEFAULT_BARS,
     DEFAULT_PLAY_MINUTES,
@@ -26,6 +27,7 @@ from src.audio.audio_mixer import (
     _env,
     _lead_envelopes,
     _level_db,
+    _precise_bpm,
     _sweep_cutoffs,
     _swept_filter,
     _to_mono,
@@ -34,6 +36,7 @@ from src.audio.audio_mixer import (
     max_overlap_seconds,
     measure_seam_offset,
     measured_transition,
+    normalise_key,
     normalise_onset,
     pair_compatibility,
     render_mix,
@@ -51,6 +54,7 @@ def _kick_pattern(shift_s: float = 0.0, seconds: float = 8.0, bpm: float = BPM) 
     y = np.zeros(int(SR * seconds), dtype=np.float32)
     tail = np.arange(1500)
     hit = (np.sin(2 * np.pi * 55 * tail / SR) * np.exp(-tail / SR * 30)).astype(np.float32)
+    hit[-300:] *= np.linspace(1.0, 0.0, 300, dtype=np.float32)  # no click at the end of the hit
     for k in range(int(seconds / beat)):
         i = int((k * beat + shift_s) * SR)
         if 0 <= i < len(y) - len(hit):
@@ -105,7 +109,7 @@ def test_band_split_is_zero_phase():
 def test_apply_recipe_returns_float32_of_the_same_length():
     y = _kick_pattern()
     for name, r in RECIPES.items():
-        out = _apply_recipe(y, r["A_vol"], r["A_bands"], "out", r["duck"])
+        out = _apply_recipe(y, r["A_vol"], r["A_bands"], "out")
         assert out.dtype == np.float32, name
         assert len(out) == len(y), name
         assert np.isfinite(out).all(), name
@@ -503,7 +507,7 @@ def test_band_split_does_not_mix_the_channels():
 def test_apply_recipe_keeps_both_channels():
     y = _stereo_kicks()
     for name, r in RECIPES.items():
-        out = _apply_recipe(y, r["B_vol"], r["B_bands"], "in", r["duck"])
+        out = _apply_recipe(y, r["B_vol"], r["B_bands"], "in")
         assert out.shape == y.shape, name
         assert out.dtype == np.float32, name
         assert np.isfinite(out).all(), name
@@ -512,7 +516,7 @@ def test_apply_recipe_keeps_both_channels():
 def test_apply_recipe_preserves_stereo_difference():
     """The envelope must scale both channels, not collapse them."""
     y = _stereo_kicks()
-    out = _apply_recipe(y, RECIPES["blend"]["B_vol"], RECIPES["blend"]["B_bands"], "in", 1.0)
+    out = _apply_recipe(y, RECIPES["blend"]["B_vol"], RECIPES["blend"]["B_bands"], "in")
     assert np.abs(out[:, 0] - out[:, 1]).max() > 1e-4, "channels became identical"
 
 
@@ -718,6 +722,73 @@ def test_analyse_body_reports_onset_on_the_normalised_scale():
     assert 0.0 <= m["onset"] <= 1.0
 
 
+# ── Key names: essentia says Eb, the catalog and the Camelot table say D# ───────
+
+
+def test_flat_key_names_are_normalised_to_the_catalog_spelling():
+    assert normalise_key("Eb", "minor") == "D#m"
+    assert normalise_key("Bb", "major") == "A#"
+    assert normalise_key("Ab", "minor") == "G#m"
+    assert normalise_key("C", "minor") == "Cm"
+    assert normalise_key("F#", "major") == "F#"
+
+
+def test_every_normalised_key_is_on_the_camelot_wheel():
+    """An unknown key gets distance 2.5, which blocks melt and rise for the pair."""
+    for note in ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]:
+        for scale in ("major", "minor"):
+            assert normalise_key(note, scale) in _CAMELOT
+
+
+# ── Tempo: measured from the audio, not the frame-quantised beat grid ──────────
+
+
+def _quantised_grid(bpm: float, seconds: float, hop_s: float = 512 / 22_050) -> dict:
+    """What the segmenter hands the mixer: beat times rounded to its 23 ms frame."""
+    beats = np.arange(0, seconds, 60.0 / bpm)
+    beats = np.round(beats / hop_s) * hop_s
+    return {"bpm": float(round(bpm)), "beats": [round(float(b), 3) for b in beats]}
+
+
+def test_precise_bpm_recovers_a_non_integer_tempo_from_the_audio():
+    """127.4 BPM lies between the grid's quantised values; the audio still gives it."""
+    y = _kick_pattern(seconds=60.0, bpm=127.4)
+    info = _quantised_grid(127.4, 60.0)
+    assert abs(_precise_bpm(info, np.stack([y, y], axis=1)) - 127.4) < 0.05
+
+
+def test_the_beat_grid_alone_snaps_to_a_quantised_tempo():
+    """Documents the failure the audio measurement replaces: 134 BPM reads as 136."""
+    info = _quantised_grid(134.0, 240.0)
+    grid_only = _precise_bpm(info)
+    assert abs(grid_only - 134.0) > 1.0, "the grid median cannot resolve 134 BPM"
+    y = _kick_pattern(seconds=60.0, bpm=134.0)
+    assert abs(_precise_bpm(info, np.stack([y, y], axis=1)) - 134.0) < 0.05
+
+
+def test_precise_bpm_falls_back_to_the_grid_when_the_audio_has_no_beat():
+    info = _quantised_grid(128.0, 60.0)
+    silence = np.zeros((SR * 60, 2), dtype=np.float32)
+    assert _precise_bpm(info, silence) == pytest.approx(_precise_bpm(info))
+
+
+def test_two_tracks_stretched_to_one_tempo_do_not_drift():
+    """
+    The bug as heard: two tracks at 130.00 and 127.99 both measured 129.31 from
+    their grids, were stretched by the same rate, and drifted half a beat apart
+    inside one overlap. Measured from the audio, both land on the target.
+    """
+    target = 128.5
+    for true_bpm in (130.0, 127.99):
+        y = _kick_pattern(seconds=60.0, bpm=true_bpm)
+        est = _precise_bpm(_quantised_grid(true_bpm, 60.0), np.stack([y, y], axis=1))
+        actual_after_stretch = true_bpm * (target / est)
+        drift_per_64_bars_ms = (
+            abs(actual_after_stretch - target) / target * 64 * 4 * 60 / target * 1000
+        )
+        assert drift_per_64_bars_ms < 10, f"{true_bpm}: {drift_per_64_bars_ms:.0f} ms drift"
+
+
 # ── A pair that fits may run past its type's default ───────────────────────────
 
 
@@ -745,3 +816,740 @@ def test_stretching_never_exceeds_twice_the_default():
     bar_dur = 4 * 60 / 136
     ceiling = max(int(max_overlap_seconds(1.0) / bar_dur), 2)
     assert min(ceiling, int(16 * LONG_STRETCH)) == 32, "a blend must not become a melt"
+
+
+# ── Downbeats and phrases: every move lands on the "1" of a phrase ─────────────
+
+
+def test_tracker_grid_is_built_from_the_clean_run_of_downbeats(monkeypatch):
+    """
+    What the raw tracker really returns: a burst of "downbeats" on every beat
+    in the intro, one missed downbeat, one beat slip in the beat list. The grid
+    must still be regular 4-beat bars on the phase of the clean run.
+    """
+    from src.data import audio_segmenter
+
+    beats = np.arange(0, 60, 0.5)  # 120 bpm, bar = 2 s
+    true_bars = beats[2::4]  # downbeats on beat index 2, 6, 10, ...
+    downbeats = np.concatenate([beats[:10], true_bars[3:12], true_bars[13:]])  # burst, gap
+    beats_with_slip = np.delete(beats, 60)  # tracker dropped one beat at 30 s
+    monkeypatch.setattr(audio_segmenter, "BEAT_THIS_ENABLED", True)
+    monkeypatch.setattr(
+        audio_segmenter._tracked_grid,
+        "_model",
+        lambda y, sr: (beats_with_slip, downbeats),
+        raising=False,
+    )
+    got_beats, bars, conf = audio_segmenter._tracked_grid(np.zeros(10), 22_050)
+    assert np.allclose(bars, true_bars[: len(bars)], atol=0.05), "phase from the clean run"
+    assert np.allclose(np.diff(bars), 2.0, atol=0.05), "every bar is one bar long"
+    inner = got_beats[(got_beats >= bars[0]) & (got_beats < bars[-1])]
+    assert len(inner) == 4 * (len(bars) - 1), "beats are four subdivisions of each bar"
+    assert np.allclose(np.diff(inner), 0.5, atol=0.01)
+    assert 0.6 < conf < 0.9, "the intro burst is counted against confidence"
+
+
+def test_tracker_grid_needs_a_clean_run():
+    from src.data.audio_segmenter import regular_bars
+
+    beats = np.arange(0, 20, 0.5)
+    assert regular_bars(beats, beats[::3]) is None, "3-beat gaps are not bars"
+
+
+def test_phrase_offset_is_where_the_section_changes_land():
+    """Changes at bars 3, 11, 19, 35 all sit on residue 3 of an 8-bar grid."""
+    from src.data.audio_segmenter import phrase_offset
+
+    novelty = np.zeros(48)
+    peaks = [3, 11, 19, 35]
+    for p in peaks:
+        novelty[p] = 1.0
+    novelty[6] = 0.4  # a weaker change off the grid must not win
+    peaks.append(6)
+    assert phrase_offset(peaks, novelty, 8) == 3
+    assert phrase_offset([], novelty, 8) == 0
+
+
+def test_window_lands_on_the_tracks_own_phrase_grid():
+    """A track whose phrases start at bar 3 must cue in and out on 3, 11, 19, ..."""
+    from src.audio.audio_mixer import _choose_window
+
+    info = _fake_info(
+        n_bars=200,
+        sections=[
+            {"label": "intro", "bars": [0, 11]},
+            {"label": "drop", "bars": [11, 75]},
+            {"label": "outro", "bars": [75, 200]},
+        ],
+        energy=np.zeros(200),
+    )
+    info["phrase_bars"], info["phrase_offset"] = 8, 3
+    start, end = _choose_window(info, target_bars=64, tail_bars=16, e_target01=None)
+    assert (start - 3) % 8 == 0 and (end - 3) % 8 == 0, (start, end)
+    assert (start, end) == (11, 75)
+
+
+def test_overlaps_are_whole_phrases():
+    """45 and 50 bars, what the compatibility ceiling produced, end mid-phrase."""
+    from src.audio.audio_mixer import _whole_phrases
+
+    assert _whole_phrases(45, 8) == 40
+    assert _whole_phrases(50, 8) == 48
+    assert _whole_phrases(16, 8) == 16
+    assert _whole_phrases(6, 8) == 6, "below one phrase, whole bars are all there is"
+    assert _whole_phrases(9, 4) == 8, "dnb phrases are 4 half-time bars"
+
+
+def test_bass_swap_starts_on_a_bar_line_and_is_one_decisive_move():
+    """(0.46, 1) → (0.54, 0) on 45 bars is a 3.6-bar swap starting at bar 20.7."""
+    from src.audio.audio_mixer import SWAP_BARS, _snap_low_swap
+
+    spec = _snap_low_swap([(0.0, 1), (0.46, 1), (0.54, 0)], 45, 4)
+    (t0, g0), (t1, g1) = spec[1], spec[2]
+    start_bar, end_bar = t0 * 45, t1 * 45
+    assert start_bar == pytest.approx(24) and start_bar % 4 == 0
+    assert end_bar - start_bar == pytest.approx(SWAP_BARS)
+    assert (g0, g1) == (1, 0)
+
+
+def test_bass_swap_snapping_mirrors_for_the_incoming_record():
+    from src.audio.audio_mixer import _snap_low_swap
+
+    a = _snap_low_swap([(0.0, 1), (0.46, 1), (0.54, 0)], 32, 4)
+    b = _snap_low_swap([(0.0, 0), (0.46, 0), (0.54, 1)], 32, 4)
+    assert [t for t, _ in a] == [t for t, _ in b], "A leaves and B arrives on the same bar"
+
+
+def test_specs_without_a_single_swap_are_left_alone():
+    from src.audio.audio_mixer import _snap_low_swap
+
+    assert _snap_low_swap(None, 32, 4) is None
+    flat = [(0.0, 0), (1.0, 0)]
+    assert _snap_low_swap(flat, 32, 4) == flat
+
+
+def test_every_recipe_still_swaps_bass_after_snapping():
+    """Snapping must keep the one-bass rule: A's low leaves when B's arrives."""
+    from src.audio.audio_mixer import _snap_bands
+
+    for name, r in RECIPES.items():
+        for n_bars in (8, 16, 32, 45, 64):
+            a = _snap_bands(r["A_bands"], n_bars, 4)
+            b = _snap_bands(r["B_bands"], n_bars, 4)
+            if not a or not b or a.get("low") is None or b.get("low") is None:
+                continue
+            ea = _env(a["low"], ENV_N, "out")
+            eb = _env(b["low"], ENV_N, "in")
+            assert (ea + eb).max() < 1.6, f"{name}/{n_bars}: both basses in together"
+            assert ea[0] == pytest.approx(1, abs=0.02), f"{name}: A must start with its bass"
+            if len(b["low"]) == 4:  # a snapped swap; the drop keeps B's bass cut throughout
+                assert eb[-1] == pytest.approx(1, abs=0.02), f"{name}: B must end with its bass"
+
+
+def test_lead_handover_starts_on_the_half_phrase_grid():
+    for ttype, cfg in LEAD.items():
+        for n_bars in (16, 32, 45, 64):
+            a_vol, _, _, _ = _lead_envelopes(n_bars, cfg, 4)
+            h0_bars = a_vol[1][0] * n_bars
+            assert h0_bars == pytest.approx(round(h0_bars / 4) * 4, abs=1e-6), (ttype, n_bars)
+
+
+# ── Sound quality: stretch engine and stretch cap ──────────────────────────────
+
+
+def test_stretch_uses_the_r3_engine(monkeypatch):
+    """R3 keeps kick transients; measured sharper than R2 on real audio."""
+    import pyrubberband
+
+    from src.audio import audio_mixer
+
+    seen = {}
+
+    def fake(y, sr, rate, rbargs=None):
+        seen["rbargs"] = rbargs
+        return y
+
+    monkeypatch.setattr(pyrubberband, "time_stretch", fake)
+    monkeypatch.setattr(audio_mixer.shutil, "which", lambda name: "/usr/bin/rubberband")
+    audio_mixer._stretch(np.zeros((SR, 2), dtype=np.float32), 0.97)
+    assert "-3" in seen["rbargs"], "the R3 flag must reach the rubberband CLI"
+
+
+def test_stretch_cap_warns_then_refuses(caplog):
+    from src.audio.audio_mixer import STRETCH_MAX, STRETCH_WARN, _check_stretch_rate
+
+    _check_stretch_rate(1.03, "ok")  # a normal DJ pitch, silent
+    with caplog.at_level("WARNING"):
+        _check_stretch_rate(np.exp(STRETCH_WARN + 0.01), "warned")
+    assert "warned" in caplog.text
+    with pytest.raises(ValueError, match="too far from the set tempo"):
+        _check_stretch_rate(np.exp(STRETCH_MAX + 0.01), "refused")
+    with pytest.raises(ValueError):
+        _check_stretch_rate(np.exp(-(STRETCH_MAX + 0.01)), "slowed down too far")
+
+
+# ── Sound quality: the sweep has no block edges ────────────────────────────────
+
+
+def test_swept_filter_with_a_constant_cutoff_equals_the_fixed_filter():
+    """The block design left 20%-of-peak transients every 8192 samples."""
+    from src.audio.audio_mixer import _fixed_filter
+
+    y = (np.random.default_rng(1).standard_normal((SR * 4, 2)) * 0.1).astype(np.float32)
+    for hz in (300.0, 1000.0):
+        ref = _fixed_filter(y, hz, "highpass")
+        out = _swept_filter(y, np.full(len(y), hz), "highpass")
+        assert np.abs(out - ref).max() < 1e-9 * max(np.abs(ref).max(), 1e-12) + 1e-9, hz
+
+
+def test_swept_filter_adds_no_broadband_artefacts():
+    """Steady tones through a rise sweep: anything above 6 kHz is artefact."""
+    from scipy.signal import butter, sosfiltfilt
+
+    n = SR * 4
+    t = np.arange(n) / SR
+    tones = (0.2 * np.sin(2 * np.pi * 110 * t) + 0.2 * np.sin(2 * np.pi * 440 * t)).astype(
+        np.float32
+    )
+    out = _swept_filter(
+        tones, _sweep_cutoffs([(0.0, 2500.0), (0.75, 25.0), (1.0, 25.0)], n), "highpass"
+    )
+    art = sosfiltfilt(butter(6, 6000, "highpass", fs=SR, output="sos"), out)
+    rel_db = 20 * np.log10(np.sqrt((art**2).mean()) / np.sqrt((out**2).mean()) + 1e-15)
+    assert rel_db < -90, f"artefact energy {rel_db:.1f} dB"
+
+
+# ── Sound quality: the overlap sits level with both bodies ─────────────────────
+
+
+def test_overlap_gain_anchors_to_both_bodies():
+    """A ends at -14 dB, B starts at -18 dB: the overlap must start at A's level
+    and end at B's, whatever the summed records measure in between."""
+    from src.audio.audio_mixer import _overlap_gain_ride
+
+    bar_n = SR // 2
+    rng = np.random.default_rng(3)
+    a_body = rng.standard_normal((8 * bar_n, 2)).astype(np.float32) * 10 ** (-14 / 20)
+    b_body = rng.standard_normal((8 * bar_n, 2)).astype(np.float32) * 10 ** (-18 / 20)
+    overlap = rng.standard_normal((16 * bar_n, 2)).astype(np.float32) * 10 ** (-20 / 20)
+    out, g0, g1 = _overlap_gain_ride(overlap, a_body, b_body, bar_n)
+
+    def db(x):
+        return 20 * np.log10(np.sqrt((x**2).mean()))
+
+    assert db(out[:bar_n]) == pytest.approx(-14, abs=0.7)
+    assert db(out[-bar_n:]) == pytest.approx(-18, abs=0.7)
+    assert g0 == pytest.approx(6, abs=0.7) and g1 == pytest.approx(2, abs=0.7)
+
+
+def test_overlap_gain_is_clamped_and_leaves_a_level_overlap_alone():
+    from src.audio.audio_mixer import OVERLAP_GAIN_MAX_DB, _overlap_gain_ride
+
+    bar_n = SR // 2
+    rng = np.random.default_rng(4)
+    level = rng.standard_normal((8 * bar_n, 2)).astype(np.float32) * 0.1
+    same, g0, g1 = _overlap_gain_ride(level.copy(), level, level, bar_n)
+    assert abs(g0) < 0.5 and abs(g1) < 0.5
+    assert np.abs(same - level).max() < 0.1 * 0.1
+    quiet = level * 10 ** (-30 / 20)
+    _, g0, g1 = _overlap_gain_ride(quiet, level, level, bar_n)
+    assert g0 == OVERLAP_GAIN_MAX_DB and g1 == OVERLAP_GAIN_MAX_DB
+
+
+def test_kick_periodicity_separates_a_running_kick_from_noise():
+    from src.audio.audio_mixer import KICK_PERIODIC_MIN, _kick_periodicity
+
+    kick = _kick_pattern(seconds=8.0)
+    noise = (np.random.default_rng(5).standard_normal(SR * 8) * 0.1).astype(np.float32)
+    assert _kick_periodicity(kick, BPM) > 0.5
+    assert _kick_periodicity(noise, BPM) < KICK_PERIODIC_MIN
+
+
+# ── Sound quality: true-peak limiter ───────────────────────────────────────────
+
+
+def _true_peak_db(x):
+    from src.audio.audio_mixer import _true_peak_per_sample
+
+    return 20 * np.log10(_true_peak_per_sample(x).max())
+
+
+def test_limiter_holds_true_peak_under_the_ceiling():
+    from src.audio.audio_mixer import LIMIT_CEILING_DB, _true_peak_limiter
+
+    rng = np.random.default_rng(6)
+    x = (rng.standard_normal((SR * 3, 2)) * 0.3).astype(np.float32)  # peaks well above 0 dBFS
+    x[SR : SR + 20] *= 4  # and an isolated burst
+    y, stats = _true_peak_limiter(x)
+    assert _true_peak_db(y) <= LIMIT_CEILING_DB + 0.1, _true_peak_db(y)
+    assert stats["max_reduction_db"] > 3
+
+
+def test_limiter_leaves_quiet_material_alone():
+    from src.audio.audio_mixer import _true_peak_limiter
+
+    x = (np.random.default_rng(7).standard_normal((SR, 2)) * 0.05).astype(np.float32)
+    y, stats = _true_peak_limiter(x)
+    assert np.array_equal(x, y) and stats["max_reduction_db"] == 0.0
+
+
+def test_limiter_only_touches_the_loud_moment():
+    """One burst in quiet material: 300 ms later the gain is back to unity."""
+    from src.audio.audio_mixer import _true_peak_limiter
+
+    x = (np.random.default_rng(8).standard_normal((SR * 2, 2)) * 0.05).astype(np.float32)
+    x[SR : SR + 50] = 0.99
+    y, _ = _true_peak_limiter(x)
+    before = slice(0, SR - int(0.02 * SR))
+    later = slice(SR + int(0.3 * SR), SR * 2)
+    assert np.allclose(y[before], x[before], atol=1e-6), "no change before the lookahead"
+    assert np.allclose(y[later], x[later], atol=2e-3), "released within 300 ms"
+
+
+# ── Structure by intent: the curve decides how often the drop is the moment ────
+
+
+def test_structure_regime_thresholds():
+    from src.audio.audio_mixer import STRUCTURE_HIGH, STRUCTURE_LOW, structure_regime
+
+    assert structure_regime(None) == "mid"
+    assert structure_regime(STRUCTURE_LOW - 0.01) == "low"
+    assert structure_regime(STRUCTURE_LOW) == "mid"
+    assert structure_regime(STRUCTURE_HIGH - 0.01) == "mid"
+    assert structure_regime(STRUCTURE_HIGH) == "high"
+
+
+def test_landing_on_the_drop_ends_the_overlap_there_in_whole_phrases():
+    from src.audio.audio_mixer import _land_on_drop
+
+    assert _land_on_drop(16, 48, 8, 64) == (16, 32)
+    assert _land_on_drop(16, 44, 8, 64) == (20, 24), "28-bar span rounds down to 3 phrases"
+    assert _land_on_drop(16, 48, 8, 16) == (32, 16), "capped: enter later, still end on the drop"
+    assert _land_on_drop(16, 20, 8, 64) is None, "less than a phrase to the drop"
+
+
+def test_end_anchored_swap_hands_the_bass_over_in_the_last_bar():
+    from src.audio.audio_mixer import _end_anchored_swap
+
+    a, b = _end_anchored_swap(32)
+    assert a[1][0] == pytest.approx(31 / 32) and a[-1] == (1.0, 0)
+    assert b[1][0] == pytest.approx(31 / 32) and b[-1] == (1.0, 1)
+    ea, eb = _env(a, ENV_N, "out"), _env(b, ENV_N, "in")
+    assert (ea + eb).max() < 1.6, "one bass at a time"
+
+
+def test_a_low_next_slot_prefers_a_quiet_tail():
+    """Two cue-outs on boundaries: 64 (tail = groove) or 72 (tail = breakdown).
+    Only when the next slot is low does the breakdown tail win the drift penalty."""
+    from src.audio.audio_mixer import _choose_window
+
+    info = _fake_info(
+        n_bars=200,
+        sections=[
+            {"label": "intro", "bars": [0, 8]},
+            {"label": "drop", "bars": [8, 64]},
+            {"label": "groove", "bars": [64, 72]},
+            {"label": "breakdown", "bars": [72, 200]},
+        ],
+        energy=np.zeros(200),
+    )
+    assert _choose_window(info, 56, 16, None) == (8, 64)
+    assert _choose_window(info, 56, 16, None, quiet_tail=True) == (8, 72)
+
+
+def test_landing_targets_the_first_drop_a_phrase_past_the_cue_in():
+    """B's drop AT the cue-in is the entry, not a landing; the next one is."""
+    from src.audio.audio_mixer import _next_drop_after
+
+    sections = [
+        {"label": "drop", "bars": [16, 24]},
+        {"label": "buildup", "bars": [24, 32]},
+        {"label": "drop", "bars": [32, 64]},
+    ]
+    assert _next_drop_after(sections, 16, 8) == 32
+    assert _next_drop_after(sections, 40, 8) is None
+
+
+def test_gain_ride_leaves_the_end_at_unity_when_landing_on_a_drop():
+    from src.audio.audio_mixer import _overlap_gain_ride
+
+    bar_n = SR // 2
+    rng = np.random.default_rng(9)
+    a_body = rng.standard_normal((8 * bar_n, 2)).astype(np.float32) * 10 ** (-14 / 20)
+    drop = rng.standard_normal((8 * bar_n, 2)).astype(np.float32) * 10 ** (-10 / 20)
+    buildup = rng.standard_normal((16 * bar_n, 2)).astype(np.float32) * 10 ** (-18 / 20)
+    _, g0, g1 = _overlap_gain_ride(buildup, a_body, drop, bar_n, anchor_end=False)
+    assert g0 == pytest.approx(4, abs=0.7) and g1 == 0.0
+
+
+# ── Seam measurement when the outgoing record has no kick ──────────────────────
+
+
+def _stab_pattern(shift_s: float = 0.0, seconds: float = 8.0, bpm: float = BPM) -> np.ndarray:
+    """On-beat 3 kHz stabs with a soft 10 ms attack: rhythm, but no kick and no
+    broadband click that would leak into the kick band."""
+    beat = 60.0 / bpm
+    y = np.zeros(int(SR * seconds), dtype=np.float32)
+    length = int(0.12 * SR)
+    tt = np.arange(length) / SR
+    hit = (np.sin(2 * np.pi * 3000 * tt) * np.minimum(tt / 0.01, 1.0) * np.exp(-tt * 25)).astype(
+        np.float32
+    )
+    for k in range(int(seconds / beat)):
+        i = int((k * beat + shift_s) * SR)
+        if 0 <= i < len(y) - length:
+            y[i : i + length] += hit
+    return y
+
+
+def test_seam_falls_back_to_the_full_band_when_a_record_has_no_kick():
+    """Outgoing breakdown (stabs, no kick) against an incoming kick 19 ms late."""
+    from src.audio.audio_mixer import _seam_envelopes
+
+    tail = _stab_pattern(0.0)
+    head = _kick_pattern(0.019) + _stab_pattern(0.019)
+    chosen = _seam_envelopes(tail, head, BPM)
+    assert chosen is not None and chosen[2] == "full"
+    # The full-band envelope mixes the kick onset with the stab's 10 ms ramp, so
+    # the estimate sits a few ms early. Kick vs hats on real tracks showed the
+    # same ~6 ms bias; a flam starts being audible around 10 ms.
+    assert measure_seam_offset(tail, head, BPM) * 1000 == pytest.approx(19, abs=5)
+
+
+def test_seam_uses_the_kick_when_both_have_one():
+    from src.audio.audio_mixer import _seam_envelopes
+
+    assert _seam_envelopes(_kick_pattern(), _kick_pattern(0.01), BPM)[2] == "kick"
+
+
+def test_seam_shifts_nothing_when_neither_record_has_a_pulse():
+    from src.audio.audio_mixer import _seam_envelopes
+
+    rng = np.random.default_rng(11)
+    a = (rng.standard_normal(SR * 8) * 0.1).astype(np.float32)
+    b = (rng.standard_normal(SR * 8) * 0.1).astype(np.float32)
+    assert _seam_envelopes(a, b, BPM) is None
+    assert measure_seam_offset(a, b, BPM) == 0.0
+
+
+def test_a_silent_kick_band_does_not_count_as_a_kick():
+    """Leakage from a 3 kHz stab is periodic but carries ~0.1% of the onset
+    energy; real sections carry 5-45%. The energy floor tells them apart."""
+    from src.audio.audio_mixer import KICK_ENERGY_MIN_SHARE, _kick_envelope, _onset_envelope
+
+    stab = _stab_pattern()
+    share = _kick_envelope(stab).sum() / _onset_envelope(stab).sum()
+    assert share < KICK_ENERGY_MIN_SHARE / 5
+    kick = _kick_pattern()
+    assert _kick_envelope(kick).sum() / _onset_envelope(kick).sum() > KICK_ENERGY_MIN_SHARE * 5
+
+
+# ── Alignment against the record's own grid ────────────────────────────────────
+
+
+def _grid(bpm: float = BPM, seconds: float = 8.0, shift_s: float = 0.0) -> np.ndarray:
+    return np.arange(0, seconds, 60.0 / bpm) + shift_s
+
+
+def test_grid_phase_reads_how_late_the_sounds_sit_on_the_grid():
+    from src.audio.audio_mixer import grid_phase
+
+    y = _kick_pattern(0.019)  # kicks 19 ms after the grid beats
+    off, corr, band = grid_phase(y, _grid(), BPM)
+    assert off * 1000 == pytest.approx(19, abs=2) and band == "kick" and corr > 0.1
+
+
+def test_grid_phase_ignores_off_beat_layers():
+    """Open hats on the off-beat sit half a beat from the grid, far outside the
+    40 ms window, so they cannot win; the on-grid layer does."""
+    from src.audio.audio_mixer import grid_phase
+
+    half_beat = 0.5 * 60 / BPM
+    y = _kick_pattern(0.010) + 2.0 * _stab_pattern(half_beat)  # loud off-beat stabs
+    off, _, band = grid_phase(y, _grid(), BPM)
+    assert off * 1000 == pytest.approx(10, abs=2), band
+
+
+def test_grid_phase_is_none_when_nothing_follows_the_grid():
+    from src.audio.audio_mixer import grid_phase
+
+    noise = (np.random.default_rng(12).standard_normal(SR * 8) * 0.1).astype(np.float32)
+    assert grid_phase(noise, _grid(), BPM) is None
+
+
+def test_seam_from_grids_is_the_difference_of_the_two_residuals():
+    from src.audio.audio_mixer import seam_offset_from_grids
+
+    tail = _kick_pattern(0.005)  # A's kicks 5 ms late on A's grid
+    head = _kick_pattern(0.024)  # B's kicks 24 ms late on B's grid
+    off, detail = seam_offset_from_grids(tail, head, _grid(), _grid(), BPM)
+    assert off * 1000 == pytest.approx(19, abs=2)
+    assert detail["tail"][2] == "kick" and detail["head"][2] == "kick"
+
+
+def test_seam_from_grids_can_never_jump_half_a_beat():
+    """A's grid is right but A's loudest layer is off-beat; B is plain. The old
+    envelope correlation read a half beat here. The grid method stays small."""
+    from src.audio.audio_mixer import seam_offset_from_grids
+
+    half_beat = 0.5 * 60 / BPM
+    tail = 0.3 * _kick_pattern(0.0) + 2.0 * _stab_pattern(half_beat)
+    head = _kick_pattern(0.012)
+    off, _ = seam_offset_from_grids(tail, head, _grid(), _grid(), BPM)
+    assert abs(off) < 0.04
+    assert off * 1000 == pytest.approx(12, abs=3)
+
+
+def test_own_grid_calibration_recovers_a_late_grid():
+    from src.audio.audio_mixer import calibrate_grid_phase_own
+
+    y = _kick_pattern(0.0, seconds=30.0)
+    late_grid = _grid(seconds=30.0, shift_s=-0.025)  # grid 25 ms before the kicks
+    assert calibrate_grid_phase_own(y, late_grid, BPM) * 1000 == pytest.approx(25, abs=2)
+
+
+def test_grid_seam_shift_is_applied_exactly_once(monkeypatch, tmp_path):
+    """The own-grid residual does not move with the cut, so re-measuring after the
+    shift returns the same number; looping on it multiplied the shift by four."""
+    import soundfile as sf
+
+    from src.audio import audio_mixer
+
+    monkeypatch.setattr(audio_mixer, "SEAM_METHOD", "grid")
+    calls = []
+    real = audio_mixer.seam_offset_from_grids
+
+    def spy(tail, head, bt, bh, bpm_):
+        out = real(tail, head, bt, bh, bpm_)
+        calls.append(len(tail))
+        return out
+
+    monkeypatch.setattr(audio_mixer, "seam_offset_from_grids", spy)
+    bpm = 128.0
+    a = _kick_pattern(0.0, seconds=200.0, bpm=bpm)
+    b = _kick_pattern(0.020, seconds=200.0, bpm=bpm)
+    sf.write(tmp_path / "a.wav", np.stack([a, a], 1), SR)
+    sf.write(tmp_path / "b.wav", np.stack([b, b], 1), SR)
+    rep = render_mix(
+        [tmp_path / "a.wav", tmp_path / "b.wav"],
+        tmp_path / "m.wav",
+        target_bpm=bpm,
+        play_minutes=1.5,
+    )
+    tr = rep["transitions"][0]
+    assert abs(tr["seam_offset_ms"]) < 4.5, "one shift leaves only rounding"
+    full_length_calls = [n for n in calls if n == max(calls)]
+    assert len(full_length_calls) == 1, "the whole-overlap residual is measured once, not looped"
+
+
+def test_grid_phase_catches_a_grid_that_is_a_quarter_beat_off():
+    """Ben Böhmer – Vale: kick, bass and mids all 122 ms before the tracker grid.
+    A 40 ms window could not see it; the rhythm bands over half a beat can."""
+    from src.audio.audio_mixer import grid_phase
+
+    quarter = 0.25 * 60 / BPM
+    y = _kick_pattern(0.0, seconds=16.0)
+    off, _, band = grid_phase(y, _grid(seconds=16.0, shift_s=quarter), BPM)  # grid a quarter late
+    assert off == pytest.approx(-quarter, abs=0.003) and band == "kick"
+
+
+def _bass_pattern(seconds: float = 16.0, bpm: float = BPM) -> np.ndarray:
+    """A 300 Hz bass note on every beat, nothing in the kick band."""
+    beat = 60 / bpm
+    n = int(SR * seconds)
+    y = np.zeros(n, dtype=np.float32)
+    length = int(0.15 * SR)
+    tt = np.arange(length) / SR
+    hit = (np.sin(2 * np.pi * 300 * tt) * np.minimum(tt / 0.005, 1.0) * np.exp(-tt * 20)).astype(
+        np.float32
+    )
+    for k in range(int(seconds / beat)):
+        i = int(k * beat * SR)
+        if i + length < n:
+            y[i : i + length] += hit
+    return y
+
+
+def test_grid_phase_prefers_the_bass_over_a_weak_off_beat_kick():
+    """Sin Sin – Break Down: kick weak and off the beat, bass on the beat."""
+    from src.audio.audio_mixer import grid_phase
+
+    beat = 60 / BPM
+    kick = _kick_pattern(beat / 3, seconds=16.0)
+    # a syncopated kick: only beats 2 and 4 of each bar carry one
+    for k in range(int(16 / beat)):
+        if k % 4 in (0, 2):
+            i = int((k * beat + beat / 3) * SR)
+            kick[i : i + 1500] = 0
+    y = _bass_pattern() + 0.15 * kick
+    off, _, band = grid_phase(y, _grid(seconds=16.0), BPM)
+    assert band == "lowmid" and abs(off) < 0.006, (band, off)
+
+
+def test_grid_phase_takes_the_kick_when_kick_and_bass_agree():
+    from src.audio.audio_mixer import grid_phase
+
+    y = _bass_pattern() + _kick_pattern(0.008, seconds=16.0)  # kick 8 ms late, bass on the grid
+    off, _, band = grid_phase(y, _grid(seconds=16.0), BPM)
+    assert band == "kick" and off * 1000 == pytest.approx(8, abs=2)
+
+
+def test_anchor_level_ignores_drop_out_bars():
+    """Materium's last bars: -22 -42 -25 -17. The ear holds -17; the plain median said -23."""
+    from src.audio.audio_mixer import _anchor_level_db
+
+    assert _anchor_level_db([-22, -42, -25, -17]) == pytest.approx(-19.5)  # median of -22, -17
+    assert _anchor_level_db([-47, -23, -18, -18, -22, -42, -25, -17]) == pytest.approx(-18.0)
+    assert _anchor_level_db([-16, -16.5, -16, -17]) == pytest.approx(-16.25)
+
+
+def test_gain_ride_is_not_dragged_down_by_a_silent_bar():
+    from src.audio.audio_mixer import _overlap_gain_ride
+
+    bar_n = SR // 2
+    rng = np.random.default_rng(13)
+    a_body = rng.standard_normal((8 * bar_n, 2)).astype(np.float32) * 10 ** (-16 / 20)
+    a_body[5 * bar_n : 6 * bar_n] *= 10 ** (-30 / 20)  # a one-bar drop-out near the end
+    b_body = rng.standard_normal((8 * bar_n, 2)).astype(np.float32) * 10 ** (-16 / 20)
+    overlap = rng.standard_normal((16 * bar_n, 2)).astype(np.float32) * 10 ** (-20 / 20)
+    out, g0, _ = _overlap_gain_ride(overlap, a_body, b_body, bar_n)
+    assert g0 == pytest.approx(4, abs=0.7), (
+        "anchored to -16, not to a median pulled down by silence"
+    )
+
+
+def test_edge_level_is_the_last_two_real_bars():
+    """A's last 8 bars on the house clip; the ear holds what it just heard."""
+    from src.audio.audio_mixer import _edge_level_db
+
+    last8 = [-37.1, -23.9, -17.9, -18.2, -21.4, -43.9, -25.1, -16.9]
+    assert _edge_level_db(last8, "end") == pytest.approx(-16.9)
+    assert _edge_level_db([-16.9, -25.1, -43.9, -21.4], "start") == pytest.approx(-16.9)
+    assert _edge_level_db([-16, -16, -16, -16], "end") == pytest.approx(-16)
+
+
+def test_gain_ride_start_anchor_reads_the_overlap_opening_not_its_loud_end():
+    """Farrago – Sinner: A ends at -17, the overlap opens at -24 and ramps to -13.
+    The start gain must be about +7 dB, not read off the loud end of the ramp."""
+    from src.audio.audio_mixer import _overlap_gain_ride
+
+    bar_n = SR // 2
+    rng = np.random.default_rng(14)
+    a_body = rng.standard_normal((8 * bar_n, 2)).astype(np.float32) * 10 ** (-17 / 20)
+    b_body = rng.standard_normal((8 * bar_n, 2)).astype(np.float32) * 10 ** (-13 / 20)
+    ramp_db = np.linspace(-24, -13, 16 * bar_n, dtype=np.float32)
+    overlap = (
+        rng.standard_normal((16 * bar_n, 2)).astype(np.float32) * (10 ** (ramp_db / 20))[:, None]
+    )
+    _, g0, g1 = _overlap_gain_ride(overlap, a_body, b_body, bar_n)
+    assert g0 == pytest.approx(7, abs=1.0), g0
+    assert g1 == pytest.approx(0, abs=1.0), g1
+
+
+def test_last_track_plays_on_to_the_requested_length(tmp_path):
+    """Two 4-minute tracks, 3 minutes asked in total: the last body is trimmed to
+    land within a phrase of 3:00. Asked for 6 minutes, it plays on toward its end."""
+    import soundfile as sf
+
+    bpm = 128.0
+    y = _kick_pattern(0.0, seconds=240.0, bpm=bpm)
+    for name in ("a", "b"):
+        sf.write(tmp_path / f"{name}.wav", np.stack([y, y], 1), SR)
+    paths = [tmp_path / "a.wav", tmp_path / "b.wav"]
+    short = render_mix(
+        paths, tmp_path / "s.wav", target_bpm=bpm, play_minutes=1.5, total_minutes=3.0
+    )
+    long_ = render_mix(
+        paths, tmp_path / "l.wav", target_bpm=bpm, play_minutes=1.5, total_minutes=6.0
+    )
+    plain = render_mix(paths, tmp_path / "p.wav", target_bpm=bpm, play_minutes=1.5)
+    phrase_s = 8 * 4 * 60 / bpm
+    assert abs(short["duration_s"] - 180) <= phrase_s, short["duration_s"]
+    assert long_["duration_s"] > plain["duration_s"] + 45, (
+        long_["duration_s"],
+        plain["duration_s"],
+    )
+    assert long_["duration_s"] <= 240 + 240, "cannot play past the end of the track"
+
+
+# ── Seam decision: when the kick is weak, the other layers decide ──────────────
+
+
+def _fake_envs(monkeypatch, kick_off_s, others_off_s, bpm=BPM):
+    """Two records whose kick band and other bands sit at different offsets."""
+    from src.audio import audio_mixer
+
+    tail = {
+        "kick": _kick_pattern(0.0),
+        "lowmid": _bass_pattern(8.0),
+        "mid": _stab_pattern(0.0),
+        "high": _stab_pattern(0.0),
+        "full": _kick_pattern(0.0) + _bass_pattern(8.0),
+    }
+    head = {
+        "kick": _kick_pattern(kick_off_s),
+        "lowmid": _bass_pattern(8.0),
+        "mid": _stab_pattern(others_off_s),
+        "high": _stab_pattern(others_off_s),
+        "full": _kick_pattern(others_off_s) + _bass_pattern(8.0),
+    }
+    # roll the bass by the requested offset so every "other" layer agrees
+    shift = int(others_off_s * SR)
+    head["lowmid"] = np.roll(head["lowmid"], shift)
+    real = audio_mixer._band_envelopes
+
+    def fake(y):
+        for env in (tail, head):
+            if y is env["kick"]:
+                return {k: real(v)[k] for k, v in env.items()}
+        return real(y)
+
+    monkeypatch.setattr(audio_mixer, "_band_envelopes", fake)
+    return tail["kick"], head["kick"]
+
+
+def test_seam_decision_takes_the_kick_when_layers_agree(monkeypatch):
+    from src.audio.audio_mixer import seam_decision
+
+    tail, head = _fake_envs(monkeypatch, 0.019, 0.019)
+    off, label, _ = seam_decision(tail, head, BPM)
+    assert label == "kick" and off * 1000 == pytest.approx(19, abs=3)
+
+
+def test_seam_decision_keeps_the_kick_on_a_half_beat_disagreement(monkeypatch):
+    """Sin Sin → Nova: off-beat hats put every other layer half a beat away."""
+    from src.audio.audio_mixer import seam_decision
+
+    half = 0.5 * 60 / BPM
+    tail, head = _fake_envs(monkeypatch, 0.010, 0.010 + half)
+    off, label, _ = seam_decision(tail, head, BPM)
+    assert label.startswith("kick") and off * 1000 == pytest.approx(10, abs=3)
+
+
+def test_seam_decision_uses_the_consensus_on_a_quarter_beat_disagreement(monkeypatch):
+    """Wigbert → Joyhauser: weak kick a quarter beat from bass, mids and hats."""
+    from src.audio.audio_mixer import seam_decision
+
+    quarter = 0.25 * 60 / BPM
+    tail, head = _fake_envs(monkeypatch, 0.0, quarter)
+    off, label, _ = seam_decision(tail, head, BPM)
+    assert label == "consensus" and off == pytest.approx(quarter, abs=0.004)
+
+
+def test_seam_decision_rule_on_the_two_real_seams():
+    """The numbers measured on the two real seams, fed to the rule directly."""
+    from src.audio.audio_mixer import SEAM_AGREE_S, SEAM_HALF_BEAT_TOL
+
+    def rule(kick, consensus, bpm):
+        half = 0.5 * 60 / bpm
+        d = abs(kick - consensus)
+        if d <= SEAM_AGREE_S:
+            return "kick"
+        if abs(d - half) <= SEAM_HALF_BEAT_TOL * half:
+            return "kick(offbeat layers)"
+        return "consensus"
+
+    assert rule(0.103, -0.116, 127.5).startswith("kick")  # Sin Sin → Nova, Anas preferred the kick
+    assert (
+        rule(0.075, 0.194, 137.0) == "consensus"
+    )  # Wigbert → Joyhauser, Anas preferred the consensus
