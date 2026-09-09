@@ -147,7 +147,7 @@ def add_times(plan: dict, report: dict) -> dict:
                     "transition": tr["type"],
                     "bars": tr["bars"],
                     "fully_in": tr["end"],
-                    "seam_shift_ms": tr.get("seam_offset_before_ms"),
+                    "seam_shift_ms": tr.get("seam_shift_total_ms", tr.get("seam_offset_before_ms")),
                     "seam_decided_by": tr.get("seam_band"),
                 }
             )

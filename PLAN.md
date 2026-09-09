@@ -502,3 +502,193 @@ render to data/external/regression_set/ (README for Anas), then run the kick-hit
   p10 (−180 in 6/8 windows, two at −84) stay uncorrected by design — candidates for a "majority of windows" gate later,
   after Anas hears p01. Levels unchanged. results_before_kickverify.json keeps the previous numbers.
 - Offline check scripts/diag/regression_kick_hits.py now measures at `seam_shift_total_ms`.
+
+## KEY REDESIGN — BUILT 2026-09-08/09 (policy changed from the written design, agreed with Anas)
+Two facts changed the design. (1) One semitone moves a key 7 Camelot places, two semitones 2 places, so ±2 st can fix EVERY
+same-mode distance; the "about 1 join in 3 shifted" estimate was wrong. (2) The GBM edge model already sees Camelot distance,
+so with the veto off the planned clash share is 22-41 % by genre at weight 0 (measured, 27 joins per genre).
+Policy agreed: shift ONE semitone only, and only when it brings the pair within one step (fixes distances 4-6, e.g. Cm→F#m
+becomes Cm→Gm, the move Anas saw a DJ make); distances 2-3 and major/minor mismatches are not shifted; beyond 2 steps an
+unshifted join is a clash (short overlap via the compatibility tiers + bass swap in the first half-phrase).
+Code (small modules, per Anas's rule):
+- src/audio/key_shift.py: camelot_distance, shift_key, choose_shift (ties → up), plan_joins (a shifted key carries forward).
+  CLASH_DISTANCE = 2.0 is the single definition of "clash" (key_rules imports it).
+- audio_mixer: `_stretch(..., semitones=)` does stretch + pitch in one rubberband pass (cache key includes semitones;
+  rate-1 case uses pyrubberband.pitch_shift because time_stretch skips the engine at rate 1); `_apply_key_joins(tracks)`
+  runs after prepare and before loudness matching, `_pitch_shift_track` re-renders B from source; `_start_anchored_swap`
+  for clashes; report carries keys, cam_dist, key_shift_semitones, key_clash. The mixer's own _CAMELOT table is gone.
+- src/models/key_rules.py: REAL_CLASH_SHARE per genre, KEY_WEIGHT (−0.2 all genres), key_term, max_clashes = joins // 2,
+  clash_allowed / sequence_allowed (never two in a row). predict_model: Camelot veto removed (MAX_CAMELOT_DIST gone), key
+  taken out of the compatibility term (0.0), soft term added, cap enforced in the beam and in repair_candidates; plan JSON
+  has n_clashes. make_mix plan.json rows carry key_shift_semitones / key_clash.
+- Sweep (scripts/diag/key_weight_sweep.py): weight 0 → 30/41/41/33/37/22 %; any negative weight → 44 % (the cap, 4 of 9);
+  positive → 0-15 %. Real: 42/43/53/55/54/51. Cap binds for techno, tech house, DnB, afro (7-11 points under) — raising the
+  cap for those genres is an open by-ear decision.
+- Tests: tests/test_key_shift.py (7), tests/test_key_rules.py (3), planner test updated for the veto removal; render tests pass.
+- Regression set re-rendered with the policy (catalog keys predict: p11 21:00 and c01 23:00 get +1 st shifts, p07 13:00 and
+  p10 19:00 become clashes; the mixer measures its own keys so the render decides). results_before_key.json = numbers before.
+
+### Key detection verification (2026-09-09) — no detector is trustworthy on MODE; root is ~3/4
+- Ground truth: data/interim/key_ground_truth.csv (21 tracks, published keys from Beatport/Tunebat via search snippets — themselves
+  algorithmic and unverified; two conflicting). Compare script: scripts/diag/key_detector_compare.py (--cnn for madmom).
+- Results (exact or relative key): essentia edma 14/21, krumhansl 14/21, bgate 13, catalog(preview) 10, madmom CNN 8 (13.9 s/track),
+  MusicalKeyCNN (a1ex90) 8 (2 s/track, calls 20/21 minor). Root note right ~15/21 for all; mode is the disagreement.
+  Green/amber/red zoning (essentia+CNN agree / same root / differ) does NOT reach 90 % in green (8/13): the two agree on the wrong
+  mode together.
+- Ear tests: sine-chord major/minor test was useless for a non-musician (Anas). Mix test works: render the disputed track into a
+  trusted partner unshifted and shifted so each mode hypothesis predicts "in tune" for one clip
+  (data/external/key_ear_test/mix_test/, scratchpad mode_mix_test.py). Peetu S — Mental Component: Anas first said B minor, then said it was a guess — WITHDRAWN
+  (CNNs right; Beatport, essentia edma and the spectral third-hint wrong). n = 1.
+- madmom installed by Anas (pip, needs gcc + cython, --no-build-isolation) and patched for py3.10/numpy 1.26
+  (collections.abc.MutableSequence, np.float/np.int) — site-packages only, not in the repo. MusicalKeyCNN clone lives in scratch.
+- Key policy code (planner + mixer, uncommitted) is on hold until the detector question is settled. Standing recommendation:
+  decide on the ROOT only, mode unknown. Regression-set render with the key policy was stopped; results.json restored.
+
+### Fred again.. style set (2026-09-09, Anas's request) — data/external/listen/fred_20min.flac (17.4 min, 7 tracks, 126 BPM)
+Pool: Fred's own catalog tracks (21 after de-duplicating remix versions, 122-131 BPM) + 14 tracks other DJs play right beside
+his (his own tracklists are NOT in our data; the Boiler Room London 2022 list from set79.com had none of its non-Fred tracks in
+the catalog). Planner run with the one-track-per-artist rule lifted for Fred only (monkeypatch in scratchpad fred_set.py), curve
+peak, key step disabled (unverified detector), play_minutes 2.5, total 20 (one fetch failed → 7 tracks → 17.4 min).
+Seams: 2:17 blend, 4:49 wave, 6:51 blend, 9:31 fade, 11:41 slam, 14:02 fade. Not implemented and visible here: per-track play
+length variation (his 90 s cuts), DJ-specific pool/tracklists (Phase 9 dj_profiler). Awaiting Anas's ear.
+
+### TODO before the model retrain: add Fred again.. to the tracklist scraper
+`src/data/tracklists1001_client.py` hardcodes 52 DJ pages; Fred again.. is not one (only a shared Fisher radio session mentions
+him). His page: https://www.1001tracklists.com/dj/fredagain../index.html. Add the entry, scrape his sets, fetch the tracks he
+plays that the catalog lacks, then retrain (Model A/B/GBM) so his style is learnable. Anas, 2026-09-09: "we will add him before
+retraining". Same applies to any other DJ he wants profiled (Phase 9).
+
+### Harmonic fit from audio (2026-09-09) — built as an experiment in src/audio/key_shift.py, NOT validated, NOT wired in
+Idea (agreed): decide shifts from the two records' chroma over the overlap, not from key labels. Tested on 11 real overlaps
+(scratchpad fit_test.py / fit_test2.py): plain cosine of mean chroma is useless (0.83-0.99 for every shift); an interval-consonance
+score is flat (0.08-0.11); centred correlation discriminates (-0.4..+0.8) but picks −1 st on Peetu→Koyah where Anas heard +1 in
+tune, and would shift 2 of the 4 plain controls. Anas's Peetu verdict compared different partners (Factor B vs Koyah), so it is
+not clean either → rendering Peetu S into Koyah at −1/0/+1 st (data/external/key_ear_test/shift_test/) for a clean ear test.
+Until a fit measure agrees with clean ear tests, no key action in the mixer. The chroma helpers in key_shift.py are unused.
+
+### KEY — final state 2026-09-09 (Anas's decision after the −1/0/+1 ear test: "I cannot feel any difference")
+Mixer: NO key action. `_apply_key_joins`, `_pitch_shift_track`, `_start_anchored_swap`, the semitone option of `_stretch` and the
+chroma helpers are removed; `src/audio/key_shift.py` keeps only `camelot_distance` + `CLASH_DISTANCE`. Report still carries
+`keys` and `cam_dist` (estimated labels). Planner KEPT: veto removed, per-genre soft key term (KEY_WEIGHT −0.2), clash cap
+(≤ half the joins, never two in a row), key out of the compatibility term (src/models/key_rules.py). Caveat Anas raised and I
+accept: a wrong label on a melodic pair far apart can still let a grinding overlap through — watched by ear on melodic/trance
+sets; the compatibility tiers (label-based) still shorten far-key overlaps. Tests: 44 targeted pass. UNCOMMITTED (Anas commits).
+
+## LOCKED PLAN — "Data-driven DJ mimic" (agreed 2026-09-09, discussion only so far, nothing built)
+Order of work, each step verified before the next:
+1. Analytics notebook on the data we already hold (tracklist_clean.csv: 2,834 mixes with start times; features.parquet: 28,460
+   tracks; play counts; mix_profiler curve shapes). Questions: play length by energy trend around the change (rising / flat /
+   falling), by DJ, by genre, by fame (play count), first/last slot; curve-shape distribution per DJ. No downloads needed.
+2. Role table from the notebook: slot roles derived at PLAN time from the curve's movement (climb / hold / peak / release);
+   each role → play-length range + transition length. Roles come from the prompt-driven curve, not from per-track precompute.
+3. Energy check on rendered output: measured per-track energy of the mix vs the planned targets, in the render report; run on
+   the existing listening sets first.
+4. Loops + tension bass cut as ONE designed move, mixer-decided from role + audio, reported, ear-tested on the regression set:
+   loop = 4/8-bar phrase with identity (vocal/melodic, low kick share) at the outgoing cue-out, repeated 2–4× with movement
+   (filter/bass cut/level), ends on a phrase line where the incoming drop/downbeat lands; bass of both records off during
+   tension, back on the drop; rarely (well under half the seams), role- and profile-gated. Side benefit: stationary tail →
+   predictable seams on messy cue-outs. Recipe unchanged (loop is tail material; extra high-pass on the loop).
+5. Intent parser (Phase 10): a capable LLM maps a GENERAL vibe prompt to a small structured plan (genres, tempo range, length,
+   energy curve as numbers, mood words → roles/recipes, optional DJ reference); everything downstream deterministic; template
+   prompts are examples of the same schema; gaps filled by data defaults (genre-typical curve/length/tempo).
+Test points: notebook findings reviewed by Anas before the role table; role table checked against real sets by number; energy
+check on existing renders; loops/tension on regression pairs by ear; intent parser on template + vague prompts by plan diff.
+Still to discuss before building: transition type/recipe choice by pair/style/genre/profile; realistic evaluation of the models
+(A, B, GBM) beyond our own loss/AUC; DJ profiling (Fred again.. as the first profile); Fred in the data + retrain; DJ gimmicks.
+
+### Prior art for step 5/6 (found 2026-09-09)
+- Kim, Yang, Nam (KAIST): "A Computational Analysis of Real-World DJ Mixes using Mix-To-Track Subsequence Alignment" (ISMIR 2020,
+  1001Tracklists mixes → cue points/transition lengths) and "Reverse-Engineering The Transition Regions of Real-World DJ Mixes using
+  Sub-band Analysis with Convex Optimization" (NIME 2021; per-band gain curves of each record; validated by reconstruction + 14-person
+  listening test; beats linear crossfade). Code: https://github.com/mir-aidj/transition-analysis — reuse for the seam decomposition.
+- DJtransGAN (Chen et al., ICASSP 2022): GAN sets EQ+fader from real mixes; listening tests "competitive with baselines" (= matched good
+  rules, did not beat them). https://github.com/ChenPaulYu/DJtransGAN
+- Vande Veire & De Bie 2018 (rule-based DnB auto-DJ): high quality when MIR analysis correct (91 % of tracks); quality limited by
+  analysis, not rules. https://github.com/lenvdv/dnb-autodj-3
+- Raveform (TISMIR): metrical/functional structure annotations of EDM tracks in DJ mixes — candidate benchmark for our segmenter.
+Conclusion agreed: keep the deterministic mixer as the engine; learn the DECISIONS (track, length, overlap, swap timing) from measured
+real seams; every learned part must beat the rule baseline in a blind listen before it replaces it.
+
+## MASTER ROADMAP — "Data-driven DJ mimic" (final, agreed 2026-09-09; supersedes the short locked plan above)
+
+**Principle.** The mixer's signal path stays deterministic and ear-verified. The learned parts make the decisions: which track, how
+long, which move, what parameters. Every learned part must beat the rule it replaces in a blind listen before it replaces it; the rule
+stays as the floor. Working order for every feature: verify the input measurement → unit tests → one pair → full set. Small modules,
+one clear path, no fallbacks.
+
+**The regression set is the standing test bed.** Every real failure becomes a pair; loop pairs, tempo-ramp pairs and future features get
+pairs; the numbers-only test runs before any mixer change; its tracks are excluded from all training. Open item: the kick verifier's
+gate is deliberately strict (a majority-of-windows gate would correct 7:00 and 19:00) — Anas's ear decides.
+
+**Key, settled.** Planner keeps veto-off, soft key term (KEY_WEIGHT −0.2) and clash cap. Mixer does nothing with key. Root readings right
+~3/4, mode unreliable in every detector (essentia 14/21, CNNs 8/21 vs published keys, themselves algorithmic); a ±1 st shift was inaudible
+to Anas. Melodic/trance sets watched by ear for far-key overlaps (compatibility tiers still shorten them). Not reopened without a new ear
+result.
+
+**Step 1 — Analytics notebook (text data only).** Sources: 2,834 tracklists (1,443 with start times on ≥95 % of tracks), catalog 28,460
+tracks with features, play counts, mix_profiler curve shapes, DJ/genre list. Questions: play length when energy rises/holds/falls around
+the change, by DJ, genre, fame, first vs last slot; which tracks get long/short plays (famous, own, remixes); curve shapes per DJ/genre;
+key relations DJs use; tempo drift within sets; tracks per hour per DJ. Output: notebook Anas reviews + findings table read by steps 2
+and 8. Part two when the seam table arrives: transition behaviour by role/genre/DJ.
+
+**Step 2 — Roles, play length and window choice (planner).** At plan time the curve gives each slot a target; the role is how it moves:
+climb / hold / peak / release (+ first, last). Role → play-length range + transition-length range, numbers from step 1 (later step 5).
+Nothing per track precomputed; `_choose_window` takes its length from the role instead of GENRE_PLAY_MINUTES and still flexes to section
+lines. Farrago rule: a cue-out must not begin a breakdown unless the role asks for one (= the start/end slot logic rebuild). Test: role
+statistics vs real sets; one rendered set with visibly short and long slots.
+
+**Step 3 — Energy and loudness check on rendered output.** Per-track measured energy and loudness of the finished mix vs planned target and
+set level, in the render report and regression README; flag when a slot misses by a set margin or the level moves. Run first on the five
+listening sets and the Fred set.
+
+**Step 4 — Clean evaluation before any retrain.** Split by mix AND DJ AND track; regression tracks excluded. Every model number next to
+baselines on the same held-out data: random, popularity, BPM+key heuristic. Metrics: next-track hit@k / MRR (Model B), pair AUC (GBM,
+Model A) vs heuristic, set-level share of planned pairs adjacent in real sets vs chance. New pair feature: rhythmic compatibility (the
+21:00 hat-pattern clash). Blind listening protocol: same pool, three orders (model / rules / a real DJ's), same mixer, Anas picks. Known:
+Model A raw 0.622 vs BPM-only 0.624; B's +17 % MRR is relative; old split leaked.
+
+**Step 5 — Seam pipeline (real transition ground truth), local first, then VM.** One resumable command: mix pages from the 1001tracklists
+list (they have start times) → download mix audio from the page's link → fetch + verify the two tracks around each seam (fetcher +
+fingerprint) → mix-to-track alignment → per-band gain decomposition with the two known sources (KAIST: Kim et al. ISMIR 2020, Kim/Yang/Nam
+NIME 2021; code mir-aidj/transition-analysis). One row per seam: overlap bars, cue-out/cue-in on each track's structure, bass swap timing,
+filter/EQ moves, level ride, cut vs blend, tempo change, DJ, genre, slot role. Test locally on 5–10 mixes of DJs we hold tracks for; run
+on the VM (raw audio stays there, seam table + alignments come back); first 50 seams checked by ear before anything trains on them. The
+28 mixes downloaded 2026-09-08 (data/raw/dj_mixes) only if their tracklists get scraped; swap the two shared bills. Adding DJs later is a
+re-run, Fred first.
+
+**Step 6 — Learned transitions and tempo ramps replace the type rules.** Recipes become parameters (overlap bars, bass-swap point, EQ
+shape, level ride, cut/blend, tempo change) predicted from pair features + rhythmic compatibility + slot role + DJ profile, trained on
+the seam table, evaluated on held-out seams (bar error, cut/blend agreement), then blind-listened against the seven rule types. Mixer
+gains a per-seam tempo ramp within the stretch limits so a model-liked pair is not dropped for tempo alone. Style = conditioning on
+genre/DJ. Rules stay as baseline until beaten. Prior art: DJtransGAN (ICASSP 2022) end-to-end only matched good rules → learn parameters,
+not audio.
+
+**Step 7 — Loops + tension bass cut (one designed move).** Mixer-decided from role + audio, reported, rare, role/profile-gated. Loop: 4/8-bar
+phrase with identity (vocal/melodic over low kick share; block features + a vocal/melodic detector, a sub-task) at the outgoing cue-out,
+repeated 2–4× with movement (filter opening, bass cut, level), ending on a phrase line where the incoming drop lands. Tension: both
+records' bass off for a phrase or two, back together on the drop. Recipe unchanged (loop = tail material + high-pass). Stationary tails
+tame messy seams. Loop pairs join the regression set; frequency by ear.
+
+**Step 8 — DJ profiles, Fred in the data, retrain.** `dj_profiler.py` + `dj_profiles.json`: per DJ — pool (own tracks and share, artists,
+labels), tempo, curve shapes, play length per role, key behaviour, transition parameters, move frequency; planner priors, role lengths,
+transition conditioning; a prompt naming a DJ selects it. Fred: add https://www.1001tracklists.com/dj/fredagain../index.html to
+src/data/tracklists1001_client.py (52 DJs now), scrape, fetch the tracks he plays that the catalog lacks, run his mixes through step 5.
+Retrain A/B/GBM on the clean split with the re-keyed catalog (root only; key override table from full-track readings for tracks we hold,
+growing with every render). Tests: profile statistics of a generated set vs the DJ's real sets; Anas's blind name-the-DJ test.
+Expectation: fans say "in his style"; one-off edits/mashups are not reproducible.
+
+**Step 9 — Intent parser (Phase 10).** A capable LLM maps a GENERAL vibe prompt to a small structured plan: genres, tempo range, length,
+energy curve as numbers, mood words → roles/recipes, optional DJ profile, named tracks to include, a surprise knob (how often less likely
+choices are taken). Everything downstream deterministic; templates are examples of the same schema; gaps filled from data defaults.
+Named tracks fuzzy-matched to the catalog and pinned into slots; tracks outside the catalog via add-track-by-name (iTunes preview lookup →
+features → fetch). Test: plan diffs template vs vague; one prompt with two profiles → visibly different plans.
+
+**Step 10 — Gimmicks.** Small library of moves (volume cut/stutter, spinback, echo-out, filter sweep, a cappella drop, bass drop-out) as
+options on any recipe, role/profile-gated, measured from mixes where step 5 can see them, otherwise ear-tuned. Last.
+
+**Sequencing.** Build the step-5 pipeline first (long pole) and start the VM run; do steps 1–4 while it runs; extend the notebook when the
+seam table lands; then 6–10. Steps 1–4 are not rebuilt by the seam data, they gain columns. Step 6 waits for data.
+
+**Confidence.** High that learned decisions match real DJs better than rules on numbers; moderate that the first pass sounds better by ear
+(measurement noise → the 50-seam ear check); low risk of regressing (rule floor). Prior art: KAIST mix analysis + transition
+reverse-engineering (open code); DJtransGAN matched but did not beat rules; 2018 DnB auto-DJ: quality limited by analysis, not rules.

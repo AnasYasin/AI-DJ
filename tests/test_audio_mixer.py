@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from src.audio.audio_mixer import (
-    _CAMELOT,
     BPM_TIGHT,
     DEFAULT_BARS,
     DEFAULT_PLAY_MINUTES,
@@ -41,6 +40,7 @@ from src.audio.audio_mixer import (
     pair_compatibility,
     render_mix,
 )
+from src.audio.key_shift import _CAMELOT  # noqa: F401
 
 BPM = 128.0
 # A real overlap is bars long, not milliseconds. _env smooths with a 50 ms

@@ -159,9 +159,9 @@ def test_make_mix_repairs_the_slot_and_keeps_the_verified_tracks(monkeypatch, tm
 def test_repair_candidates_fit_both_neighbours():
     """Real techno pool: the candidates for a middle slot pass the hard rules
     against the previous AND the next track and repeat no track or artist."""
+    from src.models.key_rules import sequence_allowed
     from src.models.predict_model import (
         MAX_BPM_LOG_RATIO,
-        MAX_CAMELOT_DIST,
         plan_mix,
         repair_candidates,
         split_artists,
@@ -182,4 +182,8 @@ def test_repair_candidates_fit_both_neighbours():
         assert not (split_artists(c["artist"]) & artists)
         for nb in (prev, nxt):
             assert abs(np.log(c["bpm"] / nb["bpm"])) <= MAX_BPM_LOG_RATIO + 0.01
-        assert c["cam_dist"] <= MAX_CAMELOT_DIST and c["next_link"]["cam_dist"] <= MAX_CAMELOT_DIST
+        # no key veto any more: the repaired sequence must respect the clash cap
+        joins = [c["cam_dist"], c["next_link"]["cam_dist"]] + [
+            t["cam_dist"] for t in plan["tracks"][slot + 2 :]
+        ]
+        assert sequence_allowed(joins, len(plan["tracks"]) - 1)
