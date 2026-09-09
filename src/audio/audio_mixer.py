@@ -48,6 +48,7 @@ from scipy.ndimage import maximum_filter1d, minimum_filter1d, uniform_filter1d
 from scipy.signal import butter, correlate, resample_poly, sosfiltfilt
 import soundfile as sf
 
+from src.audio.key_shift import camelot_distance
 from src.data.audio_segmenter import segment
 from src.features.compatibility import compatibility, max_overlap_seconds
 from src.features.transition_labeler import (
@@ -99,40 +100,9 @@ BAND_HIGH_HZ = 3_000
 # They were duplicated here before, which is how the onset scale drifted: the
 # labeler compared a raw value against a threshold meant for the normalised one.
 
-_CAMELOT = {
-    "C": 8,
-    "Cm": 5,
-    "C#": 3,
-    "C#m": 12,
-    "D": 10,
-    "Dm": 7,
-    "D#": 5,
-    "D#m": 2,
-    "E": 12,
-    "Em": 9,
-    "F": 7,
-    "Fm": 4,
-    "F#": 2,
-    "F#m": 11,
-    "G": 9,
-    "Gm": 6,
-    "G#": 4,
-    "G#m": 1,
-    "A": 11,
-    "Am": 8,
-    "A#": 6,
-    "A#m": 3,
-    "B": 1,
-    "Bm": 10,
-}
-
 
 def _camelot_dist(ka: str, kb: str) -> float:
-    a, b = _CAMELOT.get(ka), _CAMELOT.get(kb)
-    if a is None or b is None:
-        return 2.5
-    d = abs(a - b)
-    return min(d, 12 - d) + (0.5 if ka.endswith("m") != kb.endswith("m") else 0.0)
+    return camelot_distance(ka, kb)
 
 
 def measured_transition(ta: dict, tb: dict) -> str:
@@ -2157,6 +2127,8 @@ def render_mix(
                 "seam_offset_before_ms": round(before * 1000, 1),
                 "seam_drift_ms": None if seam_drift is None else round(seam_drift * 1000, 1),
                 "seam_band": seam_band,
+                "keys": [prev["key"], cur["key"]],
+                "cam_dist": round(_camelot_dist(prev["key"], cur["key"]), 1),
                 "kick_verify_ms": kick_verify_ms,
                 "seam_shift_total_ms": round(total_shift / SR * 1000, 1),
                 "overlap_gain_db": [round(gain_in_db, 1), round(gain_out_db, 1)],

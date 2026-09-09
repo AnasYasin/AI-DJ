@@ -30,6 +30,7 @@ import torch
 from src.data.preprocess_tracklist import is_unidentified
 from src.features.compatibility import compatibility
 from src.models.edge_scorer import EdgeScorer, TrackArrays, camelot_distance, pair_features
+from src.models.key_rules import clash_allowed, is_clash, key_term, sequence_allowed
 from src.models.train_sequence import TOKEN_EXTRA, SequenceModel
 
 log = logging.getLogger(__name__)
@@ -40,7 +41,6 @@ SEQ_MODEL_PATH = Path("models/sequence_model.pt")
 
 BEAM_WIDTH = 8
 MAX_BPM_LOG_RATIO = 0.05  # ≈ ±5% — pyrubberband stretches this cleanly
-MAX_CAMELOT_DIST = 2.0
 W_CTX, W_GBM, W_ENERGY = 1.0, 1.0, 0.7
 
 # Weight on pair compatibility, which is what decides how LONG the mixer is
@@ -243,10 +243,10 @@ def plan_mix(
         expansions = []
         for bi, (tracks, score) in enumerate(beams):
             last = tracks[-1]
-            mask = (np.abs(np.log(A.bpm[last] / A.bpm)) <= MAX_BPM_LOG_RATIO) & (
-                camelot_distance(A.cam_pos[last], A.cam_mode[last], A.cam_pos, A.cam_mode)
-                <= MAX_CAMELOT_DIST
-            )
+            mask = np.abs(np.log(A.bpm[last] / A.bpm)) <= MAX_BPM_LOG_RATIO
+            cam = camelot_distance(A.cam_pos[last], A.cam_mode[last], A.cam_pos, A.cam_mode)
+            if not clash_allowed(_join_distances(A, tracks), n_tracks - 1):
+                mask &= ~is_clash(cam)
             mask[tracks] = False
             for t in tracks:  # one track per artist, collaborations included
                 for name in artist_sets[t]:
@@ -258,12 +258,10 @@ def plan_mix(
             gbm = scorer.score(pair_features(A, last, cand))
             e_fit = 1.0 - np.abs(A.energy[cand] - targets[step]) / (2 * e_scale)
             z = (ctx_sim - ctx_sim.mean()) / (ctx_sim.std() + 1e-9)
-            total = W_CTX * z + W_GBM * gbm + W_ENERGY * e_fit
+            total = W_CTX * z + W_GBM * gbm + W_ENERGY * e_fit + key_term(genre, cam[cand])
             if compat_weight:
                 total = total + compat_weight * compatibility(
-                    camelot_distance(
-                        A.cam_pos[last], A.cam_mode[last], A.cam_pos[cand], A.cam_mode[cand]
-                    ),
+                    0.0,  # key is the planner's soft term above, not a compatibility veto
                     np.abs(A.energy[last] - A.energy[cand]),
                     np.abs(A.loud[last] - A.loud[cand]),
                     np.abs(np.log(A.bpm[last] / A.bpm[cand])) * 100,
@@ -285,7 +283,13 @@ def plan_mix(
                 break
 
     tracks, score = beams[0]
-    out = {"genre": genre, "curve": curve, "score": round(score, 2), "tracks": []}
+    out = {
+        "genre": genre,
+        "curve": curve,
+        "score": round(score, 2),
+        "n_clashes": int(is_clash(_join_distances(A, tracks)).sum()),
+        "tracks": [],
+    }
     for i, ti in enumerate(tracks):
         tid = A.tid[ti]
         m = meta.loc[tid]
@@ -318,6 +322,18 @@ def plan_mix(
             )
         out["tracks"].append(entry)
     return out
+
+
+def _join_distances(A: TrackArrays, tracks: list[int]) -> list[float]:
+    """Camelot distance of every join in a track sequence."""
+    return [
+        float(
+            camelot_distance(
+                A.cam_pos[a], A.cam_mode[a], np.array([A.cam_pos[b]]), np.array([A.cam_mode[b]])
+            )[0]
+        )
+        for a, b in zip(tracks, tracks[1:])
+    ]
 
 
 REPAIR_TRIES = 5  # candidates tried per empty slot before a full replan
@@ -368,7 +384,7 @@ def repair_candidates(
     verified neighbours. Every other track in the plan stays where it is.
 
     A candidate must pass the hard rules against BOTH neighbours (BPM within
-    MAX_BPM_LOG_RATIO, Camelot within MAX_CAMELOT_DIST) and must not repeat a
+    MAX_BPM_LOG_RATIO) and must not repeat a
     track or an artist already in the plan. It is scored the way plan_mix
     scores a step: Model B context from the tracks before the slot, the GBM
     edge from the previous track, energy fit to the slot's target, and pair
@@ -395,11 +411,15 @@ def repair_candidates(
             neighbours.append((k, A.idx[tracks[k]["track_id"]]))
     for _, ni in neighbours:
         mask &= np.abs(np.log(A.bpm[ni] / A.bpm)) <= MAX_BPM_LOG_RATIO
-        mask &= (
-            camelot_distance(A.cam_pos[ni], A.cam_mode[ni], A.cam_pos, A.cam_mode)
-            <= MAX_CAMELOT_DIST
-        )
     cand = np.flatnonzero(mask)
+    # the repaired sequence must still respect the clash cap and never clash twice in a row
+    fixed = [A.idx.get(t["track_id"]) for t in tracks]
+    keep = []
+    for ci in cand:
+        seq = [ci if k == slot else ti for k, ti in enumerate(fixed)]
+        known = [ti for ti in seq if ti is not None]
+        keep.append(sequence_allowed(_join_distances(A, known), len(tracks) - 1))
+    cand = cand[np.array(keep, dtype=bool)] if len(cand) else cand
     if len(cand) == 0:
         return []
 
@@ -420,8 +440,10 @@ def repair_candidates(
     if prev_ti is not None:
         total = total + W_GBM * EdgeScorer.load().score(pair_features(A, prev_ti, cand))
     for _, ni in neighbours:
+        cam = camelot_distance(A.cam_pos[ni], A.cam_mode[ni], A.cam_pos[cand], A.cam_mode[cand])
+        total = total + key_term(plan["genre"], cam) / len(neighbours)
         c = compatibility(
-            camelot_distance(A.cam_pos[ni], A.cam_mode[ni], A.cam_pos[cand], A.cam_mode[cand]),
+            0.0,  # key is the soft term above
             np.abs(A.energy[ni] - A.energy[cand]),
             np.abs(A.loud[ni] - A.loud[cand]),
             np.abs(np.log(A.bpm[ni] / A.bpm[cand])) * 100,
