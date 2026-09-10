@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "djdata"
+version = "0.1.0"
+description = "DJ-mix data mining: seam manifests, mix/track fetching, and mixer-gain extraction from real transitions."
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "librosa>=0.10",
+  "soundfile>=0.12",
+  "pandas>=2.0",
+  "pyyaml>=6.0",
+  "yt-dlp>=2025.1.1",
+  "beautifulsoup4>=4.12",
+  "requests>=2.31",
+  "nodriver>=0.38",
+]
+
+[project.scripts]
+djdata = "djdata.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["djdata*"]
