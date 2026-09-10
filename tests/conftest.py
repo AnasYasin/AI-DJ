@@ -7,6 +7,16 @@ import numpy as np
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def no_downbeat_model_download(monkeypatch):
+    """The learned downbeat tracker fetches a checkpoint on first use. Tests
+    must never reach for the network, so the segmenter falls back to the
+    kick-phase heuristic. Tests of the tracker itself inject a fake model."""
+    from src.data import audio_segmenter
+
+    monkeypatch.setattr(audio_segmenter, "BEAT_THIS_ENABLED", False)
+
+
 @pytest.fixture
 def tmp_audio_file(tmp_path):
     """

@@ -30,6 +30,7 @@ from src.features.transition_labeler import (
     HARM_PERFECT,
     LOUD_MELT_MAX,
     ONSET_HIGH_MIN,
+    ONSET_SCALE,
     TIME_GAP_MAX_MIN,
     _classify,
     _confidence,
@@ -166,6 +167,23 @@ def test_pair_features_harm_dist():
     rb = _make_row(key="Am")
     f = _pair_features(ra, rb, time_gap=5.0)
     assert f["harm_dist"] == 0.0
+
+
+def test_pair_features_normalises_onset():
+    """features.parquet stores RAW librosa onset (catalog range ~1.1-2.5) but every
+    threshold is written for raw/ONSET_SCALE. Comparing the raw column against
+    0.35 passed for 100% of tracks and made the wave rule a no-op."""
+    ra = _make_row(onset_strength=1.71)  # the catalog median
+    rb = _make_row(onset_strength=2.54)  # the catalog p90
+    f = _pair_features(ra, rb, time_gap=5.0)
+    assert f["onset_a"] == pytest.approx(1.71 / ONSET_SCALE, abs=1e-4)
+    assert f["onset_b"] == pytest.approx(2.54 / ONSET_SCALE, abs=1e-4)
+    assert f["onset_a"] < ONSET_HIGH_MIN < f["onset_b"], "the threshold must discriminate"
+
+
+def test_pair_features_onset_is_clipped_at_one():
+    f = _pair_features(_make_row(onset_strength=99.0), _make_row(), time_gap=5.0)
+    assert f["onset_a"] == pytest.approx(1.0)
 
 
 def test_pair_features_time_gap_norm_clipped():

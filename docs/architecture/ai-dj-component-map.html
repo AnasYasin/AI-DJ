@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html{color-scheme:light dark}body{margin:0}img{max-width:100%}</style>
+<title>AI-DJ Component Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --paper:      #f4f6f8;
+    --surface:    #ffffff;
+    --surface-2:  #eaeef2;
+    --ink:        #10151b;
+    --ink-2:      #3d4954;
+    --ink-3:      #6b7885;
+    --rule:       #d3dae1;
+    --accent:     #0b7f96;
+    --accent-dim: #d3edf3;
+    --ok:         #1a7f42;
+    --partial:    #a86a08;
+    --missing:    #b4322a;
+    --shadow:     0 1px 2px rgba(16,21,27,.06), 0 8px 24px rgba(16,21,27,.05);
+    color-scheme: light;
+  }
+  :root:not([data-theme="light"]) { }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0d1116;
+      --surface:    #141a21;
+      --surface-2:  #1c242c;
+      --ink:        #e6edf3;
+      --ink-2:      #a9b7c4;
+      --ink-3:      #74838f;
+      --rule:       #27313a;
+      --accent:     #45c5dd;
+      --accent-dim: #12313a;
+      --ok:         #56c98a;
+      --partial:    #e0a338;
+      --missing:    #ef7a70;
+      --shadow:     0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #0d1116;
+    --surface:    #141a21;
+    --surface-2:  #1c242c;
+    --ink:        #e6edf3;
+    --ink-2:      #a9b7c4;
+    --ink-3:      #74838f;
+    --rule:       #27313a;
+    --accent:     #45c5dd;
+    --accent-dim: #12313a;
+    --ok:         #56c98a;
+    --partial:    #e0a338;
+    --missing:    #ef7a70;
+    --shadow:     0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 56px 28px 96px; }
+  .col  { max-width: 68ch; }
+
+  h1, h2, h3 { font-family: Archivo, ui-sans-serif, system-ui, sans-serif; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(2rem, 4.6vw, 3rem); font-weight: 700; letter-spacing: -.022em; line-height: 1.08; }
+  h2 { font-size: 1.5rem; font-weight: 600; letter-spacing: -.014em; margin-bottom: .5rem; }
+  h3 { font-size: 1.03rem; font-weight: 600; letter-spacing: -.006em; margin-bottom: .3rem; }
+  p  { margin: 0 0 1rem; color: var(--ink-2); }
+  strong { color: var(--ink); font-weight: 600; }
+  a { color: var(--accent); }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .72rem; font-weight: 500; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--accent);
+    display: flex; align-items: center; gap: .7rem; margin-bottom: .55rem;
+  }
+  .eyebrow::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+
+  .lede { font-size: 1.16rem; line-height: 1.55; color: var(--ink-2); margin-top: 1.1rem; }
+
+  section { margin-top: 68px; }
+  .stack { display: flex; flex-direction: column; gap: 1.15rem; }
+
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: .875em; }
+  code { background: var(--surface-2); padding: .1em .38em; border-radius: 3px; color: var(--ink); }
+
+  /* stat strip — the channel-strip idea, read left to right */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px;
+           background: var(--rule); border: 1px solid var(--rule); border-radius: 6px;
+           overflow: hidden; margin-top: 2.2rem; }
+  .stat { background: var(--surface); padding: .85rem 1rem; }
+  .stat b { display: block; font-family: Archivo, sans-serif; font-size: 1.35rem; font-weight: 700;
+            letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--ink); }
+  .stat span { font-family: "IBM Plex Mono", monospace; font-size: .68rem; letter-spacing: .08em;
+               text-transform: uppercase; color: var(--ink-3); }
+
+  figure { margin: 1.6rem 0 1rem; }
+  .figbox { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
+            padding: 20px 18px; overflow-x: auto; box-shadow: var(--shadow); }
+  svg { display: block; max-width: 100%; height: auto; margin: 0 auto; color: var(--ink); }
+  figcaption { font-size: .86rem; color: var(--ink-3); margin-top: .7rem; max-width: 68ch; }
+
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; margin: .4rem 0 1rem; }
+  th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-family: "IBM Plex Mono", monospace; font-size: .7rem; letter-spacing: .09em;
+       text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
+  td.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tablewrap { overflow-x: auto; }
+
+  /* status: a severity stripe, not a coloured card */
+  .item { border-left: 3px solid var(--rule); padding: .1rem 0 .1rem 1rem; }
+  .item.ok      { border-left-color: var(--ok); }
+  .item.partial { border-left-color: var(--partial); }
+  .item.missing { border-left-color: var(--missing); }
+  .item p { margin: .15rem 0 0; font-size: .93rem; }
+  .tag { font-family: "IBM Plex Mono", monospace; font-size: .66rem; letter-spacing: .09em;
+         text-transform: uppercase; padding: .12em .5em; border-radius: 3px; margin-left: .5rem;
+         vertical-align: .12em; }
+  .tag.ok      { background: var(--ok);      color: var(--paper); }
+  .tag.partial { background: var(--partial); color: var(--paper); }
+  .tag.missing { background: var(--missing); color: var(--paper); }
+
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.4rem 2rem; }
+
+  .callout { background: var(--accent-dim); border: 1px solid var(--rule);
+             border-radius: 6px; padding: 1rem 1.15rem; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout p { color: var(--ink); }
+
+  ul { margin: 0 0 1rem; padding-left: 1.15rem; color: var(--ink-2); }
+  li { margin-bottom: .38rem; }
+  li::marker { color: var(--ink-3); }
+
+  footer { margin-top: 76px; padding-top: 1.4rem; border-top: 1px solid var(--rule);
+           font-family: "IBM Plex Mono", monospace; font-size: .72rem; color: var(--ink-3);
+           display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style><style>
+  .figbox { padding: 14px; }
+  svg text { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .legend { display:flex; flex-wrap:wrap; gap:.5rem 1.6rem; font-family:"IBM Plex Mono",monospace;
+            font-size:.72rem; color:var(--ink-3); margin:.9rem 0 0; }
+  .legend i { display:inline-block; width:26px; height:11px; vertical-align:-1px; margin-right:.4rem; border-radius:2px; }
+  .k-proc { background: var(--surface-2); border:1px solid var(--ink-3); }
+  .k-store{ background: var(--accent-dim); border:1px solid var(--accent); }
+  .k-dec  { background: transparent; border:1px dashed var(--partial); }
+  .k-miss { background: transparent; border:1px dashed var(--ink-3); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="col">
+    <div class="eyebrow">AI-DJ · component map</div>
+    <h1>AI-DJ Component Map</h1>
+    <p class="lede">Every module, model, datastore and decision, in the two pipelines that make the system: what is built once offline, and what runs per mix.</p>
+  </header>
+
+  <div class="legend">
+    <span><i class="k-proc"></i>process / module</span>
+    <span><i class="k-store"></i>datastore or file</span>
+    <span><i class="k-dec"></i>decision / gate</span>
+    <span><i class="k-miss"></i>not built</span>
+  </div>
+
+  <section>
+    <div class="eyebrow">A — offline, built once</div>
+    <h2>Scrape to trained artefacts</h2>
+    <figure>
+      <div class="figbox">
+      <svg viewBox="0 0 1210 600" role="img" aria-label="Offline pipeline: tracklist scraping, cleaning, iTunes preview fetching, feature extraction into embeddings and features parquet, then four consumers producing ChromaDB, transition labels, mix metadata, and three trained models.">
+        <defs>
+          <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker>
+        </defs>
+        <g font-size="10.5" fill="currentColor">
+
+        <!-- col 1: scrape -->
+        <text x="24" y="20" font-size="10" font-weight="600" fill="var(--accent)" letter-spacing="1.2">SCRAPE</text>
+        <rect x="24" y="30" width="212" height="52" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="34" y="48" font-weight="600">mixesdb_client.py</text>
+        <text x="34" y="63" fill="var(--ink-3)">tracklists1001_client.py</text>
+        <text x="34" y="76" fill="var(--ink-3)">1001tracklists + MixesDB</text>
+        <line x1="130" y1="82" x2="130" y2="104" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <path d="M24 112 h212 v40 a106 7 0 0 1 -212 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="130" cy="112" rx="106" ry="7" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="34" y="132" font-weight="600">tracklist.csv</text>
+        <text x="34" y="146" fill="var(--ink-3)">raw · 47,088 rows</text>
+        <line x1="130" y1="166" x2="130" y2="188" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <rect x="24" y="196" width="212" height="66" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="34" y="214" font-weight="600">preprocess_tracklist.py</text>
+        <text x="34" y="229" fill="var(--ink-3)">drop mixes &lt;4 or &gt;30 tracks</text>
+        <text x="34" y="242" fill="var(--ink-3)">drop simultaneous + null rows</text>
+        <text x="34" y="255" fill="var(--ink-3)">cap 500 mixes per genre</text>
+        <line x1="130" y1="262" x2="130" y2="284" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <path d="M24 292 h212 v52 a106 7 0 0 1 -212 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="130" cy="292" rx="106" ry="7" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="34" y="312" font-weight="600">tracklist_clean.csv</text>
+        <text x="34" y="326" fill="var(--ink-3)">2,834 mixes · 29,393 tracks</text>
+        <text x="34" y="339" fill="var(--ink-3)">6 genres · starting_time</text>
+
+        <!-- col 2: audio + features -->
+        <text x="272" y="20" font-size="10" font-weight="600" fill="var(--accent)" letter-spacing="1.2">AUDIO + FEATURES</text>
+        <line x1="236" y1="56" x2="266" y2="56" stroke="currentColor" marker-end="url(#a1)"/>
+        <rect x="272" y="30" width="220" height="52" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="282" y="48" font-weight="600">preview_fetcher.py</text>
+        <text x="282" y="63" fill="var(--ink-3)">iTunes search → 30 s preview</text>
+        <text x="282" y="76" fill="var(--ink-3)">SoundCloud fallback</text>
+        <line x1="382" y1="82" x2="382" y2="104" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <path d="M272 112 h220 v52 a110 7 0 0 1 -220 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="382" cy="112" rx="110" ry="7" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="282" y="132" font-weight="600">data/raw/previews/</text>
+        <text x="282" y="146" fill="var(--ink-3)">28,460 × m4a</text>
+        <text x="282" y="159" fill="var(--ink-3)">+ preview_manifest.csv</text>
+        <line x1="382" y1="176" x2="382" y2="196" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <rect x="272" y="204" width="220" height="76" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="282" y="222" font-weight="600">build_features.py</text>
+        <text x="282" y="237" fill="var(--ink-3)">GPU: discogs-effnet (frozen)</text>
+        <text x="282" y="250" fill="var(--ink-3)">CPU: DeepRhythm BPM, essentia</text>
+        <text x="282" y="263" fill="var(--ink-3)">key (edma), librosa RMS/onset,</text>
+        <text x="282" y="276" fill="var(--ink-3)">pyloudnorm LUFS, MFCC</text>
+        <line x1="330" y1="280" x2="330" y2="300" stroke="currentColor" marker-end="url(#a1)"/>
+        <line x1="440" y1="280" x2="440" y2="380" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <path d="M272 308 h150 v34 a75 6 0 0 1 -150 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="347" cy="308" rx="75" ry="6" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="280" y="326" font-weight="600">embeddings.parquet</text>
+        <text x="280" y="338" fill="var(--ink-3)">1280-d, 28,460</text>
+
+        <path d="M272 388 h220 v72 a110 7 0 0 1 -220 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="382" cy="388" rx="110" ry="7" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="282" y="408" font-weight="600">features.parquet</text>
+        <text x="282" y="422" fill="var(--ink-3)">track_id · embedding[1280]</text>
+        <text x="282" y="435" fill="var(--ink-3)">bpm · key · energy_mean · lufs</text>
+        <text x="282" y="448" fill="var(--ink-3)">onset_strength (raw) · mfcc 0-12</text>
+        <text x="282" y="459" fill="var(--partial)">+ embedding_proj[128] written back</text>
+
+        <!-- col 3: derived -->
+        <text x="528" y="20" font-size="10" font-weight="600" fill="var(--accent)" letter-spacing="1.2">DERIVED</text>
+        <line x1="492" y1="424" x2="522" y2="424" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <rect x="528" y="30" width="216" height="48" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="538" y="48" font-weight="600">vector_store.py</text>
+        <text x="538" y="63" fill="var(--ink-3)">ChromaDB HNSW index</text>
+        <path d="M528 88 h216 v34 a108 6 0 0 1 -216 0 z" fill="var(--accent-dim)" stroke="var(--accent)" opacity=".55"/>
+        <ellipse cx="636" cy="88" rx="108" ry="6" fill="var(--accent-dim)" stroke="var(--accent)" opacity=".55"/>
+        <text x="538" y="106" font-weight="600" opacity=".7">data/processed/chromadb/</text>
+        <text x="538" y="118" fill="var(--missing)">not read at inference</text>
+
+        <rect x="528" y="140" width="216" height="60" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="538" y="158" font-weight="600">transition_labeler.py</text>
+        <text x="538" y="173" fill="var(--ink-3)">6-class rule cascade, priority</text>
+        <text x="538" y="186" fill="var(--ink-3)">order; normalise_onset(raw/5)</text>
+        <text x="538" y="197" fill="var(--ink-3)">owns all rule thresholds</text>
+        <path d="M528 210 h216 v28 a108 6 0 0 1 -216 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="636" cy="210" rx="108" ry="6" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="538" y="228" font-weight="600">transition_labels.csv</text>
+
+        <rect x="528" y="256" width="216" height="48" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="538" y="274" font-weight="600">mix_profiler.py</text>
+        <text x="538" y="289" fill="var(--ink-3)">energy-curve shape per mix</text>
+        <path d="M528 314 h216 v28 a108 6 0 0 1 -216 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="636" cy="314" rx="108" ry="6" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="538" y="332" font-weight="600">mix_metadata.csv</text>
+
+        <path d="M528 372 h216 v34 a108 6 0 0 1 -216 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="636" cy="372" rx="108" ry="6" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="538" y="390" font-weight="600">split_mixes.csv</text>
+        <text x="538" y="402" fill="var(--ink-3)">mix-level 15% val, frozen</text>
+
+        <rect x="528" y="430" width="216" height="56" rx="5" fill="none" stroke="var(--ink-3)" stroke-dasharray="4 3"/>
+        <text x="538" y="448" font-weight="600" fill="var(--ink-3)">dj_profiler.py</text>
+        <text x="538" y="463" fill="var(--missing)">not built — Phase 9</text>
+        <text x="538" y="476" fill="var(--ink-3)">48 DJs have 5+ mixes</text>
+
+        <!-- col 4: models -->
+        <text x="780" y="20" font-size="10" font-weight="600" fill="var(--accent)" letter-spacing="1.2">TRAINED MODELS</text>
+        <line x1="744" y1="424" x2="774" y2="424" stroke="currentColor" marker-end="url(#a1)"/>
+        <line x1="744" y1="389" x2="774" y2="389" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <rect x="780" y="30" width="240" height="76" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="790" y="48" font-weight="600">train_model.py — Model A</text>
+        <text x="790" y="63" fill="var(--ink-3)">MLP 1287→256→128, NT-Xent</text>
+        <text x="790" y="76" fill="var(--ink-3)">consecutive pairs = positives</text>
+        <text x="790" y="89" fill="var(--ink-3)">genre-blocked in-batch negatives</text>
+        <text x="790" y="101" fill="var(--ok)">val adjacency AUC 0.663</text>
+        <path d="M1040 30 h150 v52 a75 6 0 0 1 -150 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="1115" cy="30" rx="75" ry="6" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="1048" y="48" font-weight="600">contrastive</text>
+        <text x="1048" y="60" font-weight="600">_encoder.pt</text>
+        <text x="1048" y="74" fill="var(--ink-3)">+ encoder_norm</text>
+        <line x1="1020" y1="60" x2="1036" y2="60" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <rect x="780" y="140" width="240" height="76" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="790" y="158" font-weight="600">train_sequence.py — Model B</text>
+        <text x="790" y="173" fill="var(--ink-3)">causal transformer, 947k params</text>
+        <text x="790" y="186" fill="var(--ink-3)">genre prefix token, InfoNCE</text>
+        <text x="790" y="199" fill="var(--ink-3)">tokens: proj128 + pos + Δbpm + Δe</text>
+        <text x="790" y="211" fill="var(--ok)">+17% MRR over context-free</text>
+        <path d="M1040 148 h150 v40 a75 6 0 0 1 -150 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="1115" cy="148" rx="75" ry="6" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="1048" y="166" font-weight="600">sequence</text>
+        <text x="1048" y="178" font-weight="600">_model.pt</text>
+        <line x1="1020" y1="172" x2="1036" y2="172" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <rect x="780" y="250" width="240" height="76" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="790" y="268" font-weight="600">edge_scorer.py — GBM</text>
+        <text x="790" y="283" fill="var(--ink-3)">7 pair features: bpm_lr, cam_dist,</text>
+        <text x="790" y="296" fill="var(--ink-3)">Δenergy, Δloud, Δonset,</text>
+        <text x="790" y="309" fill="var(--ink-3)">cos_raw, cos_proj</text>
+        <text x="790" y="321" fill="var(--ok)">val AUC 0.69</text>
+        <path d="M1040 258 h150 v34 a75 6 0 0 1 -150 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="1115" cy="258" rx="75" ry="6" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="1048" y="276" font-weight="600">edge_gbm.pkl</text>
+        <line x1="1020" y1="276" x2="1036" y2="276" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <rect x="780" y="360" width="240" height="56" rx="5" fill="none" stroke="var(--ink-3)" stroke-dasharray="4 3"/>
+        <text x="790" y="378" font-weight="600" fill="var(--ink-3)">Model C — transition critic</text>
+        <text x="790" y="393" fill="var(--missing)">not built</text>
+        <text x="790" y="406" fill="var(--ink-3)">real transitions vs synthetic splices</text>
+
+        <rect x="780" y="430" width="240" height="56" rx="5" fill="none" stroke="var(--ink-3)" stroke-dasharray="4 3"/>
+        <text x="790" y="448" font-weight="600" fill="var(--ink-3)">mix-audio corpus</text>
+        <text x="790" y="463" fill="var(--missing)">not built</text>
+        <text x="790" y="476" fill="var(--ink-3)">5,652 mix URLs collected, unused</text>
+
+        <line x1="900" y1="106" x2="900" y2="134" stroke="currentColor" marker-end="url(#a1)"/>
+        <line x1="900" y1="216" x2="900" y2="244" stroke="currentColor" marker-end="url(#a1)"/>
+        <text x="908" y="124" fill="var(--ink-3)">proj feeds B</text>
+        <text x="908" y="234" fill="var(--ink-3)">proj feeds GBM</text>
+
+        <!-- split feeds trainers -->
+        <path d="M636 406 v14 h130" fill="none" stroke="currentColor" stroke-dasharray="3 3"/>
+        <text x="660" y="418" fill="var(--ink-3)">train/val split → all three</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption>Run once. The only line that loops back is <code>embedding_proj</code>: Model A writes its 128-d projection into <code>features.parquet</code>, which Model B and the GBM then consume.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <div class="eyebrow">B — per mix, at run time</div>
+    <h2>Intent to finished file</h2>
+    <figure>
+      <div class="figbox">
+      <svg viewBox="0 0 1210 1100" role="img" aria-label="Runtime pipeline in three stages. Planner filters a pool and runs a beam search using three models and hard rules. Fetcher searches YouTube and applies duration and fingerprint gates, looping back to the planner on failure. Mixer segments, stretches, windows and blends each track, making four decisions at every seam.">
+        <defs>
+          <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker>
+          <marker id="a2r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--missing)"/></marker>
+        </defs>
+        <g font-size="10.5" fill="currentColor">
+
+        <!-- stage headers -->
+        <rect x="20" y="8" width="366" height="24" rx="4" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="30" y="24" font-weight="600" fill="var(--accent)">1 · PLANNER — predict_model.plan_mix</text>
+        <rect x="420" y="8" width="366" height="24" rx="4" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="430" y="24" font-weight="600" fill="var(--accent)">2 · FETCHER — track_fetcher.fetch_plan</text>
+        <rect x="820" y="8" width="370" height="24" rx="4" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="830" y="24" font-weight="600" fill="var(--accent)">3 · MIXER — audio_mixer.render_plan</text>
+        <line x1="386" y1="20" x2="416" y2="20" stroke="currentColor" marker-end="url(#a2)"/>
+        <line x1="786" y1="20" x2="816" y2="20" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <!-- ============ PLANNER ============ -->
+        <rect x="24" y="44" width="358" height="42" rx="5" fill="none" stroke="var(--ink-3)" stroke-dasharray="4 3"/>
+        <text x="34" y="60" font-weight="600" fill="var(--ink-3)">intent parser — NOT BUILT (Phase 10)</text>
+        <text x="34" y="76" fill="var(--ink-3)">genre · bpm_range · curve · n_tracks · min_energy_pct · compat_weight</text>
+        <line x1="203" y1="86" x2="203" y2="104" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="24" y="112" width="358" height="72" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="34" y="129" font-weight="600">pool filter</text>
+        <text x="34" y="144" fill="var(--ink-3)">genre == g   ·   bpm ∈ [lo, hi]</text>
+        <text x="34" y="157" fill="var(--ink-3)">drop is_unidentified() — 238 “ID” / “Unknown” tracks</text>
+        <text x="34" y="170" fill="var(--ink-3)">energy_mean ≥ percentile(min_energy_pct)   ·   drop exclude_ids</text>
+        <text x="34" y="181" fill="var(--accent)">reads features.parquet + tracklist_clean.csv</text>
+        <line x1="203" y1="184" x2="203" y2="202" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="24" y="210" width="358" height="46" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="34" y="227" font-weight="600">TrackArrays — column arrays for the pool</text>
+        <text x="34" y="242" fill="var(--ink-3)">bpm · energy · loud · camelot(pos, mode) · raw[1280] · proj[128]</text>
+        <text x="34" y="253" fill="var(--ink-3)">+ artist sets via split_artists() for the one-per-artist rule</text>
+        <line x1="203" y1="256" x2="203" y2="274" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="24" y="282" width="358" height="34" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="34" y="299" font-weight="600">seed beams — 8 tracks nearest curve[0] energy</text>
+        <text x="34" y="311" fill="var(--missing)">no model involved in choosing the opening track</text>
+
+        <!-- beam loop container -->
+        <rect x="24" y="330" width="358" height="252" rx="6" fill="none" stroke="var(--partial)" stroke-dasharray="5 4"/>
+        <text x="34" y="347" font-weight="600" fill="var(--partial)">BEAM SEARCH — width 8, repeat for each remaining slot</text>
+
+        <rect x="36" y="356" width="334" height="34" rx="4" fill="var(--surface)" stroke="currentColor"/>
+        <text x="46" y="372" font-weight="600">Model B → next-track vector</text>
+        <text x="46" y="384" fill="var(--ink-3)">tokens = proj + position + Δbpm + Δenergy, per beam</text>
+
+        <rect x="36" y="398" width="334" height="50" rx="4" fill="var(--surface)" stroke="var(--partial)" stroke-dasharray="4 3"/>
+        <text x="46" y="414" font-weight="600" fill="var(--partial)">hard-rule mask (veto)</text>
+        <text x="46" y="428" fill="var(--ink-3)">|log(bpm_last / bpm_cand)| ≤ 0.05   ·   camelot_distance ≤ 2</text>
+        <text x="46" y="441" fill="var(--ink-3)">not already used   ·   no artist already used</text>
+
+        <rect x="36" y="456" width="334" height="62" rx="4" fill="var(--surface)" stroke="currentColor"/>
+        <text x="46" y="472" font-weight="600">score each surviving candidate</text>
+        <text x="46" y="486" fill="var(--ink-3)">1.0 · z(proj·ctx)      ← Model A space, Model B context</text>
+        <text x="46" y="499" fill="var(--ink-3)">1.0 · GBM edge probability</text>
+        <text x="46" y="511" fill="var(--ink-3)">0.7 · energy-curve fit   +   w · pair compatibility</text>
+
+        <rect x="36" y="526" width="334" height="44" rx="4" fill="var(--surface)" stroke="currentColor"/>
+        <text x="46" y="542" font-weight="600">keep top 8 expansions</text>
+        <text x="46" y="555" fill="var(--missing)">dedupe on frozenset — two orderings of the same set collide</text>
+        <text x="46" y="566" fill="var(--ink-3)">so ordering is never actually compared</text>
+        <path d="M370 548 h14 v-190 h-14" fill="none" stroke="var(--partial)" marker-end="url(#a2)"/>
+
+        <path d="M203 582 v20" fill="none" stroke="currentColor" marker-end="url(#a2)"/>
+        <path d="M24 610 h358 v52 a179 7 0 0 1 -358 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="203" cy="610" rx="179" ry="7" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="34" y="630" font-weight="600">plan.json</text>
+        <text x="34" y="644" fill="var(--ink-3)">ordered track_ids · bpm · key · energy · target_energy</text>
+        <text x="34" y="657" fill="var(--ink-3)">energy_target01 (raw 0-1 curve value — the mixer needs this one)</text>
+
+        <!-- ============ FETCHER ============ -->
+        <rect x="424" y="44" width="358" height="34" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="434" y="61" font-weight="600">for each planned track — up to 3 candidates</text>
+        <text x="434" y="73" fill="var(--ink-3)">cached by track_id if already on disk</text>
+        <line x1="603" y1="78" x2="603" y2="96" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="424" y="104" width="358" height="34" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="434" y="121" font-weight="600">yt-dlp   ytsearch8:"artist title"</text>
+        <text x="434" y="133" fill="var(--ink-3)">flat extract — metadata only, no download yet</text>
+        <line x1="603" y1="138" x2="603" y2="156" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="424" y="164" width="358" height="62" rx="5" fill="var(--surface)" stroke="var(--partial)" stroke-dasharray="4 3"/>
+        <text x="434" y="180" font-weight="600" fill="var(--partial)">GATE 1 — rank + filter on metadata</text>
+        <text x="434" y="194" fill="var(--ink-3)">duration ∈ [240 s, 900 s]   (rejects radio edits and DJ sets)</text>
+        <text x="434" y="207" fill="var(--ink-3)">title must not match radio edit | snippet | sped up | live set …</text>
+        <text x="434" y="220" fill="var(--ink-3)">sort by word overlap with "artist title"</text>
+        <line x1="603" y1="226" x2="603" y2="244" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="424" y="252" width="358" height="34" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="434" y="269" font-weight="600">download bestaudio → webm/m4a</text>
+        <line x1="603" y1="286" x2="603" y2="304" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="424" y="312" width="358" height="44" rx="5" fill="var(--surface)" stroke="var(--partial)" stroke-dasharray="4 3"/>
+        <text x="434" y="328" font-weight="600" fill="var(--partial)">GATE 2 — decoded duration via ffprobe</text>
+        <text x="434" y="342" fill="var(--ink-3)">re-checked on the real file; search metadata lies</text>
+        <text x="434" y="353" fill="var(--ink-3)">fail → next candidate</text>
+        <line x1="603" y1="356" x2="603" y2="374" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <path d="M424 382 h358 v34 a179 6 0 0 1 -358 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="603" cy="382" rx="179" ry="6" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="434" y="400" font-weight="600">data/raw/previews/&lt;track_id&gt;.m4a</text>
+        <text x="434" y="412" fill="var(--ink-3)">the 30 s iTunes preview — ground truth for identity</text>
+        <line x1="603" y1="422" x2="603" y2="440" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="424" y="448" width="358" height="74" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="434" y="464" font-weight="600">constellation fingerprint</text>
+        <text x="434" y="478" fill="var(--ink-3)">STFT → local-max spectral peaks (top 10%)</text>
+        <text x="434" y="491" fill="var(--ink-3)">pair each peak with next 10 → hash (f1, f2, Δt)</text>
+        <text x="434" y="504" fill="var(--ink-3)">shared hashes vote for one time offset</text>
+        <text x="434" y="516" fill="var(--ink-3)">chroma and mel correlation both failed here first</text>
+        <line x1="603" y1="522" x2="603" y2="540" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="424" y="548" width="358" height="48" rx="5" fill="var(--surface)" stroke="var(--partial)" stroke-dasharray="4 3"/>
+        <text x="434" y="564" font-weight="600" fill="var(--partial)">GATE 3 — votes at best offset ≥ 50 ?</text>
+        <text x="434" y="578" fill="var(--ok)">right recording: 457 – 14,466 votes</text>
+        <text x="434" y="591" fill="var(--missing)">wrong recording: ≤ 21 votes → next candidate</text>
+        <line x1="603" y1="596" x2="603" y2="614" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <path d="M424 622 h358 v34 a179 6 0 0 1 -358 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="603" cy="622" rx="179" ry="6" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="434" y="640" font-weight="600">tracks/&lt;track_id&gt;.webm — verified full audio</text>
+        <text x="434" y="652" fill="var(--ink-3)">stereo, 48 kHz Opus, ~137 kbps, rolls off ≈15.5 kHz</text>
+
+        <!-- replan feedback -->
+        <rect x="424" y="678" width="358" height="40" rx="5" fill="none" stroke="var(--missing)" stroke-dasharray="4 3"/>
+        <text x="434" y="694" font-weight="600" fill="var(--missing)">all 3 candidates failed → add to exclude_ids</text>
+        <text x="434" y="708" fill="var(--ink-3)">replans the WHOLE set, up to 4 rounds — not just the failed slot</text>
+        <path d="M424 698 h-20 v-548 h-16" fill="none" stroke="var(--missing)" stroke-dasharray="4 3" marker-end="url(#a2r)"/>
+
+        <!-- ============ MIXER ============ -->
+        <path d="M824 44 h362 v34 a181 6 0 0 1 -362 0 z" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <ellipse cx="1005" cy="44" rx="181" ry="6" fill="var(--accent-dim)" stroke="var(--accent)"/>
+        <text x="834" y="62" font-weight="600">data/interim/segments/ — JSON cache</text>
+        <text x="834" y="74" fill="var(--ink-3)">keyed on path + size + mtime · 20.1 s cold → 0.000 s warm</text>
+        <line x1="1005" y1="84" x2="1005" y2="98" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="824" y="106" width="362" height="88" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="834" y="122" font-weight="600">audio_segmenter.segment()  — per track</text>
+        <text x="834" y="136" fill="var(--ink-3)">DeepRhythm BPM → librosa beat track locked to it</text>
+        <text x="834" y="149" fill="var(--ink-3)">downbeat = best of 4 phases by kick-band (20-150 Hz) energy</text>
+        <text x="834" y="162" fill="var(--ink-3)">per-bar RMS · onset · flux · kick · harmonic ratio · centroid</text>
+        <text x="834" y="175" fill="var(--ink-3)">checkerboard novelty on bar SSM → 4-bar-snapped boundaries</text>
+        <text x="834" y="188" fill="var(--ink-3)">labels: intro / buildup / drop / breakdown / outro / groove</text>
+        <line x1="1005" y1="194" x2="1005" y2="208" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="824" y="216" width="362" height="76" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="834" y="232" font-weight="600">_prepare_track()  — per track</text>
+        <text x="834" y="246" fill="var(--ink-3)">_precise_bpm — median inter-beat interval, not the quantised value</text>
+        <text x="834" y="259" fill="var(--ink-3)">load_audio → (samples, 2) stereo · _stretch via rubberband</text>
+        <text x="834" y="272" fill="var(--ink-3)">target_bpm = median of the set</text>
+        <text x="834" y="285" fill="var(--ink-3)">_calibrate_grid_phase — shift grid ε to real kick transients</text>
+        <line x1="1005" y1="292" x2="1005" y2="306" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="824" y="314" width="362" height="76" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="834" y="330" font-weight="600">_choose_window() — which part of the track plays</text>
+        <text x="834" y="344" fill="var(--ink-3)">target bars from GENRE_PLAY_MINUTES (measured medians)</text>
+        <text x="834" y="357" fill="var(--ink-3)">± 16 bars of flex to land on real section boundaries</text>
+        <text x="834" y="370" fill="var(--ink-3)">energy target = quantile(0.25 + 0.55 · energy_target01)</text>
+        <text x="834" y="383" fill="var(--ink-3)">cue-out bonus 0.25 &gt; cue-in 0.10 · drift penalty</text>
+        <line x1="1005" y1="390" x2="1005" y2="404" stroke="currentColor" marker-end="url(#a2)"/>
+
+        <rect x="824" y="412" width="362" height="60" rx="5" fill="var(--surface-2)" stroke="currentColor"/>
+        <text x="834" y="428" font-weight="600">_analyse_body()  +  loudness match</text>
+        <text x="834" y="442" fill="var(--ink-3)">energy (RMS) · onset (normalise_onset, raw/5) · LUFS · key (edma)</text>
+        <text x="834" y="455" fill="var(--ink-3)">measured on the played window, not the whole track</text>
+        <text x="834" y="468" fill="var(--ink-3)">each track gained to the set's median LUFS, capped ± 6 dB</text>
+
+        <!-- per seam -->
+        <rect x="824" y="490" width="362" height="480" rx="6" fill="none" stroke="var(--partial)" stroke-dasharray="5 4"/>
+        <text x="834" y="507" font-weight="600" fill="var(--partial)">FOR EACH SEAM — four independent decisions</text>
+
+        <rect x="836" y="516" width="338" height="48" rx="4" fill="var(--surface)" stroke="currentColor"/>
+        <text x="846" y="532" font-weight="600">① measured_transition() — which type</text>
+        <text x="846" y="546" fill="var(--ink-3)">priority cascade on Δenergy, Δloud, camelot, bpm ratio, onset</text>
+        <text x="846" y="558" fill="var(--ink-3)">slam → rise → fade → melt → wave → blend</text>
+
+        <rect x="836" y="572" width="338" height="44" rx="4" fill="var(--surface)" stroke="currentColor"/>
+        <text x="846" y="588" font-weight="600">gate_transition(curve) — demote to the set's intent</text>
+        <text x="846" y="602" fill="var(--ink-3)">chill: slam→melt, rise→blend · build: slam→rise before 50%</text>
+        <text x="846" y="613" fill="var(--ink-3)">then rise → drop if the incoming track has a usable drop</text>
+
+        <rect x="836" y="624" width="338" height="62" rx="4" fill="var(--surface)" stroke="currentColor"/>
+        <text x="846" y="640" font-weight="600">② pair_compatibility() — how long</text>
+        <text x="846" y="654" fill="var(--ink-3)">0.35·key + 0.30·Δenergy + 0.20·Δbpm + 0.15·Δloud</text>
+        <text x="846" y="667" fill="var(--ink-3)">tiers → 16 / 32 / 60 / 90 s ceiling  (p40, p75, p90 of real pairs)</text>
+        <text x="846" y="680" fill="var(--ink-3)">STRETCHABLE types may run to 2× the genre default</text>
+
+        <rect x="836" y="694" width="338" height="56" rx="4" fill="var(--surface)" stroke="currentColor"/>
+        <text x="846" y="710" font-weight="600">cut both tracks on their bar grids</text>
+        <text x="846" y="724" fill="var(--ink-3)">clamped by audio available on each side</text>
+        <text x="846" y="737" fill="var(--ink-3)">slam lands on the drop · drop-aligned blend ENDS on it</text>
+        <text x="846" y="748" fill="var(--ink-3)">a shortened overlap moves the entry with it</text>
+
+        <rect x="836" y="758" width="338" height="52" rx="4" fill="var(--surface)" stroke="currentColor"/>
+        <text x="846" y="774" font-weight="600">③ measure_seam_offset() — beat alignment</text>
+        <text x="846" y="788" fill="var(--ink-3)">kick-envelope cross-correlation ±½ beat, parabolic peak</text>
+        <text x="846" y="801" fill="var(--ink-3)">shift the incoming cut, re-measure, up to 4 passes → ≤ 0.3 ms</text>
+
+        <rect x="836" y="818" width="338" height="52" rx="4" fill="var(--surface)" stroke="currentColor"/>
+        <text x="846" y="834" font-weight="600">④ _lead_envelopes() — who leads</text>
+        <text x="846" y="848" fill="var(--ink-3)">A in front · B enters at −5 to −8 dB with mids cut</text>
+        <text x="846" y="861" fill="var(--ink-3)">lead swaps over a fixed BAR count, not a fraction</text>
+
+        <rect x="836" y="878" width="338" height="60" rx="4" fill="var(--surface)" stroke="currentColor"/>
+        <text x="846" y="894" font-weight="600">_apply_recipe() — render the overlap</text>
+        <text x="846" y="908" fill="var(--ink-3)">3-band EQ (180 Hz / 3 kHz) → bass swap, mid dip</text>
+        <text x="846" y="921" fill="var(--ink-3)">then real swept filter (moving corner) on rise / wave / drop</text>
+        <text x="846" y="933" fill="var(--ink-3)">then volume envelope · order = EQ → filter → fader</text>
+
+        <rect x="836" y="944" width="338" height="20" rx="4" fill="var(--surface)" stroke="currentColor"/>
+        <text x="846" y="958" fill="var(--ink-3)">constant-loudness clamp: overlap ≤ its louder neighbour</text>
+
+        <line x1="1005" y1="970" x2="1005" y2="988" stroke="currentColor" marker-end="url(#a2)"/>
+        <rect x="824" y="996" width="362" height="58" rx="5" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="1.4"/>
+        <text x="834" y="1013" font-weight="600">concat → normalise to −14 LUFS → peak limit → write</text>
+        <text x="834" y="1028" fill="var(--ink-3)">.flac / .wav lossless, or .mp3 at 320 kbps</text>
+        <text x="834" y="1041" fill="var(--ink-3)">report: per-seam type, bars, compatibility, lead swap, offset</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption>Runs per mix. Red dashed is the failure path; amber dashed is a loop or a gate. The mixer measures everything on the window that actually plays, never on the 30-second preview the planner used.</figcaption>
+    </figure>
+  </section>
+
+  <footer>
+    <span>AI-DJ · component map</span>
+    <span>214 tests passing</span>
+    <span>2 September 2026</span>
+  </footer>
+</div>
+</body>
+</html>

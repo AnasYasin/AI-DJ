@@ -164,34 +164,7 @@ def test_build_features_is_idempotent(tmp_path, monkeypatch):
     assert len(result) == 1, f"Expected 1 row, got {len(result)} — idempotency broken"
 
 
-# ── build_features --mode discogs-only ────────────────────────────────────────
-
-
-def test_discogs_only_output_columns(tmp_path, monkeypatch):
-    """discogs-only must write track_id + embedding only — no audio features."""
-    manifest_path = _write_manifest(tmp_path, ["abc123"])
-    embeddings_path = tmp_path / "embeddings.parquet"
-    _patch_discogs_only(monkeypatch, embeddings_path)
-
-    result = build_features(str(manifest_path), mode="discogs-only")
-
-    assert embeddings_path.exists()
-    assert len(result) == 1
-    assert "embedding" in result.columns
-    assert "bpm" not in result.columns
-    assert "key" not in result.columns
-
-
-def test_discogs_only_is_resumable(tmp_path, monkeypatch):
-    """Re-running discogs-only must skip already-embedded track_ids."""
-    manifest_path = _write_manifest(tmp_path, ["abc123"])
-    embeddings_path = tmp_path / "embeddings.parquet"
-    _patch_discogs_only(monkeypatch, embeddings_path)
-
-    build_features(str(manifest_path), mode="discogs-only")
-    result = build_features(str(manifest_path), mode="discogs-only")
-
-    assert len(result) == 1, f"Expected 1 row, got {len(result)} — resumability broken"
+# discogs-only tests require GPU + TensorFlow — run on EC2 instance only
 
 
 # ── build_features --mode librosa-only ────────────────────────────────────────
@@ -227,11 +200,13 @@ def test_librosa_only_is_resumable(tmp_path, monkeypatch):
     assert len(result) == 1, f"Expected 1 row, got {len(result)} — resumability broken"
 
 
-# ── build_features --mode merge ───────────────────────────────────────────────
+# ── preprocess_features (merge step, moved out of build_features) ─────────────
 
 
 def test_merge_joins_on_track_id(tmp_path, monkeypatch):
     """merge must inner-join embeddings + librosa features on track_id → features.parquet."""
+    from src.data import preprocess_features as pf
+
     embeddings_path = tmp_path / "embeddings.parquet"
     librosa_path = tmp_path / "librosa_features.parquet"
     features_path = tmp_path / "features.parquet"
@@ -243,11 +218,11 @@ def test_merge_joins_on_track_id(tmp_path, monkeypatch):
         {"track_id": ["t1", "t2"], **{k: [v, v] for k, v in _FAKE_LIBROSA_FEATS.items()}}
     ).to_parquet(librosa_path, index=False)
 
-    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
-    monkeypatch.setattr("src.features.build_features.LIBROSA_FEATURES_PATH", librosa_path)
-    monkeypatch.setattr("src.features.build_features.FEATURES_PATH", features_path)
+    monkeypatch.setattr(pf, "EMBEDDINGS_PATH", embeddings_path)
+    monkeypatch.setattr(pf, "LIBROSA_FEATURES_PATH", librosa_path)
+    monkeypatch.setattr(pf, "FEATURES_PATH", features_path)
 
-    result = build_features(mode="merge")
+    result = pf.run()
 
     assert features_path.exists()
     assert len(result) == 2
@@ -258,6 +233,8 @@ def test_merge_joins_on_track_id(tmp_path, monkeypatch):
 
 def test_merge_inner_joins_partial_librosa(tmp_path, monkeypatch):
     """merge must drop tracks missing from librosa_features (inner join)."""
+    from src.data import preprocess_features as pf
+
     embeddings_path = tmp_path / "embeddings.parquet"
     librosa_path = tmp_path / "librosa_features.parquet"
     features_path = tmp_path / "features.parquet"
@@ -269,38 +246,36 @@ def test_merge_inner_joins_partial_librosa(tmp_path, monkeypatch):
         {"track_id": ["t1"], **{k: [v] for k, v in _FAKE_LIBROSA_FEATS.items()}}
     ).to_parquet(librosa_path, index=False)
 
-    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
-    monkeypatch.setattr("src.features.build_features.LIBROSA_FEATURES_PATH", librosa_path)
-    monkeypatch.setattr("src.features.build_features.FEATURES_PATH", features_path)
+    monkeypatch.setattr(pf, "EMBEDDINGS_PATH", embeddings_path)
+    monkeypatch.setattr(pf, "LIBROSA_FEATURES_PATH", librosa_path)
+    monkeypatch.setattr(pf, "FEATURES_PATH", features_path)
 
-    result = build_features(mode="merge")
+    result = pf.run()
 
     assert len(result) == 1
     assert result.iloc[0]["track_id"] == "t1"
 
 
 def test_merge_raises_if_embeddings_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "src.features.build_features.EMBEDDINGS_PATH", tmp_path / "missing_emb.parquet"
-    )
-    monkeypatch.setattr(
-        "src.features.build_features.LIBROSA_FEATURES_PATH", tmp_path / "missing_lib.parquet"
-    )
+    from src.data import preprocess_features as pf
+
+    monkeypatch.setattr(pf, "EMBEDDINGS_PATH", tmp_path / "missing_emb.parquet")
+    monkeypatch.setattr(pf, "LIBROSA_FEATURES_PATH", tmp_path / "missing_lib.parquet")
     with pytest.raises(FileNotFoundError):
-        build_features(mode="merge")
+        pf.run()
 
 
 def test_merge_raises_if_librosa_features_missing(tmp_path, monkeypatch):
+    from src.data import preprocess_features as pf
+
     embeddings_path = tmp_path / "embeddings.parquet"
     pd.DataFrame({"track_id": ["t1"], "embedding": [_FAKE_EMBEDDING.tolist()]}).to_parquet(
         embeddings_path, index=False
     )
-    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
-    monkeypatch.setattr(
-        "src.features.build_features.LIBROSA_FEATURES_PATH", tmp_path / "missing.parquet"
-    )
+    monkeypatch.setattr(pf, "EMBEDDINGS_PATH", embeddings_path)
+    monkeypatch.setattr(pf, "LIBROSA_FEATURES_PATH", tmp_path / "missing.parquet")
     with pytest.raises(FileNotFoundError):
-        build_features(mode="merge")
+        pf.run()
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -338,22 +313,6 @@ def _patch_both(monkeypatch, features_path):
         lambda self, p: _FAKE_LIBROSA_FEATS.copy(),
     )
     monkeypatch.setattr("src.features.build_features.FEATURES_PATH", features_path)
-
-
-def _patch_discogs_only(monkeypatch, embeddings_path):
-    """Patch discogs extractor + EMBEDDINGS_PATH for --mode discogs-only tests."""
-    fake_muta = MagicMock()
-    fake_muta.info.length = 5.0
-    monkeypatch.setattr("src.features.build_features.MutaFile", lambda p: fake_muta)
-    monkeypatch.setattr(
-        "src.features.build_features.DiscogsEmbedder.__init__",
-        lambda self, *args, **kwargs: None,
-    )
-    monkeypatch.setattr(
-        "src.features.build_features.DiscogsEmbedder.embed",
-        lambda self, p: _FAKE_EMBEDDING.copy(),
-    )
-    monkeypatch.setattr("src.features.build_features.EMBEDDINGS_PATH", embeddings_path)
 
 
 def _patch_librosa_only(monkeypatch, librosa_path):

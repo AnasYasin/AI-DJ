@@ -1,0 +1,487 @@
+{
+ "title": "Seam regression set v1 (2026-09-08)",
+ "description": "Hard seam pairs picked from measured properties of 144 local tracks (scripts/diag/regression_scan.py) plus the seams that failed in real sets, then four plain controls. Each pair is rendered in full by the current mixer; only the seam region is placed in the file. Rebuild: python -m scripts.regression_set (writes data/external/regression_set/, never the listen folder). Verdicts and approved numbers go into each pair's `approved` block: {verdict, shift_ms, gain_db, bars, notes}.",
+ "pairs": [
+  {
+   "id": "p01",
+   "seam_at": 60,
+   "edge_case": "syncopated bass under a straight kick; 8-bar breakdown right after B's cue-in",
+   "genre": "techno",
+   "A": {
+    "track_id": "c9a1c5963da5",
+    "name": "Amelie Lens – Never The Same",
+    "path": "data/external/listen/work_techno_build/techno_build_15min/tracks/c9a1c5963da5.webm",
+    "tempo": 131.01,
+    "lufs": -9.0,
+    "downbeat_conf": 0.507,
+    "cue": [
+     null,
+     120
+    ]
+   },
+   "B": {
+    "track_id": "7f0290e636d0",
+    "name": "Mikael Jonasson – Mosaic (Luca Agnelli Remix)",
+    "path": "data/external/listen/work_techno_build/techno_build_15min/tracks/7f0290e636d0.webm",
+    "tempo": 130.0,
+    "lufs": -9.0,
+    "downbeat_conf": 0.436,
+    "cue": [
+     0,
+     null
+    ]
+   },
+   "reason": "Amelie Lens → Mosaic, techno_build seam 1: the kick-band correlation locked onto Mosaic's off-beat bass and shifted an aligned pair +121 ms (a 16th). Mosaic's first 8 body bars are a breakdown (the loudness anchor case). Anas heard the beats off near 4:20 (2026-09-08).",
+   "target_bpm": 129.0,
+   "energy_targets": [
+    0.0,
+    0.333
+   ],
+   "curve": "build",
+   "force_type": "wave",
+   "force_bars": 32,
+   "approved": {}
+  },
+  {
+   "id": "p02",
+   "seam_at": 180,
+   "edge_case": "off-beat hats; kick and other layers half a beat apart",
+   "genre": "techno",
+   "A": {
+    "track_id": "dc549025561c",
+    "name": "Sin Sin – Break Down (Tom Laws Remix)",
+    "path": "data/external/test_tracks/techno/dc549025561c.m4a",
+    "tempo": 127.0,
+    "lufs": -9.3,
+    "downbeat_conf": 0.41
+   },
+   "B": {
+    "track_id": "98ccb1974095",
+    "name": "Mathias Kaden – Nova (Marco Faraone Remix)",
+    "path": "data/external/test_tracks/techno/98ccb1974095.m4a",
+    "tempo": 129.0,
+    "lufs": -10.4,
+    "downbeat_conf": 0.578
+   },
+   "reason": "Sin Sin → Nova, ear-test techno pair 2: kick +103 ms vs bass/mids/hats −116 ms. Anas preferred the kick reading; the grid method sounded worse. At 16 bars the reading flips to −198 ms.",
+   "energy_targets": [
+    0.782,
+    0.975
+   ],
+   "curve": "arc",
+   "force_type": "wave",
+   "force_bars": 32,
+   "approved": {}
+  },
+  {
+   "id": "p03",
+   "seam_at": 300,
+   "edge_case": "kick reading wrong, consensus of the other layers right (quarter-beat disagreement)",
+   "genre": "techno",
+   "A": {
+    "track_id": "4900eb25d876",
+    "name": "Wigbert – Reflection (Mørbeck Remix)",
+    "path": "data/external/listen/work_techno_high/techno_high_15min/tracks/4900eb25d876.webm",
+    "tempo": 138.06,
+    "lufs": -7.9,
+    "downbeat_conf": 0.619,
+    "cue": [
+     null,
+     128
+    ]
+   },
+   "B": {
+    "track_id": "af90f79242e8",
+    "name": "Joyhauser – Dark Of The Night",
+    "path": "data/external/listen/work_techno_high/techno_high_15min/tracks/af90f79242e8.webm",
+    "tempo": 138.01,
+    "lufs": -7.4,
+    "downbeat_conf": 0.366
+   },
+   "reason": "Wigbert → Joyhauser, techno_high seam at 4:14: kick +75 ms (corr 0.12) vs others +194 ms. A/B clips: Anas chose the consensus. Joyhauser downbeat confidence 0.37. A cue-out pinned at bar 128 (drop) so the 40-bar melt fits before the outro.",
+   "target_bpm": 137.0,
+   "force_type": "melt",
+   "force_bars": 40,
+   "approved": {}
+  },
+  {
+   "id": "p04",
+   "seam_at": 420,
+   "edge_case": "cue-out lands in A's breakdown: overlap opens 7 dB under A",
+   "genre": "techno",
+   "A": {
+    "track_id": "2ac6c5e5d611",
+    "name": "Farrago – Sinner",
+    "path": "data/external/test_tracks/techno/2ac6c5e5d611.m4a",
+    "tempo": 132.99,
+    "lufs": -8.6,
+    "downbeat_conf": 0.819
+   },
+   "B": {
+    "track_id": "b96e58ca1b40",
+    "name": "Johannes Heil – Exile 008 A2",
+    "path": "data/external/test_tracks/techno/b96e58ca1b40.m4a",
+    "tempo": 130.0,
+    "lufs": -8.3,
+    "downbeat_conf": 0.383
+   },
+   "reason": "Farrago → Heil, ear-test techno pair 1: the overlap opened 7 dB under A's last bar; the gain ride must lift +7 in. Heil downbeat confidence 0.38, 104 breakdown bars. 3 % stretch each way (133 → 130).",
+   "energy_targets": [
+    0.0,
+    0.434
+   ],
+   "curve": "arc",
+   "force_type": "blend",
+   "force_bars": 32,
+   "approved": {}
+  },
+  {
+   "id": "p05",
+   "seam_at": 540,
+   "edge_case": "one-bar drop-outs in A's last bars pull the level anchor down",
+   "genre": "melodic house",
+   "A": {
+    "track_id": "7eb26f5ddeb6",
+    "name": "Alex Niggemann – Materium",
+    "path": "data/external/test_tracks/melodic_house/7eb26f5ddeb6.m4a",
+    "tempo": 120.0,
+    "lufs": -13.5,
+    "downbeat_conf": 0.338,
+    "cue": [
+     null,
+     176
+    ]
+   },
+   "B": {
+    "track_id": "1ab15822e184",
+    "name": "Ben Böhmer – Vale",
+    "path": "data/external/test_tracks/melodic_house/1ab15822e184.m4a",
+    "tempo": 120.02,
+    "lufs": -11.0,
+    "downbeat_conf": 0.502,
+    "cue": [
+     0,
+     null
+    ]
+   },
+   "reason": "Materium → Vale: A's last bars read −22/−42/−25/−17 dB; a plain median anchored 4–6 dB under what the ear held. Materium downbeat confidence 0.34, −13.5 LUFS vs Vale −11.",
+   "force_type": "blend",
+   "force_bars": 40,
+   "approved": {}
+  },
+  {
+   "id": "p06",
+   "seam_at": 660,
+   "edge_case": "very quiet master into the most syncopated, least confident track; drop-aligned entry",
+   "genre": "afro house",
+   "A": {
+    "track_id": "41eeb8d43cff",
+    "name": "Nduduzo Makhathini & Fka Mash – ft. Anna Widauer - Re-amathambo",
+    "path": "data/external/listen/work_afro/afro_20min/tracks/41eeb8d43cff.webm",
+    "tempo": 120.0,
+    "lufs": -21.4,
+    "downbeat_conf": 0.664
+   },
+   "B": {
+    "track_id": "6e28fff55e85",
+    "name": "Safar (FR) – ft. Dikla Hackmon - Thousand And Two Nights (Paso Doble Remix)",
+    "path": "data/external/listen/work_afro/afro_20min/tracks/6e28fff55e85.webm",
+    "tempo": 119.99,
+    "lufs": -10.9,
+    "downbeat_conf": 0.232,
+    "cue": [
+     112,
+     null
+    ]
+   },
+   "reason": "Nduduzo −21.4 LUFS (13 dB under the genre) → Safar: off-beat low end 0.87, off-8th hats 0.72, downbeat confidence 0.23 (lowest of 144). B pinned so the overlap runs over its breakdown and lands on the drop at bar 120.",
+   "target_bpm": 120.0,
+   "force_type": "drop",
+   "force_bars": 16,
+   "approved": {}
+  },
+  {
+   "id": "p07",
+   "seam_at": 780,
+   "edge_case": "weak kick on both sides: A cues out in a kick-less break, B enters with a kick-less intro",
+   "genre": "afro house",
+   "A": {
+    "track_id": "902f8f009404",
+    "name": "Salvatore Agrosi – Il Monte",
+    "path": "data/external/listen/work_afro/afro_20min/tracks/902f8f009404.webm",
+    "tempo": 121.0,
+    "lufs": -12.3,
+    "downbeat_conf": 0.573,
+    "cue": [
+     null,
+     64
+    ]
+   },
+   "B": {
+    "track_id": "97f307b5b0c4",
+    "name": "Christos Fourkis – Coco",
+    "path": "data/external/test_tracks/afro_house/97f307b5b0c4.m4a",
+    "tempo": 120.0,
+    "lufs": -10.4,
+    "downbeat_conf": 0.67,
+    "cue": [
+     0,
+     null
+    ]
+   },
+   "reason": "Il Monte (kick share 0.12, lowest in the genre; 0.03 in the break at bar 64) → Coco (intro kick share 0.09). Nothing periodic in the kick band to align on.",
+   "target_bpm": 120.0,
+   "force_type": "blend",
+   "force_bars": 16,
+   "approved": {}
+  },
+  {
+   "id": "p08",
+   "seam_at": 900,
+   "edge_case": "drum and bass: weak kick, loudest master, low downbeat confidence",
+   "genre": "drum and base",
+   "A": {
+    "track_id": "bb3cb5284734",
+    "name": "Trakker – The Martian",
+    "path": "data/external/test_tracks/drum_and_base/bb3cb5284734.m4a",
+    "tempo": 87.0,
+    "lufs": -3.8,
+    "downbeat_conf": 0.476
+   },
+   "B": {
+    "track_id": "319c5f32e6a7",
+    "name": "Mistrust – Ultra Lux",
+    "path": "data/external/test_tracks/drum_and_base/319c5f32e6a7.m4a",
+    "tempo": 87.03,
+    "lufs": -7.4,
+    "downbeat_conf": 0.652
+   },
+   "reason": "Trakker (−3.8 LUFS, kick share 0.17, confidence 0.48, half-time feel kpb 2.5) → Mistrust (kick share 0.13). Ear-test pair 4 needed +4.7/+3.8 dB gains.",
+   "force_type": "fade",
+   "force_bars": 8,
+   "approved": {}
+  },
+  {
+   "id": "p09",
+   "seam_at": 1020,
+   "edge_case": "drum and bass: doubled/ghost kicks, breakbeat pattern",
+   "genre": "drum and base",
+   "A": {
+    "track_id": "3ef523169490",
+    "name": "Alix Perez – ft. Foreign Beggars - The Cut Deepens",
+    "path": "data/external/test_tracks/drum_and_base/3ef523169490.m4a",
+    "tempo": 85.0,
+    "lufs": -7.9,
+    "downbeat_conf": 0.866,
+    "cue": [
+     null,
+     48
+    ]
+   },
+   "B": {
+    "track_id": "06b288f1a9f9",
+    "name": "Teddy Killerz – Knock Knock",
+    "path": "data/external/test_tracks/drum_and_base/06b288f1a9f9.m4a",
+    "tempo": 86.05,
+    "lufs": -4.6,
+    "downbeat_conf": 0.897,
+    "cue": [
+     64,
+     null
+    ]
+   },
+   "reason": "Alix Perez (ghost 4.6, the most extra kick-band hits per beat) → Teddy Killerz (−4.6 LUFS). Kick is not one per beat, so any one-hit-per-beat method is tested here. A cue-out pinned at bar 48; the track is only 66 bars long. B cue-in pinned at bar 64 (drop) so 16 bars fit before its minimum body.",
+   "force_type": "melt",
+   "force_bars": 16,
+   "approved": {}
+  },
+  {
+   "id": "p10",
+   "seam_at": 1140,
+   "edge_case": "large stretch (12 % tempo gap, 6 % each way) into a breakdown-heavy track",
+   "genre": "trance",
+   "A": {
+    "track_id": "c8db3726de50",
+    "name": "Katoff – Moment Of Truth",
+    "path": "data/external/test_tracks/trance/c8db3726de50.m4a",
+    "tempo": 123.01,
+    "lufs": -9.3,
+    "downbeat_conf": 0.814,
+    "cue": [
+     null,
+     96
+    ]
+   },
+   "B": {
+    "track_id": "548b0640b6b8",
+    "name": "Peetu S – Mental Component",
+    "path": "data/external/test_tracks/trance/548b0640b6b8.m4a",
+    "tempo": 138.01,
+    "lufs": -7.2,
+    "downbeat_conf": 0.676,
+    "cue": [
+     40,
+     null
+    ]
+   },
+   "reason": "Katoff 123.0 → Peetu S 138.0, both stretched ~6 % to 130.5 (past the 4 % warning). Peetu S has 132 breakdown bars; B pinned at bar 40 so a break follows 16 bars after the cue-in. A cue-out pinned at bar 96 (drop) so 32 bars fit.",
+   "force_type": "blend",
+   "force_bars": 32,
+   "approved": {}
+  },
+  {
+   "id": "p11",
+   "seam_at": 1260,
+   "edge_case": "off-8th hats on both records, quiet vs loud master, low confidence",
+   "genre": "trance",
+   "A": {
+    "track_id": "2817cc08ece9",
+    "name": "PARAFRAME – ft. Ryan Masson - Son Of Earth",
+    "path": "data/external/test_tracks/trance/2817cc08ece9.m4a",
+    "tempo": 128.0,
+    "lufs": -12.1,
+    "downbeat_conf": 0.465,
+    "cue": [
+     null,
+     136
+    ]
+   },
+   "B": {
+    "track_id": "dfbf621fd5eb",
+    "name": "Koyah – Lightspeed",
+    "path": "data/external/test_tracks/trance/dfbf621fd5eb.m4a",
+    "tempo": 127.83,
+    "lufs": -7.8,
+    "downbeat_conf": 0.569
+   },
+   "reason": "PARAFRAME (hats off the 8ths 0.60, kick share 0.19, confidence 0.47, −12.1 LUFS) → Koyah (hats 0.56, off-beat low end 0.75, −7.8 LUFS). Hats dominate both sides of the correlation. A cue-out pinned at bar 136 (drop) so 32 bars fit.",
+   "force_type": "wave",
+   "force_bars": 32,
+   "approved": {}
+  },
+  {
+   "id": "c01",
+   "seam_at": 1380,
+   "edge_case": "control: plain four-on-the-floor tech house",
+   "genre": "tech house",
+   "A": {
+    "track_id": "8d56bae5a6cd",
+    "name": "Andruss – Active",
+    "path": "data/external/test_tracks/tech_house/8d56bae5a6cd.m4a",
+    "tempo": 128.0,
+    "lufs": -7.9,
+    "downbeat_conf": 0.956,
+    "cue": [
+     null,
+     128
+    ]
+   },
+   "B": {
+    "track_id": "cd074d6cf75d",
+    "name": "Philip Chernikov – Binga",
+    "path": "data/external/test_tracks/tech_house/cd074d6cf75d.m4a",
+    "tempo": 128.97,
+    "lufs": -10.5,
+    "downbeat_conf": 0.941,
+    "cue": [
+     48,
+     null
+    ]
+   },
+   "reason": "Andruss – Active (confidence 0.96, hats 0.05) → Binga (0.94), 0.8 % apart. Both cue bars chosen by measurement: level within 1.5 dB over the block before and three blocks after the seam, drop/groove with a present kick. Replaced RSquared, whose seam sat on its own drop (+7.5 dB content step).",
+   "force_type": "blend",
+   "force_bars": 16,
+   "approved": {}
+  },
+  {
+   "id": "c02",
+   "seam_at": 1500,
+   "edge_case": "control: plain techno",
+   "genre": "techno",
+   "A": {
+    "track_id": "d475c85b818e",
+    "name": "KlangKuenstler – Ehre Und Gewalt",
+    "path": "data/external/listen/work_techno_high/techno_high_15min/tracks/d475c85b818e.webm",
+    "tempo": 138.99,
+    "lufs": -6.7,
+    "downbeat_conf": 0.918,
+    "cue": [
+     null,
+     88
+    ]
+   },
+   "B": {
+    "track_id": "4413269d81b8",
+    "name": "Capricorn – 20Hz (Carl Cox Remix)",
+    "path": "data/external/test_tracks/techno/4413269d81b8.m4a",
+    "tempo": 138.01,
+    "lufs": -7.8,
+    "downbeat_conf": 0.748
+   },
+   "reason": "KlangKuenstler (confidence 0.92, hats 0.18) → Capricorn 20Hz (0.75), 0.7 % apart. A cue-out pinned at bar 88 (steady -8 dB drop); the mixer's choice (128) was a -14 dB buildup.",
+   "force_type": "blend",
+   "force_bars": 16,
+   "approved": {}
+  },
+  {
+   "id": "c03",
+   "seam_at": 1620,
+   "edge_case": "control: plain melodic house",
+   "genre": "melodic house",
+   "A": {
+    "track_id": "7e5f3e073afe",
+    "name": "Krissky – Days Without You",
+    "path": "data/external/listen/work_minimal_mid/minimal_mid_15min/tracks/7e5f3e073afe.webm",
+    "tempo": 122.0,
+    "lufs": -10.7,
+    "downbeat_conf": 0.995,
+    "cue": [
+     null,
+     152
+    ]
+   },
+   "B": {
+    "track_id": "92929f7fa9fa",
+    "name": "Gorje Hewek & ETNE – Children",
+    "path": "data/external/test_tracks/melodic_house/92929f7fa9fa.m4a",
+    "tempo": 124.0,
+    "lufs": -9.8,
+    "downbeat_conf": 0.991,
+    "cue": [
+     64,
+     null
+    ]
+   },
+   "reason": "Krissky (confidence 0.99, hats 0.11) → Gorje Hewek Children (0.99, hats 0.15), 1.6 % apart. Cue bars pinned by measurement (A 152, B 64): steady level, drop/groove, kick present; the mixer's own choice cued A out in its outro with B's drop landing right after the overlap.",
+   "force_type": "blend",
+   "force_bars": 16,
+   "approved": {}
+  },
+  {
+   "id": "c04",
+   "seam_at": 1740,
+   "edge_case": "control: plain trance",
+   "genre": "trance",
+   "A": {
+    "track_id": "ba3d437d51d9",
+    "name": "Craig Forsyth – The Ultimate",
+    "path": "data/external/test_tracks/trance/ba3d437d51d9.m4a",
+    "tempo": 135.0,
+    "lufs": -8.2,
+    "downbeat_conf": 0.914
+   },
+   "B": {
+    "track_id": "a861536769f6",
+    "name": "Factor B – ft. Theia - Everywhere To Me",
+    "path": "data/external/test_tracks/trance/a861536769f6.m4a",
+    "tempo": 135.03,
+    "lufs": -9.3,
+    "downbeat_conf": 0.912
+   },
+   "reason": "Craig Forsyth (confidence 0.91) → Factor B (0.91), same tempo.",
+   "force_type": "blend",
+   "force_bars": 16,
+   "approved": {}
+  }
+ ]
+}
