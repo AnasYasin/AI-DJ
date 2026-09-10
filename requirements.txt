@@ -7,7 +7,7 @@ pip
 pytest
 pytest-asyncio         # needed for async test functions
 python-dotenv
-ruff
+ruff==0.16.6            # pinned: CI and local must lint with the same version
 
 # ── audio processing ───────────────────────────────────────────────────────────
 librosa==0.10.2        # onset, energy, MFCC, spectral features — the DSP workhorse
