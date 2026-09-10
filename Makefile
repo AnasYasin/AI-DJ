@@ -95,3 +95,9 @@ export PRINT_HELP_PYSCRIPT
 
 help:
 	@$(PYTHON_INTERPRETER) -c "${PRINT_HELP_PYSCRIPT}" < $(MAKEFILE_LIST)
+
+## ci: run exactly what .github/workflows/ci.yml runs, before every push
+ci:
+	ruff check src/ tests/ scripts/ dags/
+	ruff format --check src/ tests/ scripts/
+	pytest tests/ -q
