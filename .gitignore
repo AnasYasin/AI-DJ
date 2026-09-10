@@ -217,3 +217,7 @@ logs/
 
 # stretched-audio cache (regenerable, large)
 /data/interim/stretch/
+
+# djdata run roots (audio, state db)
+data/djdata/
+data/djdata_test/

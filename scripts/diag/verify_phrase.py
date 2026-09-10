@@ -6,10 +6,10 @@ import numpy as np
 
 logging.disable(logging.WARNING)
 sys.path.insert(0, ".")
-import librosa
+import librosa  # noqa: E402
 
-from src.audio.audio_mixer import render_mix
-from src.data import audio_segmenter as seg
+from src.audio.audio_mixer import render_mix  # noqa: E402
+from src.data import audio_segmenter as seg  # noqa: E402
 
 paths = sys.argv[2:]
 do_render = sys.argv[1] == "render"

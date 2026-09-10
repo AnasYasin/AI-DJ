@@ -5,7 +5,7 @@ import numpy as np
 
 logging.disable(logging.WARNING)
 sys.path.insert(0, ".")
-from src.audio.audio_mixer import SR, _prepare_track, measure_seam_offset
+from src.audio.audio_mixer import SR, _prepare_track, measure_seam_offset  # noqa: E402
 
 target = 128.5
 A = _prepare_track("data/external/transition_tests/tracks/4f33cf8656f2.webm", target, 32, 64)

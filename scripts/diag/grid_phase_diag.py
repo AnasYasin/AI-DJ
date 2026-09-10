@@ -7,10 +7,10 @@ import numpy as np
 
 logging.disable(logging.WARNING)
 sys.path.insert(0, ".")
-from scipy.signal import correlate
+from scipy.signal import correlate  # noqa: E402
 
-from src.audio import audio_mixer as am
-from src.audio.audio_mixer import ONSET_HOP, SR, _to_mono
+from src.audio import audio_mixer as am  # noqa: E402
+from src.audio.audio_mixer import ONSET_HOP, SR, _to_mono  # noqa: E402
 
 plan = json.load(open("data/external/ear_test_2026-09-07/techno/plan.json"))["tracks"]
 a, b = plan[2], plan[3]  # pair 2

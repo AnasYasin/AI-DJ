@@ -1,0 +1,50 @@
+# djdata configuration. Every path is absolute or relative to the directory you run from.
+
+source: raveform              # raveform | tracklists (the 1001tracklists path for DJs Raveform lacks)
+root: data/djdata             # state db, downloaded audio, seam windows, outputs, logs
+raveform_dir: data/raw/raveform/raveform
+tracklists_csv: data/interim/tracklist.csv      # used when source is tracklists
+
+# Which seams to run. Tiers are evaluated in order; a seam belongs to the first tier that matches.
+run_tiers: [tier1]
+tiers:
+  tier1:
+    djs: [adam beyer, armin van buuren, paul van dyk, markus schulz, aly & fila, charlotte de witte,
+          carl cox, ferry corsten, calibre, roman flügel, dimension, hot since 82, fisher, noisia,
+          solomun, andy c, tale of us]
+    min_year: 2014
+  tier2:
+    genres: [Techno, House, Tech House, Trance, Drum & Bass, Progressive House, Deep House,
+             Progressive Trance, Minimal, Deep Tech House]
+    min_year: 2016
+
+usable:                        # measured on the Raveform files, 2026-09-09
+  min_match_rate: 0.5          # both tracks of the seam
+  max_gap_s: 60                # Raveform mix-out of A may sit this far before mix-in of B
+  min_year: 2014
+
+workers:
+  mix: 1                       # one mix worker; it waits while max_pending_mixes are still unanalysed
+  tracks: 4                    # YouTube streams in parallel; more invites throttling
+  seams: 4                     # analysis processes (CPU bound, ~30 s per seam)
+  max_pending_mixes: 4
+
+download:
+  mix_format: "bestaudio[protocol=http]/bestaudio"   # SoundCloud progressive mp3 first
+  track_format: "bestaudio[ext=m4a]/bestaudio"
+  cookies_file: null           # path to a Netscape cookies file if YouTube asks for sign-in
+  min_track_s: 120
+  max_track_s: 1200
+
+window:
+  pad_s: 20                    # kept before the incoming track's first beat and after the outgoing track's last
+  alone_s: 45                  # at least this much of each record alone, when the mix allows it
+
+analysis:
+  bands: [[20, 180], [180, 3000], [3000, 14000]]     # tested; six bands are a config change
+  lam: 0.05                    # continuity pull between beats in the two-record fit
+  local_ms: 8                  # per-beat local re-alignment range
+  presence_db: -12             # a record counts as audible above this (low or mid band)
+
+logging:
+  level: INFO

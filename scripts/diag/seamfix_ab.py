@@ -11,8 +11,8 @@ import soundfile as sf
 
 sys.path.insert(0, ".")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-from src.audio import audio_mixer as am
-from src.models.predict_model import plan_mix
+from src.audio import audio_mixer as am  # noqa: E402
+from src.models.predict_model import plan_mix  # noqa: E402
 
 OUT = Path("data/external/ear_test_2026-09-07/seamfix")
 OUT.mkdir(parents=True, exist_ok=True)

@@ -6,8 +6,8 @@ import numpy as np
 
 logging.disable(logging.WARNING)
 sys.path.insert(0, ".")
-from src.audio.audio_mixer import SR, _precise_bpm, _to_mono, load_audio
-from src.data.audio_segmenter import segment
+from src.audio.audio_mixer import SR, _precise_bpm, _to_mono, load_audio  # noqa: E402
+from src.data.audio_segmenter import segment  # noqa: E402
 
 
 def true_bpm(y, bpm_hint):

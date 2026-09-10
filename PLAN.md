@@ -692,3 +692,22 @@ seam table lands; then 6–10. Steps 1–4 are not rebuilt by the seam data, the
 **Confidence.** High that learned decisions match real DJs better than rules on numbers; moderate that the first pass sounds better by ear
 (measurement noise → the 50-seam ear check); low risk of regressing (rule floor). Prior art: KAIST mix analysis + transition
 reverse-engineering (open code); DJtransGAN matched but did not beat rules; 2018 DnB auto-DJ: quality limited by analysis, not rules.
+
+## Step 5 amendment (2026-09-10): Raveform + djdata package
+
+Step 5 no longer scrapes and aligns 1001tracklists mixes for the bulk of the seam table. The KAIST Raveform dataset
+(data/raw/raveform, CC BY 4.0) supplies the pairs, YouTube track ids, mix links and a mix-to-track alignment good to
+about a bar. Filtered (year ≥ 2014, match rate ≥ 0.5 on both tracks, gap ≤ 60 s) it holds 14,080 seams in 2,084 mixes:
+tier 1 = our named DJs (1,474 seams), tier 2 = 2016+ in our genres (12,606). Black Coffee and Fred again.. are not in it
+and keep the old 1001 path (scrape → media link → fetch by name → fingerprint coarse anchors → same analysis).
+
+The gain extraction was proven before any pipeline code (7 rendered seams with mixer truth, then a real Adam Beyer seam):
+stretch-free per-beat two-record fit on 8 sub-slots × bins, alignment within 9 ms from a one-bar coarse guess, bass swap
+exact in 13/14 runs, outgoing record's band gains within 1 dB, -6 dB crossings within 2 (outgoing) / 5 (incoming) beats.
+Known limits: entry of a slow bed ±1–4 bars (use the -6 dB crossing), quiet record's high band unreliable below -10 dB,
+filter sweeps inside a band misread with 3 bands (try 6). Filter-sweep frequency is dropped for launch.
+
+Implementation: djdata_package/ (pip install -e), config.yaml with workers {mix 1, tracks 4, seams 4}, sqlite resume
+log, outputs seams.csv / curves.csv / qa.csv, `djdata archivable` for S3 moves, one CLI subcommand per stage for
+Airflow. Verified end to end on one mix (7 seams, 2 min wall clock, 30 s analysis per seam). VM: c6i.4xlarge, gp3 300 GB;
+first command on the VM is `djdata probe` (YouTube from a datacenter IP is the main risk).

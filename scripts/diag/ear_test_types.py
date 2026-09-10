@@ -11,7 +11,7 @@ import soundfile as sf
 
 sys.path.insert(0, ".")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-from src.audio.audio_mixer import RECIPES, SR, render_mix
+from src.audio.audio_mixer import RECIPES, SR, render_mix  # noqa: E402
 
 OUT = Path("data/external/ear_test_2026-09-07")
 TRACKS = Path("data/external/test_tracks")

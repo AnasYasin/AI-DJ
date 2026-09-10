@@ -15,9 +15,9 @@ sys.path.insert(0, ".")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 for noisy in ("numba", "matplotlib", "urllib3"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
-from src.audio.audio_mixer import SR, render_mix
-from src.data.audio_segmenter import segment
-from src.models.predict_model import plan_mix
+from src.audio.audio_mixer import SR, render_mix  # noqa: E402
+from src.data.audio_segmenter import segment  # noqa: E402
+from src.models.predict_model import plan_mix  # noqa: E402
 
 OUT = Path("data/external/ear_test_2026-09-07")
 OUT.mkdir(parents=True, exist_ok=True)
