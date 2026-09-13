@@ -51,7 +51,11 @@ def cmd_status(args):
     from .state import State
 
     cfg = _cfg(args)
-    print(json.dumps(State(cfg.db_path).counts(cfg.run_tiers), indent=1))
+    out = State(cfg.db_path).counts(cfg.run_tiers)
+    gate = cfg.dirs["logs"] / "gate.json"
+    if gate.exists():
+        out["downloads"] = json.loads(gate.read_text())
+    print(json.dumps(out, indent=1))
 
 
 def cmd_retry(args):

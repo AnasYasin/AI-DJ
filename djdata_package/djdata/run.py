@@ -152,7 +152,7 @@ def run(cfg: Config) -> dict:
     log.info("run start: tiers %s, workers %s, counts %s", tiers, cfg.workers, state.counts(tiers))
     stop = threading.Event()
     gate = Gate(cfg.download["min_interval_s"], cfg.download["block_wait_s"],
-                lambda: probe(cfg, cfg.dirs["tracks"]), stop)
+                lambda: probe(cfg, cfg.dirs["tracks"]), stop, status_path=cfg.dirs["logs"] / "gate.json")
     threads = [threading.Thread(target=_mix_worker, args=(cfg, state, stop, gate), name=f"mix-{i}", daemon=True)
                for i in range(cfg.workers["mix"])]
     threads += [threading.Thread(target=_track_worker, args=(cfg, state, stop, gate), name=f"track-{i}", daemon=True)
