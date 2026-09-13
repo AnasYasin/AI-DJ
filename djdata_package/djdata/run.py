@@ -22,6 +22,7 @@ from .fetch import mix as fetch_mix
 from .fetch import track as fetch_track
 from .fetch.yt import Blocked, probe
 from .gate import Gate
+from .rotate import rotate as rotate_ip
 from .seam.analyse import analyse
 from .seam.coarse import fingerprint_anchors
 from .state import State
@@ -160,8 +161,11 @@ def run(cfg: Config) -> dict:
     tiers = cfg.run_tiers
     log.info("run start: tiers %s, workers %s, counts %s", tiers, cfg.workers, state.counts(tiers))
     stop = threading.Event()
+    rotating = cfg.download.get("rotate_ip_on_block")
     gate = Gate(cfg.download["min_interval_s"], cfg.download["block_wait_s"],
-                lambda: probe(cfg, cfg.dirs["tracks"]), stop, status_path=cfg.dirs["logs"] / "gate.json")
+                lambda: probe(cfg, cfg.dirs["tracks"]), stop, status_path=cfg.dirs["logs"] / "gate.json",
+                rotate=rotate_ip if rotating else None,
+                max_rotations=cfg.download.get("max_rotations", 0) if rotating else 0)
     threads = [threading.Thread(target=_mix_worker, args=(cfg, state, stop, gate), name=f"mix-{i}", daemon=True)
                for i in range(cfg.workers["mix"])]
     threads += [threading.Thread(target=_track_worker, args=(cfg, state, stop, gate), name=f"track-{i}", daemon=True)
@@ -184,5 +188,6 @@ def run(cfg: Config) -> dict:
         sched.join(timeout=600)
     counts = state.counts(tiers)
     counts["youtube_blocks"] = gate.blocks
+    counts["ip_rotations"] = gate.rotations
     log.info("run end: %s", counts)
     return counts

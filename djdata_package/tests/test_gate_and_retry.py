@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 
 from djdata.fetch.yt import BLOCK_MARKERS, is_block, uses_cookies
 from djdata.gate import Gate
@@ -77,6 +78,40 @@ def test_gate_stays_open_when_only_one_item_is_refused():
     g = Gate(0, 0.01, lambda: True, threading.Event())
     assert g.blocked("HTTP Error 403") is False    # probe passed: the item is the problem
     assert g.is_open() and g.blocks == 0
+
+
+def test_gate_rotates_the_ip_instead_of_waiting_out_a_block(tmp_path):
+    """A blocked address was measured not to recover, so a new one is taken before any wait."""
+    probes = [False, True]          # at report time, then after the first rotation
+    rotated = []
+
+    def rotate():
+        rotated.append(f"1.2.3.{len(rotated)}")
+        return rotated[-1]
+
+    stop = threading.Event()
+    status = tmp_path / "gate.json"
+    g = Gate(0, 300, lambda: probes.pop(0), stop, status_path=status, rotate=rotate, max_rotations=3, settle_s=0.01)
+    assert g.blocked("HTTP Error 403") is True
+    g.wait_open()                    # would hang for 300 s if it waited instead of rotating
+    assert g.is_open() and rotated == ["1.2.3.0"] and g.rotations == 1
+    assert json.loads(status.read_text())["rotations"] == 1
+    stop.set()
+
+
+def test_gate_stops_rotating_at_the_cap():
+    """A fault that looks like a block must not burn addresses all night."""
+    rotated = []
+    stop = threading.Event()
+    g = Gate(0, 0.01, lambda: False, stop, rotate=lambda: rotated.append(1), max_rotations=2, settle_s=0.01)
+    g.blocked("HTTP Error 403")
+    for _ in range(200):
+        if len(rotated) >= 2 and g.rotations >= 2:
+            break
+        time.sleep(0.01)
+    time.sleep(0.1)
+    stop.set()
+    assert len(rotated) == 2         # capped: the gate keeps probing but takes no more addresses
 
 
 def test_retry_tracks_requeues_tracks_and_their_seams(tmp_path):
