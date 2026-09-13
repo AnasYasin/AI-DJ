@@ -1,3 +1,4 @@
+import json
 import threading
 
 from djdata.fetch.yt import BLOCK_MARKERS, is_block, uses_cookies
@@ -47,7 +48,7 @@ def test_gate_paces_downloads_across_workers():
     assert slept == [20.0, 20.0]
 
 
-def test_gate_closes_on_block_and_reopens_when_probe_passes():
+def test_gate_closes_on_block_and_reopens_when_probe_passes(tmp_path):
     answers = [False, True]
     probed = []
 
@@ -57,13 +58,17 @@ def test_gate_closes_on_block_and_reopens_when_probe_passes():
         return r
 
     stop = threading.Event()
-    g = Gate(0, 0.01, probe, stop)
-    assert g.is_open()
+    status = tmp_path / "gate.json"
+    g = Gate(0, 0.01, probe, stop, status_path=status)
+    assert g.is_open() and json.loads(status.read_text())["state"] == "open"
     g.blocked("HTTP Error 403")
     g.blocked("HTTP Error 403")    # second report during the same block changes nothing
     assert g.blocks == 1
+    assert json.loads(status.read_text())["state"] == "blocked"
     g.wait_open()
     assert g.is_open() and probed == [False, True]
+    row = json.loads(status.read_text())
+    assert row["state"] == "open" and row["blocks"] == 1 and row["reason"] == "probe passed"
     stop.set()
 
 

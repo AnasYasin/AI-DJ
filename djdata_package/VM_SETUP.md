@@ -154,7 +154,13 @@ same account kept working from a home connection. The runner now handles this:
 - A 403/429/"Sign in" failure puts the item back to pending and pauses all track downloads. A probe
   request runs every `download.block_wait_s`; downloads resume when it succeeds. Mix downloads
   from SoundCloud/Mixcloud and seam analysis keep running. The log line is `YouTube block #n`.
-- The instance has no Elastic IP, so a stop/start gives a new IP if a block does not lift.
+- `data/djdata/logs/gate.json` holds the download state (`open` or `blocked`, since when, block count);
+  `djdata status` prints it under `downloads`. From the laptop:
+  `ssh aidj cat AI-DJ/data/djdata/logs/gate.json`.
+- A gate that stays `blocked` almost always means the cookie session is dead (probe gets 403 while
+  the account page redirects to sign-in). Export fresh cookies and replace the file; the next probe
+  reopens the gate. Only when the account page returns 200 and the probe still fails is the IP the
+  problem; then a stop/start gives a new IP (no Elastic IP on this instance).
 - Tracks that failed before this existed are re-queued with
   `djdata retry --config djdata_package/config.yaml --match "HTTP Error 403"` (also for
   `"Requested format is not available"` and `"Netscape"`), then restart `djdata run`.
