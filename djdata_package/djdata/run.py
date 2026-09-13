@@ -49,9 +49,14 @@ def _mix_worker(cfg: Config, state: State, stop: threading.Event, gate: Gate):
             state.set_mix(mix["mix_id"], "windows_ready")
             log.info("mix done %s: %d windows in %.1fs", mix["mix_id"], n, time.time() - t0)
         except Blocked as e:
-            state.set_mix(mix["mix_id"], "pending", error=str(e)[:500])
-            gate.blocked(str(e))
-            gate.wait_open()
+            if gate.blocked(str(e)):
+                state.set_mix(mix["mix_id"], "pending", error=str(e)[:500])
+                gate.wait_open()
+            else:
+                state.set_mix(mix["mix_id"], "failed", error=str(e)[:500])
+                for s in state.seams_of_mix(mix["mix_id"]):
+                    state.set_seam(s["seam_id"], "failed", error=f"mix: {str(e)[:200]}")
+                log.error("mix FAILED %s: refused while the probe passed: %s", mix["mix_id"], e)
         except Exception as e:  # one bad mix must not stop the run; its seams are marked with the reason
             state.set_mix(mix["mix_id"], "failed", error=str(e)[:500])
             for s in state.seams_of_mix(mix["mix_id"]):
@@ -75,9 +80,13 @@ def _track_worker(cfg: Config, state: State, stop: threading.Event, gate: Gate):
             state.set_track(track["track_id"], "ready", path=str(path), duration=dur)
             log.info("track done %s (%.0fs audio) in %.1fs", track["track_id"], dur, time.time() - t0)
         except Blocked as e:
-            state.set_track(track["track_id"], "pending", error=str(e)[:500])
-            log.warning("track %s blocked, back to pending: %s", track["track_id"], e)
-            gate.blocked(str(e))
+            if gate.blocked(str(e)):
+                state.set_track(track["track_id"], "pending", error=str(e)[:500])
+                log.warning("track %s blocked, back to pending: %s", track["track_id"], e)
+            else:
+                state.set_track(track["track_id"], "failed", error=str(e)[:500])
+                log.error("track FAILED %s: refused while the probe passed: %s", track["track_id"], e)
+                _fail_seams_of_track(state, track["track_id"], str(e))
         except Exception as e:
             state.set_track(track["track_id"], "failed", error=str(e)[:500])
             log.error("track FAILED %s after %.1fs: %s", track["track_id"], time.time() - t0, e)

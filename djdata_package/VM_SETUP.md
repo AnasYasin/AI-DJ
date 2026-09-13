@@ -161,6 +161,12 @@ same account kept working from a home connection. The runner now handles this:
   the account page redirects to sign-in). Export fresh cookies and replace the file; the next probe
   reopens the gate. Only when the account page returns 200 and the probe still fails is the IP the
   problem; then a stop/start gives a new IP (no Elastic IP on this instance).
+- Reading a failure. `djdata status` prints `failures`: `tracks_failed` (permanent, e.g. "Video
+  unavailable", "duration outside", "Requested format is not available" for one video),
+  `tracks_waiting` (pending with an error: refused by YouTube while everyone was refused, retried
+  when the gate reopens), `mixes_failed`, `seams_failed` ("track: ..." or "mix: ..."). A refusal
+  that the probe does not share is treated as that item's own failure, so one age-restricted or
+  region-locked video cannot pause the run.
 - Tracks that failed before this existed are re-queued with
   `djdata retry --config djdata_package/config.yaml --match "HTTP Error 403"` (also for
   `"Requested format is not available"` and `"Netscape"`), then restart `djdata run`.

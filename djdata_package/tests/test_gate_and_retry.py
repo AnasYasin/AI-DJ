@@ -9,8 +9,9 @@ from djdata.state import State
 def test_is_block_reads_warnings_not_only_the_error():
     # 2026-09-13: the 403 came as a yt-dlp WARNING, the ERROR said "Requested format is not available"
     assert is_block("Requested format is not available", ["Unable to download API page: HTTP Error 403: Forbidden"]) == "HTTP Error 403"
-    assert is_block("Sign in to confirm you're not a bot", []) == "Sign in to confirm"
+    assert is_block("Sign in to confirm you're not a bot", []) == "not a bot"
     assert is_block("Video unavailable", []) is None
+    assert is_block("Sign in to confirm your age. This video may be inappropriate for some users.", []) is None
     assert is_block("Requested format is not available", ["some other warning"]) is None
     assert all(m in BLOCK_MARKERS for m in ("HTTP Error 403", "HTTP Error 429"))
 
@@ -49,7 +50,7 @@ def test_gate_paces_downloads_across_workers():
 
 
 def test_gate_closes_on_block_and_reopens_when_probe_passes(tmp_path):
-    answers = [False, True]
+    answers = [False, False, True]   # probe at report time, first recovery probe, second recovery probe
     probed = []
 
     def probe():
@@ -61,15 +62,21 @@ def test_gate_closes_on_block_and_reopens_when_probe_passes(tmp_path):
     status = tmp_path / "gate.json"
     g = Gate(0, 0.01, probe, stop, status_path=status)
     assert g.is_open() and json.loads(status.read_text())["state"] == "open"
-    g.blocked("HTTP Error 403")
-    g.blocked("HTTP Error 403")    # second report during the same block changes nothing
-    assert g.blocks == 1
+    assert g.blocked("HTTP Error 403") is True
+    assert g.blocked("HTTP Error 403") is True   # second report during the same block: no extra probe
+    assert g.blocks == 1 and probed == [False]
     assert json.loads(status.read_text())["state"] == "blocked"
     g.wait_open()
-    assert g.is_open() and probed == [False, True]
+    assert g.is_open() and probed == [False, False, True]
     row = json.loads(status.read_text())
     assert row["state"] == "open" and row["blocks"] == 1 and row["reason"] == "probe passed"
     stop.set()
+
+
+def test_gate_stays_open_when_only_one_item_is_refused():
+    g = Gate(0, 0.01, lambda: True, threading.Event())
+    assert g.blocked("HTTP Error 403") is False    # probe passed: the item is the problem
+    assert g.is_open() and g.blocks == 0
 
 
 def test_retry_tracks_requeues_tracks_and_their_seams(tmp_path):
@@ -100,3 +107,7 @@ def test_retry_tracks_requeues_tracks_and_their_seams(tmp_path):
     assert seams["m1_tb_tc"] == "failed"         # tc is a real failure, so the seam stays failed
     assert seams["m1_tc_td"] == "failed"
     assert st.claim_track(["tier1"], "w")["track_id"] == "tb"
+    summary = st.failure_summary(["tier1"])
+    assert summary["tracks_failed"] == {"ERROR: [youtube] Video unavailable": 1}
+    assert summary["tracks_waiting"] == {}
+    assert list(summary["seams_failed"].values()) == [2]
