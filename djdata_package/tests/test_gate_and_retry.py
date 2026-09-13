@@ -110,4 +110,4 @@ def test_retry_tracks_requeues_tracks_and_their_seams(tmp_path):
     summary = st.failure_summary(["tier1"])
     assert summary["tracks_failed"] == {"ERROR: [youtube] Video unavailable": 1}
     assert summary["tracks_waiting"] == {}
-    assert list(summary["seams_failed"].values()) == [2]
+    assert sum(summary["seams_failed"].values()) == 2 and len(summary["seams_failed"]) == 2   # a 403 text and a "Video unavailable" text
