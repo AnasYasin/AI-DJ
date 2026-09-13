@@ -160,7 +160,19 @@ same account kept working from a home connection. The runner now handles this:
 - A gate that stays `blocked` almost always means the cookie session is dead (probe gets 403 while
   the account page redirects to sign-in). Export fresh cookies and replace the file; the next probe
   reopens the gate. Only when the account page returns 200 and the probe still fails is the IP the
-  problem; then a stop/start gives a new IP (no Elastic IP on this instance).
+  problem; then the address must change.
+- A blocked address does not recover on its own (measured 2026-09-13: 85 min, five probes, no lift),
+  and pacing does not avoid the block. Two addresses each served about 100 track downloads and were
+  then refused, one at 10 downloads/min and one at 3, so the limit is a count per address.
+- `download.rotate_ip_on_block: true` makes a blocked gate take a new Elastic IP and probe again:
+  about 10 s, no reboot, so the run keeps its state and tmux survives. Your ssh session to the old
+  address drops, so reconnect on the new one:
+  `aws ec2 describe-instances --profile talhanonstatic --region us-east-1 --instance-ids
+  i-023e6cd5518feff75 --query 'Reservations[].Instances[].PublicIpAddress' --output text`.
+  Needs `pip install boto3` and an instance role. Role `aidj-eip` is attached to the VM and allows
+  only DescribeAddresses, AllocateAddress, AssociateAddress and ReleaseAddress.
+  `download.max_rotations` caps it for the whole run (25), so a fault that looks like a block cannot
+  burn addresses all night. `logs/gate.json` carries the `rotations` count.
 - Reading a failure. `djdata status` prints `failures`: `tracks_failed` (permanent, e.g. "Video
   unavailable", "duration outside", "Requested format is not available" for one video),
   `tracks_waiting` (pending with an error: refused by YouTube while everyone was refused, retried
