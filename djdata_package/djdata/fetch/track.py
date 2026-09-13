@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 
-import yt_dlp
+from . import yt
 
 log = logging.getLogger("djdata.fetch.track")
 
@@ -20,22 +20,10 @@ def _duration_s(path: Path) -> float:
 
 
 def download_by_url(cfg, url: str, dest_stem: Path) -> tuple[Path, float]:
-    opts = {"quiet": True, "no_warnings": True, "noprogress": True,
-            "format": cfg.download["track_format"], "retries": 3}
-    if cfg.download.get("cookies_file"):
-        opts["cookiefile"] = cfg.download["cookies_file"]
-    if cfg.download.get("youtube_player_client"):
-        # with cookies, YouTube's default tv client returns UNPLAYABLE (yt-dlp issue 17389); web_embedded works
-        opts["extractor_args"] = {"youtube": {"player_client": cfg.download["youtube_player_client"].split(",")}}
     with tempfile.TemporaryDirectory(dir=dest_stem.parent) as td:
-        opts["outtmpl"] = str(Path(td) / "t.%(ext)s")
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(url, download=True)
-        files = [f for f in Path(td).iterdir() if f.is_file()]
-        if not files:
-            raise RuntimeError(f"yt-dlp produced no file for {url}")
-        dest = dest_stem.with_suffix(files[0].suffix)
-        shutil.move(str(files[0]), dest)
+        got = yt.download(cfg, url, cfg.download["track_format"], Path(td))
+        dest = dest_stem.with_suffix(got.suffix)
+        shutil.move(str(got), dest)
     dur = _duration_s(dest)
     lo, hi = cfg.download["min_track_s"], cfg.download["max_track_s"]
     if not lo <= dur <= hi:

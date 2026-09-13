@@ -25,7 +25,7 @@ usable:                        # measured on the Raveform files, 2026-09-09
 
 workers:
   mix: 1                       # one mix worker; it waits while max_pending_mixes are still unanalysed
-  tracks: 4                    # YouTube streams in parallel; more invites throttling
+  tracks: 2                    # YouTube streams in parallel; the pace below is the real limit
   seams: 4                     # analysis processes (CPU bound, ~30 s per seam)
   max_pending_mixes: 4
 
@@ -33,7 +33,10 @@ download:
   mix_format: "bestaudio[protocol=http]/bestaudio"   # SoundCloud progressive mp3 first
   track_format: "bestaudio[ext=m4a]/bestaudio"
   cookies_file: null           # Netscape cookies file exported from an incognito YouTube login (see VM_SETUP.md)
-  youtube_player_client: "default,web_embedded"   # needed with cookies; requires deno + yt-dlp[default]
+  youtube_player_client: "default,web_embedded"   # verified from the VM 2026-09-13; the default client alone fails with cookies (issue 17389); needs deno + yt-dlp[default]
+  min_interval_s: 20           # one track download start per 20 s across workers (180/h; yt-dlp wiki: guest limit ~300/h)
+  block_wait_s: 900            # after a YouTube 403/429 block: pause all track downloads, probe every 15 min
+  block_probe_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"   # the probe video; any long-lived public video
   min_track_s: 120
   max_track_s: 1200
 

@@ -1,10 +1,12 @@
-"""The resumable runner: one mix worker, N track workers, M seam analysis processes.
+"""The resumable runner: mix workers, N track workers, M seam analysis processes, one download gate.
 
 The mix worker waits while `max_pending_mixes` downloaded mixes still have unanalysed seams, so the
 disk never fills with windows nobody is ready to use. Track workers take tracks in the order their
 mixes landed. Seam workers take any seam whose window and both tracks exist, so analysis starts as
 soon as the first mix's first pair of tracks is on disk. Every claim is an atomic sqlite update,
-so a killed run resumes by restarting the command.
+so a killed run resumes by restarting the command. Track downloads are paced through the Gate; a
+YouTube block (fetch.yt.Blocked) puts the item back to pending and closes the gate until a probe
+succeeds, so a block costs time, never a track.
 """
 
 from concurrent.futures import ProcessPoolExecutor
@@ -18,6 +20,8 @@ import time
 from .config import Config
 from .fetch import mix as fetch_mix
 from .fetch import track as fetch_track
+from .fetch.yt import Blocked, probe
+from .gate import Gate
 from .seam.analyse import analyse
 from .seam.coarse import fingerprint_anchors
 from .state import State
@@ -26,7 +30,7 @@ log = logging.getLogger("djdata.run")
 POLL_S = 3.0
 
 
-def _mix_worker(cfg: Config, state: State, stop: threading.Event):
+def _mix_worker(cfg: Config, state: State, stop: threading.Event, gate: Gate):
     name = threading.current_thread().name
     tiers = cfg.run_tiers
     while not stop.is_set():
@@ -44,6 +48,10 @@ def _mix_worker(cfg: Config, state: State, stop: threading.Event):
             n = fetch_mix.process_mix(cfg, state, mix)
             state.set_mix(mix["mix_id"], "windows_ready")
             log.info("mix done %s: %d windows in %.1fs", mix["mix_id"], n, time.time() - t0)
+        except Blocked as e:
+            state.set_mix(mix["mix_id"], "pending", error=str(e)[:500])
+            gate.blocked(str(e))
+            gate.wait_open()
         except Exception as e:  # one bad mix must not stop the run; its seams are marked with the reason
             state.set_mix(mix["mix_id"], "failed", error=str(e)[:500])
             for s in state.seams_of_mix(mix["mix_id"]):
@@ -51,19 +59,25 @@ def _mix_worker(cfg: Config, state: State, stop: threading.Event):
             log.error("mix FAILED %s after %.1fs: %s", mix["mix_id"], time.time() - t0, e)
 
 
-def _track_worker(cfg: Config, state: State, stop: threading.Event):
+def _track_worker(cfg: Config, state: State, stop: threading.Event, gate: Gate):
     name = threading.current_thread().name
     tiers = cfg.run_tiers
     while not stop.is_set():
+        gate.wait_open()
         track = state.claim_track(tiers, name)
         if track is None:
             time.sleep(POLL_S)
             continue
+        gate.pace()
         t0 = time.time()
         try:
             path, dur = fetch_track.fetch(cfg, track)
             state.set_track(track["track_id"], "ready", path=str(path), duration=dur)
             log.info("track done %s (%.0fs audio) in %.1fs", track["track_id"], dur, time.time() - t0)
+        except Blocked as e:
+            state.set_track(track["track_id"], "pending", error=str(e)[:500])
+            log.warning("track %s blocked, back to pending: %s", track["track_id"], e)
+            gate.blocked(str(e))
         except Exception as e:
             state.set_track(track["track_id"], "failed", error=str(e)[:500])
             log.error("track FAILED %s after %.1fs: %s", track["track_id"], time.time() - t0, e)
@@ -137,9 +151,11 @@ def run(cfg: Config) -> dict:
     tiers = cfg.run_tiers
     log.info("run start: tiers %s, workers %s, counts %s", tiers, cfg.workers, state.counts(tiers))
     stop = threading.Event()
-    threads = [threading.Thread(target=_mix_worker, args=(cfg, state, stop), name=f"mix-{i}", daemon=True)
+    gate = Gate(cfg.download["min_interval_s"], cfg.download["block_wait_s"],
+                lambda: probe(cfg, cfg.dirs["tracks"]), stop)
+    threads = [threading.Thread(target=_mix_worker, args=(cfg, state, stop, gate), name=f"mix-{i}", daemon=True)
                for i in range(cfg.workers["mix"])]
-    threads += [threading.Thread(target=_track_worker, args=(cfg, state, stop), name=f"track-{i}", daemon=True)
+    threads += [threading.Thread(target=_track_worker, args=(cfg, state, stop, gate), name=f"track-{i}", daemon=True)
                 for i in range(cfg.workers["tracks"])]
     sched = threading.Thread(target=_seam_scheduler, args=(cfg, state, stop), name="seam-sched", daemon=True)
     for t in threads:
@@ -158,5 +174,6 @@ def run(cfg: Config) -> dict:
         stop.set()
         sched.join(timeout=600)
     counts = state.counts(tiers)
+    counts["youtube_blocks"] = gate.blocks
     log.info("run end: %s", counts)
     return counts

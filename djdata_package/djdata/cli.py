@@ -7,6 +7,7 @@
     djdata archived   --config config.yaml FILE...    record files that were moved
     djdata export     --config config.yaml            seams.csv, curves.csv, qa.csv
     djdata probe      --config config.yaml [--n 20]   YouTube download test from this machine
+    djdata retry      --config config.yaml --match T  failed tracks whose error contains T back to pending
     djdata media-links --config config.yaml           1001 mix pages → audio urls (needs a display: xvfb-run -a)
     djdata scrape-tracklists --dj URL --genre G        legacy 1001 scraper (needs a display)
 """
@@ -51,6 +52,13 @@ def cmd_status(args):
 
     cfg = _cfg(args)
     print(json.dumps(State(cfg.db_path).counts(cfg.run_tiers), indent=1))
+
+
+def cmd_retry(args):
+    from .state import State
+
+    cfg = _cfg(args)
+    print(json.dumps(State(cfg.db_path).retry_tracks(args.match)))
 
 
 def cmd_archivable(args):
@@ -124,7 +132,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="djdata")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn in (("manifest", cmd_manifest), ("run", cmd_run), ("status", cmd_status), ("archivable", cmd_archivable),
-                     ("archived", cmd_archived), ("export", cmd_export), ("probe", cmd_probe), ("media-links", cmd_media_links)):
+                     ("archived", cmd_archived), ("export", cmd_export), ("probe", cmd_probe), ("media-links", cmd_media_links),
+                     ("retry", cmd_retry)):
         sp = sub.add_parser(name)
         sp.add_argument("--config", required=True)
         sp.set_defaults(fn=fn)
@@ -134,6 +143,8 @@ def main(argv=None):
             sp.add_argument("files", nargs="+")
         if name == "probe":
             sp.add_argument("--n", type=int, default=20)
+        if name == "retry":
+            sp.add_argument("--match", required=True, help="substring of the track error, e.g. 'HTTP Error 403'")
     sp = sub.add_parser("scrape-tracklists")
     sp.add_argument("--dj", nargs="+", required=True, help="1001tracklists DJ page urls")
     sp.add_argument("--genre", required=True)

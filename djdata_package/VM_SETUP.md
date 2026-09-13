@@ -51,7 +51,7 @@ chmod 600 ~/AI-DJ/yt-cookies.txt
 ```
 
 and in `djdata_package/config.yaml` set `download.cookies_file: /home/ubuntu/AI-DJ/yt-cookies.txt`.
-Leave `youtube_player_client` at `default,web_embedded`; the default client fails with cookies
+Leave `youtube_player_client` at `default,web_embedded`; the default client alone fails with cookies
 ("The page needs to be reloaded", yt-dlp issue 17389). Never log in to that Google account elsewhere
 while the run uses the file.
 
@@ -143,3 +143,24 @@ works from any other shell. A killed run resumes with the same command.
   seam still needs. After moving them to S3, record it: `djdata archived --config ... <files>`.
 - `djdata export --config djdata_package/config.yaml` can run at any time; it reads finished seams only.
 - Tier 2 is a config change (`run_tiers: [tier1, tier2]`) and the same run command.
+
+## 8. YouTube blocks (learned 2026-09-13)
+
+From a datacenter IP, YouTube blocked every player request with HTTP 403 after about 110 track
+downloads in 11 minutes (4 workers, peak 29 per minute). The block outlived an hour on that IP; the
+same account kept working from a home connection. The runner now handles this:
+
+- Track downloads are paced: one start per `download.min_interval_s` across all workers (20 s).
+- A 403/429/"Sign in" failure puts the item back to pending and pauses all track downloads. A probe
+  request runs every `download.block_wait_s`; downloads resume when it succeeds. Mix downloads
+  from SoundCloud/Mixcloud and seam analysis keep running. The log line is `YouTube block #n`.
+- The instance has no Elastic IP, so a stop/start gives a new IP if a block does not lift.
+- Tracks that failed before this existed are re-queued with
+  `djdata retry --config djdata_package/config.yaml --match "HTTP Error 403"` (also for
+  `"Requested format is not available"` and `"Netscape"`), then restart `djdata run`.
+- Downloads that carry cookies are serialised by one lock, so the account has exactly one cookie
+  rotation chain. Five parallel writers on 2026-09-13 made YouTube log the account out everywhere
+  (HTTP 403 on every request, from any IP). Never use the same cookie file from two machines, and
+  never open that Google account in a browser again. If the run pauses on a block and the probe
+  keeps failing, the session is dead: export fresh cookies from a new incognito login and replace
+  `~/AI-DJ/yt-cookies.txt`; the next probe picks the new file up without a restart.
