@@ -24,6 +24,9 @@ def download_by_url(cfg, url: str, dest_stem: Path) -> tuple[Path, float]:
             "format": cfg.download["track_format"], "retries": 3}
     if cfg.download.get("cookies_file"):
         opts["cookiefile"] = cfg.download["cookies_file"]
+    if cfg.download.get("youtube_player_client"):
+        # with cookies, YouTube's default tv client returns UNPLAYABLE (yt-dlp issue 17389); web_embedded works
+        opts["extractor_args"] = {"youtube": {"player_client": cfg.download["youtube_player_client"].split(",")}}
     with tempfile.TemporaryDirectory(dir=dest_stem.parent) as td:
         opts["outtmpl"] = str(Path(td) / "t.%(ext)s")
         with yt_dlp.YoutubeDL(opts) as ydl:
