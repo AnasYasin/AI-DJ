@@ -12,6 +12,7 @@ the move so nothing looks for the file again.
 
 import json
 from pathlib import Path
+import re
 import sqlite3
 import threading
 import time
@@ -163,6 +164,30 @@ class State:
                 rows = c.execute(f"SELECT status, COUNT(*) n FROM {table} GROUP BY status")
             out[table] = {r["status"]: r["n"] for r in rows}
         return out
+
+    def failure_summary(self, tiers: list, top: int = 8) -> dict:
+        """Failed and waiting items grouped by error text (ids stripped), most common first.
+        `waiting` = pending tracks/mixes that carry an error: refused by YouTube, retried when the gate reopens."""
+        c = self._conn()
+        q = ",".join("?" * len(tiers))
+
+        def bucket(err):
+            err = re.sub(r"\[youtube\] [\w-]+: ", "[youtube] ", err or "")
+            err = re.sub(r"\bmix\d+\b", "mix", err)
+            return err[:90]
+
+        def group(rows):
+            counts = {}
+            for (e,) in rows:
+                counts[bucket(e)] = counts.get(bucket(e), 0) + 1
+            return dict(sorted(counts.items(), key=lambda kv: -kv[1])[:top])
+
+        return {
+            "tracks_failed": group(c.execute("SELECT error FROM tracks WHERE status='failed'")),
+            "tracks_waiting": group(c.execute("SELECT error FROM tracks WHERE status='pending' AND error IS NOT NULL")),
+            "mixes_failed": group(c.execute("SELECT error FROM mixes WHERE status='failed'")),
+            "seams_failed": group(c.execute("SELECT error FROM seams WHERE status='failed' AND tier IN (%s)" % q, tiers)),
+        }
 
     def pending_unanalysed_mixes(self, tiers: list) -> int:
         """Mixes downloaded whose seams (in the run tiers) are not all finished. Gates the mix worker."""

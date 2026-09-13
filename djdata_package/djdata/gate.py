@@ -3,9 +3,11 @@
 pace(): at most one download start every `min_interval_s` across all workers. The yt-dlp wiki puts a
 guest session at about 300 videos per hour; 20 s spacing is 180 per hour, with margin.
 
-blocked(): the worker that hit a YouTube block calls this. Every worker then waits in wait_open().
-A recovery thread probes YouTube every `block_wait_s` and reopens the gate when a probe succeeds.
-Mix downloads from other hosts and seam analysis are not held.
+blocked(): the worker that hit a YouTube refusal calls this. The gate probes at once: if the probe
+passes, the refusal belongs to that one item (blocked() returns False and the caller fails it); if the
+probe fails too, the gate closes and returns True. Every track worker then waits in wait_open(). A
+recovery thread probes every `block_wait_s` and reopens the gate when a probe succeeds. Mix downloads
+from other hosts and seam analysis are not held.
 
 State file: every change is written to `status_path` as JSON (state, since, blocks, last_probe), so
 `djdata status` and a plain `cat` over ssh show whether downloads are running or paused.
@@ -62,15 +64,20 @@ class Gate:
         while not self._open.is_set() and not self._stop.is_set():
             self._open.wait(1.0)
 
-    def blocked(self, reason: str):
-        """Close the gate and start probing. A second caller during the same block is a no-op."""
+    def blocked(self, reason: str) -> bool:
+        """True: YouTube is refusing everyone, the gate is closed, put the item back. False: the probe
+        passed, so the refusal is this item's own problem. A second caller during a block gets True."""
         if not self._open.is_set():
-            return
+            return True
+        if self._probe():
+            log.warning("refusal (%s) but the probe passed: treating it as this item's failure", reason)
+            return False
         self._open.clear()
         self.blocks += 1
         log.warning("YouTube block #%d (%s); downloads paused, probing every %.0f s", self.blocks, reason, self.block_wait_s)
         self._write("blocked", reason=reason[:200])
         threading.Thread(target=self._recover, name="gate-recover", daemon=True).start()
+        return True
 
     def _recover(self):
         while not self._stop.is_set():

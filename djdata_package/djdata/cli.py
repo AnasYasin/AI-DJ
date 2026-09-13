@@ -51,7 +51,9 @@ def cmd_status(args):
     from .state import State
 
     cfg = _cfg(args)
-    out = State(cfg.db_path).counts(cfg.run_tiers)
+    st = State(cfg.db_path)
+    out = st.counts(cfg.run_tiers)
+    out["failures"] = st.failure_summary(cfg.run_tiers)
     gate = cfg.dirs["logs"] / "gate.json"
     if gate.exists():
         out["downloads"] = json.loads(gate.read_text())

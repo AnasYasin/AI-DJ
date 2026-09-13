@@ -21,7 +21,7 @@ import threading
 import yt_dlp
 
 _COOKIE_LOCK = threading.Lock()
-BLOCK_MARKERS = ("HTTP Error 403", "HTTP Error 429", "Sign in to confirm")
+BLOCK_MARKERS = ("HTTP Error 403", "HTTP Error 429", "not a bot")   # not "Sign in to confirm": the age gate says "Sign in to confirm your age"
 
 
 class Blocked(RuntimeError):
