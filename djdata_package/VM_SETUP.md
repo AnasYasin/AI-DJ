@@ -1,6 +1,6 @@
 # VM setup instructions for Claude Code (djdata tier-1 run)
 
-You are setting up a fresh AWS instance (c6i.4xlarge, Ubuntu 22.04, 16 vCPU, 32 GB, gp3 300 GB) to
+You are setting up a fresh AWS instance (c6i.4xlarge, Ubuntu 24.04, 16 vCPU, 32 GB, gp3 200 GB) to
 run the `djdata` seam pipeline. Follow these steps in order. Do not skip a check. Do not start
 `djdata run` yourself; Anas starts it in tmux once you report that every check passed.
 Report every failure the moment it happens, with the exact error text, and stop at that step.
@@ -34,9 +34,26 @@ The repo is already cloned by Anas at `~/AI-DJ` (if not: `git clone -b main git@
 ```
 cd ~/AI-DJ
 pip install -e ./djdata_package
-pip install pytest
+pip install pytest "yt-dlp[default]"          # [default] adds the JS challenge solver (yt-dlp-ejs)
+curl -fsSL https://deno.land/install.sh | DENO_INSTALL=$HOME/.deno sh
+echo 'export PATH=$HOME/.deno/bin:$PATH' >> ~/.bashrc && source ~/.bashrc
+deno --version                    # must print a version; without it YouTube returns no formats
 djdata --help                     # must list the subcommands
 ```
+
+## 3b. YouTube cookies (required: datacenter IPs must be logged in)
+
+Anas exports a cookie file from an incognito YouTube login on his laptop and copies it to
+`~/AI-DJ/yt-cookies.txt` (`scp file aidj:~/AI-DJ/yt-cookies.txt`). Then:
+
+```
+chmod 600 ~/AI-DJ/yt-cookies.txt
+```
+
+and in `djdata_package/config.yaml` set `download.cookies_file: /home/ubuntu/AI-DJ/yt-cookies.txt`.
+Leave `youtube_player_client` at `default,web_embedded`; the default client fails with cookies
+("The page needs to be reloaded", yt-dlp issue 17389). Never log in to that Google account elsewhere
+while the run uses the file.
 
 Do NOT install the repository's requirements.txt. The pipeline needs only the package's own
 dependencies. Installing torch, essentia and tensorflow here wastes an hour and can fail.
@@ -80,7 +97,7 @@ The probe is the one check that can fail for reasons outside the code. Report it
 (`ok`, `failed`, `seconds`, `errors`) verbatim.
 
 - 18 or more ok: YouTube serves this machine. Continue.
-- Mostly `Sign in to confirm you're not a bot` or HTTP 403/429: YouTube blocks the datacenter IP.
+- `Sign in to confirm you're not a bot`, HTTP 403/429, or `The page needs to be reloaded`: the cookie step (3b) is missing or wrong.
   Stop and report. Do not retry in a loop, that makes the block worse. Anas decides between a
   cookies file (`download.cookies_file` in config.yaml) and fetching tracks from his laptop.
 - A handful of `Video unavailable`: normal, those tracks are gone from YouTube. Continue.

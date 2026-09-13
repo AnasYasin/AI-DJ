@@ -32,7 +32,8 @@ workers:
 download:
   mix_format: "bestaudio[protocol=http]/bestaudio"   # SoundCloud progressive mp3 first
   track_format: "bestaudio[ext=m4a]/bestaudio"
-  cookies_file: null           # path to a Netscape cookies file if YouTube asks for sign-in
+  cookies_file: null           # Netscape cookies file exported from an incognito YouTube login (see VM_SETUP.md)
+  youtube_player_client: "default,web_embedded"   # needed with cookies; requires deno + yt-dlp[default]
   min_track_s: 120
   max_track_s: 1200
 
