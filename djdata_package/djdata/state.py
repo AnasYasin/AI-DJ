@@ -135,6 +135,22 @@ class State:
         c.execute("UPDATE tracks SET status='pending' WHERE status='downloading'")
         c.execute("UPDATE seams SET status='ready' WHERE status='analysing'")
 
+    def retry_tracks(self, match: str) -> dict:
+        """Failed tracks whose error contains `match` go back to pending, and the seams they failed
+        go back to ready (window cut) or pending, unless the seam's other track is failed too."""
+        c = self._conn()
+        like = f"%{match}%"
+        c.execute("BEGIN IMMEDIATE")
+        n_tracks = c.execute("UPDATE tracks SET status='pending', error=NULL, updated=? WHERE status='failed' AND error LIKE ?",
+                             (time.time(), like)).rowcount
+        n_seams = c.execute(
+            "UPDATE seams SET status=CASE WHEN window_path IS NULL THEN 'pending' ELSE 'ready' END, error=NULL, updated=?"
+            " WHERE status='failed' AND error LIKE ? AND NOT EXISTS ("
+            "  SELECT 1 FROM tracks t WHERE t.track_id IN (seams.a, seams.b) AND t.status='failed')",
+            (time.time(), "track: " + like)).rowcount
+        c.execute("COMMIT")
+        return {"tracks": n_tracks, "seams": n_seams}
+
     # ── queries ─────────────────────────────────────────────────────────────────
     def counts(self, tiers: list | None = None) -> dict:
         c = self._conn()

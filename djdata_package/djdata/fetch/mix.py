@@ -11,33 +11,17 @@ import shutil
 import subprocess
 import tempfile
 
-import yt_dlp
-
 from ..state import State
+from . import yt
 
 log = logging.getLogger("djdata.fetch.mix")
 
 
-def _ydl_opts(cfg, outtmpl: str) -> dict:
-    opts = {"quiet": True, "no_warnings": True, "noprogress": True,
-            "format": cfg.download["mix_format"], "outtmpl": outtmpl, "retries": 3}
-    if cfg.download.get("cookies_file"):
-        opts["cookiefile"] = cfg.download["cookies_file"]
-    if cfg.download.get("youtube_player_client"):
-        # with cookies, YouTube's default tv client returns UNPLAYABLE (yt-dlp issue 17389); web_embedded works
-        opts["extractor_args"] = {"youtube": {"player_client": cfg.download["youtube_player_client"].split(",")}}
-    return opts
-
-
 def download_full(cfg, url: str, dest_stem: Path) -> Path:
     with tempfile.TemporaryDirectory(dir=dest_stem.parent) as td:
-        with yt_dlp.YoutubeDL(_ydl_opts(cfg, str(Path(td) / "mix.%(ext)s"))) as ydl:
-            ydl.extract_info(url, download=True)
-        files = [f for f in Path(td).iterdir() if f.is_file()]
-        if not files:
-            raise RuntimeError(f"yt-dlp produced no file for {url}")
-        dest = dest_stem.with_suffix(files[0].suffix)
-        shutil.move(str(files[0]), dest)
+        got = yt.download(cfg, url, cfg.download["mix_format"], Path(td))
+        dest = dest_stem.with_suffix(got.suffix)
+        shutil.move(str(got), dest)
     return dest
 
 
