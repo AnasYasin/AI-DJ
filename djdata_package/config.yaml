@@ -36,6 +36,10 @@ download:
   youtube_player_client: "default,web_embedded"   # verified from the VM 2026-09-13; the default client alone fails with cookies (issue 17389); needs deno + yt-dlp[default]
   min_interval_s: 20           # one track download start per 20 s across workers (180/h; yt-dlp wiki: guest limit ~300/h)
   block_wait_s: 900            # after a YouTube 403/429 block: pause all track downloads, probe every 15 min
+  rotate_ip_on_block: false    # EC2 only: take a new Elastic IP when blocked. Needs an instance role with
+                               # ec2:DescribeAddresses, AllocateAddress, AssociateAddress, ReleaseAddress.
+                               # A blocked address was measured not to recover on its own (85 min, no lift).
+  max_rotations: 25            # cap for the whole run, so a non-block fault cannot burn addresses all night
   block_probe_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"   # the probe video; any long-lived public video
   min_track_s: 120
   max_track_s: 1200
