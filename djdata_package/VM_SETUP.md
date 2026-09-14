@@ -171,8 +171,11 @@ same account kept working from a home connection. The runner now handles this:
   i-023e6cd5518feff75 --query 'Reservations[].Instances[].PublicIpAddress' --output text`.
   Needs `pip install boto3` and an instance role. Role `aidj-eip` is attached to the VM and allows
   only DescribeAddresses, AllocateAddress, AssociateAddress and ReleaseAddress.
-  `download.max_rotations` caps it for the whole run (25), so a fault that looks like a block cannot
-  burn addresses all night. `logs/gate.json` carries the `rotations` count.
+  A dead cookie session looks identical to a blocked address from the probe, so after
+  `download.max_failed_rotations` new addresses in a row fail to help (3), rotation switches off for
+  the rest of the run and the gate only waits. There is no total cap: one would only stall a run whose
+  rotations are working, and the region's Elastic IP quota (5) bounds what can be held at once.
+  `logs/gate.json` carries `rotations`, `failed_rotations` and `rotating`.
 - Reading a failure. `djdata status` prints `failures`: `tracks_failed` (permanent, e.g. "Video
   unavailable", "duration outside", "Requested format is not available" for one video),
   `tracks_waiting` (pending with an error: refused by YouTube while everyone was refused, retried
