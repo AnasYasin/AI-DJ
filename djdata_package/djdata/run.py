@@ -165,7 +165,8 @@ def run(cfg: Config) -> dict:
     gate = Gate(cfg.download["min_interval_s"], cfg.download["block_wait_s"],
                 lambda: probe(cfg, cfg.dirs["tracks"]), stop, status_path=cfg.dirs["logs"] / "gate.json",
                 rotate=rotate_ip if rotating else None,
-                max_rotations=cfg.download.get("max_rotations", 0) if rotating else 0)
+                max_rotations=cfg.download.get("max_rotations", 0) if rotating else 0,
+                max_failed_rotations=cfg.download.get("max_failed_rotations", 3))
     threads = [threading.Thread(target=_mix_worker, args=(cfg, state, stop, gate), name=f"mix-{i}", daemon=True)
                for i in range(cfg.workers["mix"])]
     threads += [threading.Thread(target=_track_worker, args=(cfg, state, stop, gate), name=f"track-{i}", daemon=True)
@@ -189,5 +190,6 @@ def run(cfg: Config) -> dict:
     counts = state.counts(tiers)
     counts["youtube_blocks"] = gate.blocks
     counts["ip_rotations"] = gate.rotations
+    counts["failed_rotations"] = gate.failed_rotations
     log.info("run end: %s", counts)
     return counts
