@@ -39,7 +39,10 @@ download:
   rotate_ip_on_block: false    # EC2 only: take a new Elastic IP when blocked. Needs an instance role with
                                # ec2:DescribeAddresses, AllocateAddress, AssociateAddress, ReleaseAddress.
                                # A blocked address was measured not to recover on its own (85 min, no lift).
-  max_rotations: 25            # cap for the whole run, so a non-block fault cannot burn addresses all night
+  max_rotations: 25            # total cap for the run. Tier 1 needs about 17 at the measured ~100 tracks per address
+  max_failed_rotations: 3      # if this many new addresses in a row do not help, the address is not the problem
+                               # (a dead cookie session looks the same from here): rotation switches off and the
+                               # gate only waits, so a stall cannot spend addresses all night
   block_probe_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"   # the probe video; any long-lived public video
   min_track_s: 120
   max_track_s: 1200

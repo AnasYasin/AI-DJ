@@ -4,8 +4,10 @@ pace(): at most one download start every `min_interval_s` across all workers. Th
 guest session at about 300 videos per hour; 20 s spacing is 180 per hour, with margin.
 
 rotate: when configured, a closed gate asks for a new public IP before it waits, because a blocked
-address was measured not to recover on its own. `max_rotations` caps it for the whole run so a fault
-that looks like a block cannot burn through addresses all night.
+address was measured not to recover on its own. Two guards keep that from running away. If
+`max_failed_rotations` new addresses in a row do not restore service, the cause is not the address
+(a dead cookie session looks identical from here), so rotation switches off for the rest of the run
+and the gate only waits. `max_rotations` is the total cap.
 
 blocked(): the worker that hit a YouTube refusal calls this. The gate probes at once: if the probe
 passes, the refusal belongs to that one item (blocked() returns False and the caller fails it); if the
@@ -29,11 +31,13 @@ log = logging.getLogger("djdata.gate")
 class Gate:
     def __init__(self, min_interval_s: float, block_wait_s: float, probe, stop: threading.Event,
                  clock=time.monotonic, sleep=time.sleep, status_path: Path | None = None,
-                 rotate=None, max_rotations: int = 0, settle_s: float = 5.0):
+                 rotate=None, max_rotations: int = 0, settle_s: float = 5.0, max_failed_rotations: int = 3):
         self.status_path = Path(status_path) if status_path else None
         self._rotate = rotate
         self.max_rotations = max_rotations
         self.settle_s = settle_s
+        self.max_failed_rotations = max_failed_rotations
+        self.failed_rotations = 0
         self.rotations = 0
         self.min_interval_s = min_interval_s
         self.block_wait_s = block_wait_s
@@ -53,7 +57,8 @@ class Gate:
             return
         now = time.time()
         row = {"state": state, "since": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(now)), "since_epoch": now,
-               "blocks": self.blocks, "rotations": self.rotations, **extra}
+               "blocks": self.blocks, "rotations": self.rotations, "rotating": bool(self._rotate),
+               "failed_rotations": self.failed_rotations, **extra}
         tmp = self.status_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(row, indent=1))
         tmp.replace(self.status_path)
@@ -89,26 +94,43 @@ class Gate:
         return True
 
     def _recover(self):
+        rotated_this_pass = False
         while not self._stop.is_set():
-            if self._rotate and self.rotations < self.max_rotations:
+            if self._may_rotate():
                 self.rotations += 1
                 try:
                     ip = self._rotate()
+                    rotated_this_pass = True
                     self._write("blocked", reason="rotated, probing", new_ip=ip)
                     if self._stop.wait(self.settle_s):     # let the new address settle before the probe
                         return
                 except Exception as e:
+                    rotated_this_pass = False
                     log.error("IP rotation failed (%s); waiting %.0f s instead", e, self.block_wait_s)
                     if self._stop.wait(self.block_wait_s):
                         return
             elif self._stop.wait(self.block_wait_s):
                 return
             if self._probe():
-                log.warning("YouTube block lifted; downloads resume")
+                log.warning("YouTube block lifted after %d rotation(s); downloads resume", self.rotations)
+                self.failed_rotations = 0
                 self._write("open", reason="probe passed")   # file first, so a reader never sees open workers with a 'blocked' file
                 self._open.set()
                 return
-            if self._rotate and self.rotations >= self.max_rotations:
+            if rotated_this_pass:
+                self.failed_rotations += 1
+                rotated_this_pass = False
+                if self.failed_rotations >= self.max_failed_rotations:
+                    # a dead cookie session is indistinguishable from a blocked address here, and more
+                    # addresses will not fix it. Stop spending them and let a human look.
+                    log.error("%d new addresses in a row did not help; rotation OFF for this run. "
+                              "Most likely the cookie session is dead: replace yt-cookies.txt.",
+                              self.failed_rotations)
+                    self._rotate = None
+            elif self._rotate and self.rotations >= self.max_rotations:
                 log.error("rotation cap reached (%d); waiting only", self.max_rotations)
             log.warning("YouTube still blocked; next probe in %.0f s", self.block_wait_s)
             self._write("blocked", reason="probe failed", last_probe=time.strftime("%H:%M:%S UTC", time.gmtime()))
+
+    def _may_rotate(self) -> bool:
+        return bool(self._rotate) and self.rotations < self.max_rotations

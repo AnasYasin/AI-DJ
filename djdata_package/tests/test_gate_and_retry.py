@@ -114,6 +114,39 @@ def test_gate_stops_rotating_at_the_cap():
     assert len(rotated) == 2         # capped: the gate keeps probing but takes no more addresses
 
 
+def test_gate_stops_rotating_when_new_addresses_do_not_help(tmp_path):
+    """A dead cookie session looks exactly like a blocked address, so rotation must give up quickly
+    instead of spending every address in the account overnight."""
+    rotated = []
+    stop = threading.Event()
+    status = tmp_path / "gate.json"
+    g = Gate(0, 0.01, lambda: False, stop, status_path=status,
+             rotate=lambda: rotated.append(len(rotated)) or f"1.2.3.{len(rotated)}",
+             max_rotations=25, settle_s=0.001, max_failed_rotations=3)
+    g.blocked("HTTP Error 403")
+    for _ in range(400):
+        if g.failed_rotations >= 3:
+            break
+        time.sleep(0.01)
+    time.sleep(0.15)
+    stop.set()
+    assert len(rotated) == 3, f"gave up after {len(rotated)} addresses, want 3"
+    row = json.loads(status.read_text())
+    assert row["rotating"] is False and row["failed_rotations"] == 3
+
+
+def test_gate_forgets_earlier_failures_once_a_rotation_works():
+    """One unlucky address must not count towards the give-up limit forever."""
+    answers = [False, False, True]        # report-time probe, after rotation 1, after rotation 2
+    stop = threading.Event()
+    g = Gate(0, 0.01, lambda: answers.pop(0), stop, rotate=lambda: "1.2.3.4",
+             max_rotations=25, settle_s=0.001, max_failed_rotations=3)
+    g.blocked("HTTP Error 403")
+    g.wait_open()
+    assert g.is_open() and g.rotations == 2 and g.failed_rotations == 0
+    stop.set()
+
+
 def test_retry_tracks_requeues_tracks_and_their_seams(tmp_path):
     st = State(tmp_path / "s.sqlite")
     st.add_mix("m1", "2019 - DJ X @ Club", "https://soundcloud.com/x/y", "soundcloud", 2019, ["Techno"])

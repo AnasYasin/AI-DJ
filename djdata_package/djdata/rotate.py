@@ -55,7 +55,12 @@ def rotate() -> str:
         ec2.release_address(AllocationId=new["AllocationId"])
         raise
     if old_allocation:
-        ec2.release_address(AllocationId=old_allocation)
+        try:
+            ec2.release_address(AllocationId=old_allocation)
+        except Exception as e:
+            # the new address is already live, so the rotation worked; a stranded address is billed
+            # at a few cents a day and counts against the region's quota, so it is logged loudly.
+            log.error("could not release the old Elastic IP %s: %s -- release it by hand", old_allocation, e)
 
     for _ in range(30):
         time.sleep(1.0)
