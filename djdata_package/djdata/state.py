@@ -11,6 +11,7 @@ the move so nothing looks for the file again.
 """
 
 import json
+import logging
 from pathlib import Path
 import re
 import sqlite3
@@ -31,6 +32,8 @@ CREATE TABLE IF NOT EXISTS seams (
 CREATE INDEX IF NOT EXISTS seams_mix ON seams(mix_id);
 CREATE INDEX IF NOT EXISTS seams_status ON seams(status);
 """
+
+log = logging.getLogger("djdata.state")
 
 
 class State:
@@ -126,6 +129,17 @@ class State:
             "UPDATE seams SET status=?, window_path=COALESCE(?,window_path), error=?, updated=? WHERE seam_id=?",
             (status, window_path, error, time.time(), seam_id))
 
+
+    def _requeue_mixes_owing_windows(self):
+        """A seam can be pending with no window when it was failed at the moment its mix was cut: the
+        mix worker only cuts windows for pending seams, and the mix audio is deleted straight after.
+        Nothing would ever make that window, so the run spins on a seam it cannot finish (2026-09-14,
+        4 seams, 15 idle minutes before it was noticed). Send the mix back for another pass."""
+        return self._conn().execute(
+            "UPDATE mixes SET status='pending', updated=? WHERE status='windows_ready' AND EXISTS ("
+            " SELECT 1 FROM seams s WHERE s.mix_id=mixes.mix_id AND s.status='pending' AND s.window_path IS NULL)",
+            (time.time(),)).rowcount
+
     def seams_of_mix(self, mix_id) -> list[dict]:
         return [dict(r) for r in self._conn().execute("SELECT * FROM seams WHERE mix_id=?", (mix_id,))]
 
@@ -135,6 +149,9 @@ class State:
         c.execute("UPDATE mixes SET status='pending' WHERE status='downloading'")
         c.execute("UPDATE tracks SET status='pending' WHERE status='downloading'")
         c.execute("UPDATE seams SET status='ready' WHERE status='analysing'")
+        n = self._requeue_mixes_owing_windows()
+        if n:
+            log.warning("%d mix(es) re-queued: they owe a window to a seam that was re-queued after they were cut", n)
 
     def retry_tracks(self, match: str) -> dict:
         """Failed tracks whose error contains `match` go back to pending, and the seams they failed
@@ -150,7 +167,8 @@ class State:
             "  SELECT 1 FROM tracks t WHERE t.track_id IN (seams.a, seams.b) AND t.status='failed')",
             (time.time(), "track: " + like)).rowcount
         c.execute("COMMIT")
-        return {"tracks": n_tracks, "seams": n_seams}
+        n_mixes = self._requeue_mixes_owing_windows()
+        return {"tracks": n_tracks, "seams": n_seams, "mixes": n_mixes}
 
     # ── queries ─────────────────────────────────────────────────────────────────
     def counts(self, tiers: list | None = None) -> dict:

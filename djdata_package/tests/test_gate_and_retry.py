@@ -152,7 +152,7 @@ def test_retry_tracks_requeues_tracks_and_their_seams(tmp_path):
     st.set_seam("m1_tb_tc", "failed", error="track: HTTP Error 403: Requested format is not available")
     st.set_seam("m1_tc_td", "failed", error="track: ERROR: [youtube] tc: Video unavailable")
 
-    assert st.retry_tracks("HTTP Error 403") == {"tracks": 1, "seams": 1}
+    assert st.retry_tracks("HTTP Error 403") == {"tracks": 1, "seams": 1, "mixes": 0}
     rows = {r["track_id"]: r["status"] for r in st._conn().execute("SELECT track_id, status FROM tracks")}
     assert rows == {"ta": "ready", "tb": "pending", "tc": "failed", "td": "ready"}
     seams = {r["seam_id"]: r["status"] for r in st._conn().execute("SELECT seam_id, status FROM seams")}
@@ -164,3 +164,24 @@ def test_retry_tracks_requeues_tracks_and_their_seams(tmp_path):
     assert summary["tracks_failed"] == {"ERROR: [youtube] Video unavailable": 1}
     assert summary["tracks_waiting"] == {}
     assert sum(summary["seams_failed"].values()) == 2 and len(summary["seams_failed"]) == 2   # a 403 text and a "Video unavailable" text
+
+
+def test_a_seam_requeued_after_its_mix_was_cut_sends_the_mix_back(tmp_path):
+    """The mix worker cuts windows only for pending seams and then deletes the mix audio, so a seam
+    re-queued afterwards owes a window nothing would ever make. The run span on exactly this."""
+    st = State(tmp_path / "s.sqlite")
+    st.add_mix("m1", "2019 - DJ X @ Club", "https://soundcloud.com/x/y", "soundcloud", 2019, ["Techno"])
+    for t in ("ta", "tb"):
+        st.add_track(t, f"{t} - t", f"https://youtu.be/{t}", 300)
+        st.set_track(t, "ready", path=f"{t}.m4a")
+    st.add_seam("m1_ta_tb", "m1", "ta", "tb", "tier1", "raveform", {"window": [0, 100]})
+    st.set_mix("m1", "windows_ready")           # cut and deleted while the seam was failed
+    st.set_seam("m1_ta_tb", "failed", error="track: HTTP Error 403")
+    assert st.retry_tracks("HTTP Error 403")["seams"] == 1
+    assert st.claim_mix(["tier1"], "w")["mix_id"] == "m1"     # the mix goes back for another pass
+
+    # and a restart repairs the same state left behind by an older version
+    st.set_mix("m1", "windows_ready")
+    assert st._requeue_mixes_owing_windows() == 1
+    st.release_stale()
+    assert st.claim_mix(["tier1"], "w")["mix_id"] == "m1"
