@@ -20,6 +20,7 @@ def test_is_block_reads_warnings_not_only_the_error():
            "'Connection to rr1---sn-cpunoxupq-jb3l.googlevideo.com timed out. (connect timeout=20.0)'). Giving up after 3 retries")
     assert is_block(cdn, []) == "googlevideo timeout"
     assert is_block("Connection to example.com timed out", []) is None
+    assert is_block("[download] Got error: HTTPSConnection(host='rr2---sn-4pcxgf5t-w0ws.googlevideo.com', port=443): Failed to establish a new connection: [Errno 101] Network is unreachable. Giving up after 3 retries", []) == "googlevideo timeout"
 
 
 def test_cookies_go_to_youtube_only():
