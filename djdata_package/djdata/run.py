@@ -7,6 +7,10 @@ soon as the first mix's first pair of tracks is on disk. Every claim is an atomi
 so a killed run resumes by restarting the command. Track downloads are paced through the Gate; a
 YouTube block (fetch.yt.Blocked) puts the item back to pending and closes the gate until a probe
 succeeds, so a block costs time, never a track.
+
+`workers.seams: 0` is download-only: no analysis pool, the mix worker does not wait for analysis,
+and the run ends when every window and track of the run tiers is on disk (or failed). Seams stay
+`ready` and a later run with seam workers analyses them.
 """
 
 from concurrent.futures import ProcessPoolExecutor
@@ -34,8 +38,9 @@ POLL_S = 3.0
 def _mix_worker(cfg: Config, state: State, stop: threading.Event, gate: Gate):
     name = threading.current_thread().name
     tiers = cfg.run_tiers
+    download_only = cfg.workers["seams"] == 0
     while not stop.is_set():
-        if state.pending_unanalysed_mixes(tiers) >= cfg.workers["max_pending_mixes"]:
+        if not download_only and state.pending_unanalysed_mixes(tiers) >= cfg.workers["max_pending_mixes"]:
             time.sleep(POLL_S)
             continue
         mix = state.claim_mix(tiers, name)
@@ -170,13 +175,16 @@ def run(cfg: Config) -> dict:
                for i in range(cfg.workers["mix"])]
     threads += [threading.Thread(target=_track_worker, args=(cfg, state, stop, gate), name=f"track-{i}", daemon=True)
                 for i in range(cfg.workers["tracks"])]
-    sched = threading.Thread(target=_seam_scheduler, args=(cfg, state, stop), name="seam-sched", daemon=True)
+    download_only = cfg.workers["seams"] == 0
+    sched = None if download_only else threading.Thread(target=_seam_scheduler, args=(cfg, state, stop), name="seam-sched", daemon=True)
     for t in threads:
         t.start()
-    sched.start()
+    if sched:
+        sched.start()
+    work_left = state.download_work_left if download_only else state.work_left
     last = 0.0
     try:
-        while state.work_left(tiers):
+        while work_left(tiers):
             time.sleep(POLL_S)
             if time.time() - last > 60:
                 log.info("progress %s", state.counts(tiers))
@@ -185,7 +193,8 @@ def run(cfg: Config) -> dict:
         log.warning("interrupted; claimed items are released on the next start")
     finally:
         stop.set()
-        sched.join(timeout=600)
+        if sched:
+            sched.join(timeout=600)
     counts = state.counts(tiers)
     counts["youtube_blocks"] = gate.blocks
     counts["ip_rotations"] = gate.rotations

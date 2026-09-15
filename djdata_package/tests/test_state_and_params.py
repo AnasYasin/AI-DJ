@@ -64,3 +64,24 @@ def test_crossing():
     assert crossing(x, -6, "down") == 3
     assert crossing(x[::-1], -6, "up") == 2
     assert crossing(x, -30, "down") is None
+
+
+def test_download_only_work_left_ends_when_windows_and_tracks_are_on_disk(tmp_path):
+    """workers.seams: 0 — the run must stop once every mix is cut and every needed track fetched,
+    even though the seams stay `ready` (nothing analyses them)."""
+    st = State(tmp_path / "s.sqlite")
+    st.add_mix("m1", "2019 - DJ X @ Club", "https://soundcloud.com/x/y", "soundcloud", 2019, ["Techno"])
+    st.add_track("ta", "A - a", "https://youtu.be/ta", 400)
+    st.add_track("tb", "B - b", "https://youtu.be/tb", 380)
+    st.add_track("tz", "Z - other tier", "https://youtu.be/tz", 380)
+    st.add_seam("m1_ta_tb", "m1", "ta", "tb", "tier1", "raveform", {"window": [0, 100]})
+    st.add_seam("m1_tb_tz", "m1", "tb", "tz", "tier2", "raveform", {"window": [100, 200]})
+    assert st.download_work_left(["tier1"])                 # mix not fetched
+    st.set_mix("m1", "windows_ready")
+    st.set_seam("m1_ta_tb", "ready", window_path="w.mp3")
+    assert st.download_work_left(["tier1"])                 # tracks not fetched
+    st.set_track("ta", "ready", path="ta.m4a")
+    st.set_track("tb", "failed", error="Video unavailable")
+    assert not st.download_work_left(["tier1"])             # tz belongs to tier2 only
+    assert st.work_left(["tier1"])                          # the analysing run would still have the seam to do
+    assert st.download_work_left(["tier1", "tier2"])        # tier2 still needs tz
