@@ -58,7 +58,7 @@ def is_block(error: str, warnings: list[str]) -> str | None:
         for m in BLOCK_MARKERS:
             if m in text:
                 return m
-        if "googlevideo" in text and "timed out" in text:
+        if "googlevideo" in text and ("timed out" in text or "Network is unreachable" in text or "Failed to establish" in text):
             return CDN_TIMEOUT_MARKER
     return None
 
@@ -74,7 +74,10 @@ def download(cfg, url: str, fmt: str, workdir: Path, simulate: bool = False) -> 
             "outtmpl": str(workdir / "dl.%(ext)s"), "simulate": simulate,
             # 2026-09-15: a download on a dead socket sat for hours holding the cookie lock, and the probe
             # waiting for that lock never ran; the gate stayed "rotated, probing" with no result.
-            "socket_timeout": 30}
+            "socket_timeout": 30,
+            # 2026-09-15: googlevideo hosts resolve to IPv6 too and the VM has no IPv6 route ("[Errno 101]
+            # Network is unreachable"); force IPv4 like yt-dlp -4.
+            "source_address": "0.0.0.0"}
     with_cookies = uses_cookies(cfg, url)
     if with_cookies:
         opts["cookiefile"] = cfg.download["cookies_file"]
