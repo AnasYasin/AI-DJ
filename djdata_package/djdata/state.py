@@ -220,6 +220,20 @@ class State:
         seams = c.execute("SELECT COUNT(*) FROM seams WHERE tier IN (%s) AND status NOT IN ('done','failed')" % q, tiers).fetchone()[0]
         return seams > 0
 
+    def download_work_left(self, tiers: list) -> bool:
+        """Download-only runs: a mix still to fetch, or a track still to fetch for a seam of the run tiers."""
+        c = self._conn()
+        q = ",".join("?" * len(tiers))
+        mixes = c.execute(
+            "SELECT COUNT(*) FROM mixes m WHERE m.status IN ('pending','downloading') AND EXISTS ("
+            " SELECT 1 FROM seams s WHERE s.mix_id=m.mix_id AND s.tier IN (%s) AND s.status NOT IN ('done','failed'))" % q,
+            tiers).fetchone()[0]
+        tracks = c.execute(
+            "SELECT COUNT(*) FROM tracks t WHERE t.status IN ('pending','downloading') AND EXISTS ("
+            " SELECT 1 FROM seams s WHERE (s.a=t.track_id OR s.b=t.track_id) AND s.tier IN (%s) AND s.status NOT IN ('done','failed'))" % q,
+            tiers).fetchone()[0]
+        return mixes + tracks > 0
+
     def archivable(self, tiers: list) -> dict:
         c = self._conn()
         q = ",".join("?" * len(tiers))
