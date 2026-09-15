@@ -71,7 +71,10 @@ def download(cfg, url: str, fmt: str, workdir: Path, simulate: bool = False) -> 
     """Fetch `url` into `workdir`. Returns the file, or None when simulating. Raises Blocked on a block."""
     warnings = _Warnings()
     opts = {"quiet": True, "noprogress": True, "logger": warnings, "format": fmt, "retries": 3,
-            "outtmpl": str(workdir / "dl.%(ext)s"), "simulate": simulate}
+            "outtmpl": str(workdir / "dl.%(ext)s"), "simulate": simulate,
+            # 2026-09-15: a download on a dead socket sat for hours holding the cookie lock, and the probe
+            # waiting for that lock never ran; the gate stayed "rotated, probing" with no result.
+            "socket_timeout": 30}
     with_cookies = uses_cookies(cfg, url)
     if with_cookies:
         opts["cookiefile"] = cfg.download["cookies_file"]
