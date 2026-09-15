@@ -15,6 +15,11 @@ def test_is_block_reads_warnings_not_only_the_error():
     assert is_block("Sign in to confirm your age. This video may be inappropriate for some users.", []) is None
     assert is_block("Requested format is not available", ["some other warning"]) is None
     assert all(m in BLOCK_MARKERS for m in ("HTTP Error 403", "HTTP Error 429"))
+    # 2026-09-15: a finished-with address times out on every media server while pages still load
+    cdn = ("[download] Got error: (<HTTPSConnection(host='rr1---sn-cpunoxupq-jb3l.googlevideo.com', port=443)>, "
+           "'Connection to rr1---sn-cpunoxupq-jb3l.googlevideo.com timed out. (connect timeout=20.0)'). Giving up after 3 retries")
+    assert is_block(cdn, []) == "googlevideo timeout"
+    assert is_block("Connection to example.com timed out", []) is None
 
 
 def test_cookies_go_to_youtube_only():

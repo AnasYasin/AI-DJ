@@ -15,6 +15,7 @@ as "pause and retry", never as "this track is bad".
 """
 
 import contextlib
+import tempfile
 from pathlib import Path
 import threading
 
@@ -22,6 +23,10 @@ import yt_dlp
 
 _COOKIE_LOCK = threading.Lock()
 BLOCK_MARKERS = ("HTTP Error 403", "HTTP Error 429", "not a bot")   # not "Sign in to confirm": the age gate says "Sign in to confirm your age"
+# 2026-09-14/15: an address YouTube had finished with kept answering page requests but every media
+# download timed out connecting to googlevideo.com (170 s each, then "Giving up after 3 retries");
+# zero tracks completed on it for a day while the gate stayed open. That is a block of the address.
+CDN_TIMEOUT_MARKER = "googlevideo timeout"
 
 
 class Blocked(RuntimeError):
@@ -53,6 +58,8 @@ def is_block(error: str, warnings: list[str]) -> str | None:
         for m in BLOCK_MARKERS:
             if m in text:
                 return m
+        if "googlevideo" in text and "timed out" in text:
+            return CDN_TIMEOUT_MARKER
     return None
 
 
@@ -88,9 +95,12 @@ def download(cfg, url: str, fmt: str, workdir: Path, simulate: bool = False) -> 
 
 
 def probe(cfg, workdir: Path) -> bool:
-    """One simulated request for the configured probe video. True when YouTube serves formats."""
+    """One real download of the configured probe video (a few MB, deleted at once). True when YouTube
+    serves it. A simulated request is not enough: it never touches the media servers, and a blocked
+    address fails exactly there (googlevideo connect timeouts) while the page requests still pass."""
     try:
-        download(cfg, cfg.download["block_probe_url"], cfg.download["track_format"], workdir, simulate=True)
+        with tempfile.TemporaryDirectory(dir=workdir) as tmp:
+            download(cfg, cfg.download["block_probe_url"], cfg.download["track_format"], Path(tmp))
         return True
     except Blocked:
         return False
