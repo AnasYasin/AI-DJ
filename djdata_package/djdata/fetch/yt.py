@@ -58,7 +58,9 @@ def is_block(error: str, warnings: list[str]) -> str | None:
         for m in BLOCK_MARKERS:
             if m in text:
                 return m
-        if "googlevideo" in text and ("timed out" in text or "Network is unreachable" in text or "Failed to establish" in text):
+        # any failed connection to a media server: connect timeout, no route (IPv6-only node, no IPv6 on
+        # the VM: "Network is unreachable" / "Address family for hostname not supported"), refused
+        if "googlevideo" in text and "Got error" in text:
             return CDN_TIMEOUT_MARKER
     return None
 
