@@ -37,7 +37,7 @@ async def _fetch_all(state: State, pending: list[dict]) -> int:
     try:
         for mix in pending:
             page = await browser.get(mix["page_url"])
-            await asyncio.sleep(3)
+            await asyncio.sleep(12)   # 2026-09-15: 3-4 s returns the challenge page; the mix page needs ~10 s
             html = await page.get_content()
             found = links_in(html)
             if found:
