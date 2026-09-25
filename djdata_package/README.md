@@ -13,7 +13,52 @@ sudo apt install ffmpeg            # cutting windows, durations
 sudo apt install xvfb              # only for the two browser stages (1001tracklists pages)
 ```
 
-## Run (Raveform source)
+## The profiling pipeline (2026-09-25)
+
+One stage per subcommand, in order, each resumable, each writing one table under `root/out/`. The
+same commands run every corpus: the DJ corpus (`config_djs.yaml`), Fred (`config_fred.yaml`) and
+Raveform (`config.yaml`, where the shipped alignment stands in for locate and the windows the
+manifest cut stand in for the cut).
+
+```
+djdata locate       --config config_djs.yaml --workers 16   every listed record found in its mix   -> out/plays.csv
+djdata pairs        --config config_djs.yaml                which record follows which, windows     -> out/seams.csv
+djdata cut          --config config_djs.yaml --workers 16   windows stream copied and audited       -> out/cuts.csv
+djdata measure      --config config_djs.yaml --workers 16   bands, bass, presence, loop per seam    -> out/measures.csv
+djdata tempo        --config config_djs.yaml --workers 16   BPM per record from its own audio       -> out/tempos.csv
+djdata label        --config config_djs.yaml                the nine transition types, in bars      -> out/labels.csv
+djdata export-seams --config config_djs.yaml                one flat table joining all of the above -> out/seams_index.csv
+```
+
+The tables are the dataset. `state.sqlite` is a resume log nobody reads. Every number sits next to
+the control floor that judged it. Times are seconds into the mix in `plays.csv` and seconds into
+the window everywhere else. The rules, thresholds and what was measured on them are in the module
+docstrings under `djdata/seam/` and in `DATASET_STATE.md`.
+
+Tests: `cd djdata_package && pytest tests -q`. They build synthetic records and mixes with a known
+answer (`tests/synth.py`), no audio files and no network. `make ci` at the repo root runs them.
+
+Heard 2026-09-25: the ear-test clips of the third development pass were right by Anas's ear, so the
+locate, pairing, cut and labels hold on real DJ audio. `DATASET_STATE.md` has the numbers.
+
+### Adding a corpus or a DJ
+
+A corpus is a folder with `mixes_tmp/<mix_id>.<ext>`, `tracks/<track_id>.<ext>` and the tracklist
+CSV named in its config (`tracklists_csv`, one row per listed record in play order). Audio is found by
+id on disk, never by a stored path. A new DJ is more rows in the tracklist and more audio; the stages
+pick up what is on disk and skip what their table already holds. A Raveform-like source that ships an
+alignment sets `source: raveform` and the alignment stands in for locate. Adding a source is one file
+in `djdata/sources/` that answers two questions: which mixes are there, and where is each one's audio.
+
+### Reading the tables
+
+`plays.csv` one row per record play (and per control record, `is_control` 1). `seams.csv` one row per
+consecutive pair, usable or not, with the reason. `cuts.csv` the window file and its audit.
+`measures.csv` the seam numbers, each beside its floor. `tempos.csv`, `labels.csv`. `seams_index.csv`
+joins seams, cuts, measures and labels on `seam_id`. Times: seconds into the mix in `plays.csv`,
+seconds into the window elsewhere. Filter on `measured == 1` and the separations before using a number.
+
+## Run (Raveform source, the older fetch path)
 
 ```
 djdata manifest   --config config.yaml   # Raveform files → state db (seams, mixes, tracks, tiers)

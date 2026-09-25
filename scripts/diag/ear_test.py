@@ -19,7 +19,7 @@ from src.audio.audio_mixer import SR, render_mix  # noqa: E402
 from src.data.audio_segmenter import segment  # noqa: E402
 from src.models.predict_model import plan_mix  # noqa: E402
 
-OUT = Path("data/external/ear_test_2026-09-07")
+OUT = Path("data/external/ear_test/mixer_2026-09-07")
 OUT.mkdir(parents=True, exist_ok=True)
 TRACKS = Path("data/external/test_tracks")
 GENRES = {"tech house": "tech_house", "techno": "techno", "drum and base": "drum_and_base"}

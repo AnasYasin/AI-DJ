@@ -105,7 +105,7 @@ The probe is the one check that can fail for reasons outside the code. Report it
 ## 7. One-mix smoke test
 
 ```
-sed 's#^root: data/djdata#root: data/djdata_smoke#' djdata_package/config.yaml > /tmp/smoke.yaml
+sed 's#^root: data/djdata/raveform#root: data/djdata_smoke#' djdata_package/config.yaml > /tmp/smoke.yaml
 djdata manifest --config /tmp/smoke.yaml
 python - <<'EOF'
 import sqlite3
@@ -131,7 +131,7 @@ Send Anas one message with: the probe summary line, the smoke-test counts and th
 ```
 tmux new -s djdata
 cd ~/AI-DJ && conda activate aidj
-djdata run --config djdata_package/config.yaml 2>&1 | tee -a data/djdata/logs/console.log
+djdata run --config djdata_package/config.yaml 2>&1 | tee -a data/djdata/raveform/logs/console.log
 ```
 
 Detach with Ctrl-b d. Progress prints every minute; `djdata status --config djdata_package/config.yaml`
@@ -154,9 +154,9 @@ same account kept working from a home connection. The runner now handles this:
 - A 403/429/"Sign in" failure puts the item back to pending and pauses all track downloads. A probe
   request runs every `download.block_wait_s`; downloads resume when it succeeds. Mix downloads
   from SoundCloud/Mixcloud and seam analysis keep running. The log line is `YouTube block #n`.
-- `data/djdata/logs/gate.json` holds the download state (`open` or `blocked`, since when, block count);
+- `data/djdata/raveform/logs/gate.json` holds the download state (`open` or `blocked`, since when, block count);
   `djdata status` prints it under `downloads`. From the laptop:
-  `ssh aidj cat AI-DJ/data/djdata/logs/gate.json`.
+  `ssh aidj cat AI-DJ/data/djdata/raveform/logs/gate.json`.
 - A gate that stays `blocked` almost always means the cookie session is dead (probe gets 403 while
   the account page redirects to sign-in). Export fresh cookies and replace the file; the next probe
   reopens the gate. Only when the account page returns 200 and the probe still fails is the IP the
@@ -200,3 +200,22 @@ same account kept working from a home connection. The runner now handles this:
   `djdata status` shows tracks turning ready. If the gate closes within the first minutes, the session
   is dead: export again (new incognito login, robots.txt only, export, close the window) and replace
   the file; the next probe reopens the gate.
+
+## YouTube from the VM, since 2026-09-24
+
+Two things must hold or every long upload returns HTTP 403 on the only format offered:
+
+1. The PO-token server must be running: `tmux new -d -s pot "cd ~/bgutil-ytdlp-pot-provider/server/node_modules && PATH=$HOME/.deno/bin:$PATH deno run --allow-env --allow-net --allow-ffi=. --allow-read=. ../src/main.ts"`.
+   The plugin `bgutil-ytdlp-pot-provider` is installed in the aidj env; `yt-dlp -v` must list `bgutil:http-2.0.0`.
+2. The address must not be one YouTube has tied to the SABR-only experiment, and an address is good for about
+   130 downloads before YouTube refuses it outright. The run's gate rotates the Elastic IP by itself on a block.
+   To test by hand: `yt-dlp -F` on a long upload; only format 18 showing means rotate (`djdata.rotate.rotate()`).
+
+## The address changes. Use `scripts/vm/vmssh`
+
+Every rotation gives the instance a new public IP and releases the old one, so a fixed `HostName` in
+`~/.ssh/config` goes stale mid-run. `scripts/vm/vmssh` looks the current IP up through `aws ec2 describe-instances`,
+rewrites the `aidj` entry, and then runs ssh with whatever arguments it was given. Use it in place of `ssh aidj`
+for anything that might run across a rotation. `scripts/vm/stop_run.sh`, `start_run.sh` and `watch_djrun3.sh` are
+the pieces used to run the fetch unattended (the watcher judges idle by the last "track done" event, not by
+the log file's age, which the run's progress line keeps fresh).

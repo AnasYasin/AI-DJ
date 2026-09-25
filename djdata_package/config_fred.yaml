@@ -1,0 +1,72 @@
+# djdata configuration for the Fred again.. corpus. His solo marathon segments stand in as mixes, each
+# linked into mixes_tmp under the 1001 mix id it was proved to be by play order (Vancouver, 2026-09-21).
+# The tour tracklists are the listed records and his track files are the DJ corpus's, through a link.
+# Only a proved segment goes into mixes_tmp; the rest of him stays out until it is proved.
+
+source: tracklists
+root: data/djdata/fred
+raveform_dir: data/raw/raveform/raveform
+tracklists_csv: data/interim/tracklist.csv
+
+run_tiers: [tracklists]
+tiers:
+  tracklists:
+    # DJs with plenty of mixes: only take the ones that carry start times, so the fingerprint search
+    # of each track inside the mix stays narrow and cheap.
+    djs_timed: [Sultanplusshepard, Amelielens, Solomun, Black Coffee]
+    # DJs with few mixes: take every tracklist. Where start times are missing the whole mix is searched,
+    # which costs more per track and is worth it for six mixes.
+    djs_all: [Djtennis, Fredagain.., Romanflugel]
+    min_tracks: 8
+    min_timed: 0.95
+
+usable:
+  min_match_rate: 0.5
+  max_gap_s: 60
+  min_year: 2014
+
+# tuned for the VM: 16 vCPU, 32 GB
+workers:
+  mix: 1                       # one mix at a time; its locate stage uses the pool below
+  tracks: 6                    # YouTube streams in parallel; the 5 s pace below is the real limit
+  seams: 0                     # download and locate only; the measurement run comes after
+  locate: 12                   # processes fingerprinting this mix's tracks against a slice of the mix
+  locate_untimed: 3            # a whole-mix fingerprint is heavy; twelve at once would fill memory
+  locate_timeout_s: 900        # budget per mix, so one stubborn set cannot hold up the run
+  max_pending_mixes: 4
+
+download:
+  # SoundCloud progressive mp3 first, then any audio-only stream, then a combined one.
+  # 2026-09-20: several of these YouTube uploads offer ONLY format 18, a combined 360p mp4. `bestaudio`
+  # means a stream with no video, so nothing matched and yt-dlp said "Requested format is not available".
+  # The trailing /best takes the combined stream and the audio is read out of it. Its audio is AAC 44.1k,
+  # a little under the Opus we normally get, and it is what these uploads have.
+  mix_format: "bestaudio[protocol=http]/bestaudio/best"
+  track_format: "bestaudio[ext=m4a]/bestaudio"
+  cookies_file: yt-cookies.txt
+  youtube_player_client: "default,web_embedded"
+  min_interval_s: 5            # the tier 2 run held this pace through 52 blocks and 52 rotations
+  block_wait_s: 900
+  rotate_ip_on_block: true
+  max_failed_rotations: 3
+  block_probe_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+  keep_mixes: true             # a bad locate must not cost the mix: keep it until the windows are trusted
+  strict_names: true           # 2026-09-24: a candidate must carry the track's title and version (fetch/names.py)
+  fetch_all_pending: true      # 2026-09-24: claim every pending track, whatever its seams say (Anas: start)
+  fetch_only: true             # 2026-09-20: get the audio only. No locate, no windows, until the window
+                               # method is settled. The kept mix means both run later with no re-download.
+  min_track_s: 60              # 2026-09-24: a club track can be short; the mix decides later (Anas)
+  max_track_s: 1200
+
+window:
+  pad_s: 20
+  alone_s: 45
+
+analysis:
+  bands: [[20, 180], [180, 3000], [3000, 14000]]
+  lam: 0.05
+  local_ms: 8
+  presence_db: -12
+
+logging:
+  level: INFO

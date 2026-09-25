@@ -1,7 +1,7 @@
 # djdata configuration. Every path is absolute or relative to the directory you run from.
 
 source: raveform              # raveform | tracklists (the 1001tracklists path for DJs Raveform lacks)
-root: data/djdata             # state db, downloaded audio, seam windows, outputs, logs
+root: data/djdata/raveform             # state db, downloaded audio, seam windows, outputs, logs
 raveform_dir: data/raw/raveform/raveform
 tracklists_csv: data/interim/tracklist.csv      # used when source is tracklists
 

@@ -27,3 +27,18 @@ djdata = "djdata.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["djdata*"]
+
+[tool.ruff]
+line-length = 99
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["djdata", "tests"]
+force-sort-within-sections = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

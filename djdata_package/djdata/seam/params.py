@@ -41,7 +41,11 @@ def relative_curves(fit: dict, bands: list, alone: dict, absent: dict, presence_
             ab = np.array(absent[tag], dtype=int)
             vals = x[ab] if len(ab) else np.array([])
             vals = vals[np.isfinite(vals)]
-            thr[(tag, b)] = max(float(np.percentile(vals, 90)) + 6.0, presence_db) if len(vals) >= 4 else presence_db
+            thr[(tag, b)] = (
+                max(float(np.percentile(vals, 90)) + 6.0, presence_db)
+                if len(vals) >= 4
+                else presence_db
+            )
     return {"rel": rel, "thr": thr}
 
 
@@ -73,18 +77,22 @@ def parameters(rel, thr, fit, beats_abs, k0, k1, bands: list, beat_s: float) -> 
     # Searched from 16 beats before Raveform's edge, which can sit after the real move.
     swap = None
     for k in range(max(k0 - 16, 1), hi):
-        if diff[k - 1] >= 0 > diff[k] and np.all(diff[k: min(k + 4, nb)] < 0):
+        if diff[k - 1] >= 0 > diff[k] and np.all(diff[k : min(k + 4, nb)] < 0):
             swap = k
             break
-    t = lambda k: None if k is None else float(beats_abs[k])
+
+    def t(k):
+        return None if k is None else float(beats_abs[k])
 
     def crossings(tag):
         d = "down" if tag == "A" else "up"
         out = {}
         for b in range(len(bands)):
             x = np.nan_to_num(rel[(tag, b)], nan=-60.0)[lo:hi]
-            out[b] = {"m6": t(lo + crossing(x, -6, d)) if crossing(x, -6, d) is not None else None,
-                      "m12": t(lo + crossing(x, -12, d)) if crossing(x, -12, d) is not None else None}
+            out[b] = {
+                "m6": t(lo + crossing(x, -6, d)) if crossing(x, -6, d) is not None else None,
+                "m12": t(lo + crossing(x, -12, d)) if crossing(x, -12, d) is not None else None,
+            }
         return out
 
     # fader proxy: loudest band per beat; volume cuts: dips ≥ 6 dB that recover within two beats
@@ -94,21 +102,46 @@ def parameters(rel, thr, fit, beats_abs, k0, k1, bands: list, beat_s: float) -> 
         f = np.nan_to_num(f, nan=-60.0)
         for k in range(max(lo, 1), min(hi, nb - 2)):
             if f[k] < f[k - 1] - 6 and (f[k + 1] > f[k] + 6 or f[k + 2] > f[k] + 6):
-                cuts.append({"record": tag, "t": t(k), "depth_db": round(float(f[k - 1] - f[k]), 1)})
+                cuts.append(
+                    {"record": tag, "t": t(k), "depth_db": round(float(f[k - 1] - f[k]), 1)}
+                )
     un = fit["unexplained"]
-    base = np.percentile(un[max(k0 - 40, 0): max(k0 - 8, 1)], 95) if k0 > 12 else np.percentile(un, 50)
-    spikes = [{"t": t(k), "unexplained": round(float(un[k]), 3)} for k in range(lo, hi) if un[k] > max(2 * base, 0.5)]
+    base = (
+        np.percentile(un[max(k0 - 40, 0) : max(k0 - 8, 1)], 95)
+        if k0 > 12
+        else np.percentile(un, 50)
+    )
+    spikes = [
+        {"t": t(k), "unexplained": round(float(un[k]), 3)}
+        for k in range(lo, hi)
+        if un[k] > max(2 * base, 0.5)
+    ]
     overlap_beats = (end - start) if (start is not None and end is not None) else None
     return {
-        "overlap_start_t": t(start), "overlap_end_t": t(end), "overlap_beats": overlap_beats,
+        "overlap_start_t": t(start),
+        "overlap_end_t": t(end),
+        "overlap_beats": overlap_beats,
         "overlap_bars": None if overlap_beats is None else round(overlap_beats / 4, 2),
-        "cut_vs_blend": None if overlap_beats is None else ("cut" if overlap_beats <= 4 else "blend"),
+        "cut_vs_blend": None
+        if overlap_beats is None
+        else ("cut" if overlap_beats <= 4 else "blend"),
         "bass_swap_t": t(swap),
-        "A_crossings": crossings("A"), "B_crossings": crossings("B"),
-        "volume_cuts": cuts, "unexplained_spikes": spikes,
+        "A_crossings": crossings("A"),
+        "B_crossings": crossings("B"),
+        "volume_cuts": cuts,
+        "unexplained_spikes": spikes,
         "unexplained_mean_overlap": round(float(un[k0:k1].mean()), 3) if k1 > k0 else None,
-        "ambiguous_frac_overlap": {f"{tg}_{b}": round(float(v[k0:k1].mean()), 3) for (tg, b), v in fit["ambiguous"].items()} if k1 > k0 else {},
-        "quiet_frac_overlap": {f"{tg}_{b}": round(float(v[k0:k1].mean()), 3) for (tg, b), v in fit["quiet"].items()} if k1 > k0 else {},
+        "ambiguous_frac_overlap": {
+            f"{tg}_{b}": round(float(v[k0:k1].mean()), 3)
+            for (tg, b), v in fit["ambiguous"].items()
+        }
+        if k1 > k0
+        else {},
+        "quiet_frac_overlap": {
+            f"{tg}_{b}": round(float(v[k0:k1].mean()), 3) for (tg, b), v in fit["quiet"].items()
+        }
+        if k1 > k0
+        else {},
         "thresholds_db": {f"{tg}_{b}": round(v, 1) for (tg, b), v in thr.items()},
         "presence": pres,
     }

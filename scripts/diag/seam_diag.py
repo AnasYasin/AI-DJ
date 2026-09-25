@@ -12,7 +12,7 @@ from scipy.signal import correlate  # noqa: E402
 from src.audio import audio_mixer as am  # noqa: E402
 from src.audio.audio_mixer import ONSET_HOP, SR, _envelope_periodicity, _to_mono  # noqa: E402
 
-plan = json.load(open("data/external/ear_test_2026-09-07/techno/plan.json"))["tracks"]
+plan = json.load(open("data/external/ear_test/mixer_2026-09-07/techno/plan.json"))["tracks"]
 
 
 def env_band(y, lo, hi):

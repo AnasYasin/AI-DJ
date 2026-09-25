@@ -1,0 +1,7 @@
+#!/bin/bash
+# ssh to aidj-data by its CURRENT public IP (the gate rotates it), updating ~/.ssh/config as it goes.
+ip=$(aws ec2 describe-instances --profile talhanonstatic --region us-east-1 --instance-ids i-023e6cd5518feff75 --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null)
+[ -n "$ip" ] && [ "$ip" != "None" ] || { echo "vmssh: no public ip (instance stopped?)" >&2; exit 2; }
+cur=$(awk '/^Host aidj$/{f=1} f&&/HostName/{print $2; exit}' ~/.ssh/config)
+[ "$cur" != "$ip" ] && sed -i "/^Host aidj$/,/^Host /s/HostName $cur/HostName $ip/" ~/.ssh/config && ssh-keygen -R "$ip" >/dev/null 2>&1
+exec ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 aidj "$@"

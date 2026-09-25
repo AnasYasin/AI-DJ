@@ -9,19 +9,44 @@ from djdata.state import State
 
 def test_is_block_reads_warnings_not_only_the_error():
     # 2026-09-13: the 403 came as a yt-dlp WARNING, the ERROR said "Requested format is not available"
-    assert is_block("Requested format is not available", ["Unable to download API page: HTTP Error 403: Forbidden"]) == "HTTP Error 403"
+    assert (
+        is_block(
+            "Requested format is not available",
+            ["Unable to download API page: HTTP Error 403: Forbidden"],
+        )
+        == "HTTP Error 403"
+    )
     assert is_block("Sign in to confirm you're not a bot", []) == "not a bot"
     assert is_block("Video unavailable", []) is None
-    assert is_block("Sign in to confirm your age. This video may be inappropriate for some users.", []) is None
+    assert (
+        is_block(
+            "Sign in to confirm your age. This video may be inappropriate for some users.", []
+        )
+        is None
+    )
     assert is_block("Requested format is not available", ["some other warning"]) is None
     assert all(m in BLOCK_MARKERS for m in ("HTTP Error 403", "HTTP Error 429"))
     # 2026-09-15: a finished-with address times out on every media server while pages still load
-    cdn = ("[download] Got error: (<HTTPSConnection(host='rr1---sn-cpunoxupq-jb3l.googlevideo.com', port=443)>, "
-           "'Connection to rr1---sn-cpunoxupq-jb3l.googlevideo.com timed out. (connect timeout=20.0)'). Giving up after 3 retries")
+    cdn = (
+        "[download] Got error: (<HTTPSConnection(host='rr1---sn-cpunoxupq-jb3l.googlevideo.com', port=443)>, "
+        "'Connection to rr1---sn-cpunoxupq-jb3l.googlevideo.com timed out. (connect timeout=20.0)'). Giving up after 3 retries"
+    )
     assert is_block(cdn, []) == "googlevideo timeout"
     assert is_block("Connection to example.com timed out", []) is None
-    assert is_block("[download] Got error: HTTPSConnection(host='rr2---sn-4pcxgf5t-w0ws.googlevideo.com', port=443): Failed to resolve 'rr2---sn-4pcxgf5t-w0ws.googlevideo.com' ([Errno -9] Address family for hostname not supported). Giving up after 3 retries", []) == "googlevideo timeout"
-    assert is_block("[download] Got error: HTTPSConnection(host='rr2---sn-4pcxgf5t-w0ws.googlevideo.com', port=443): Failed to establish a new connection: [Errno 101] Network is unreachable. Giving up after 3 retries", []) == "googlevideo timeout"
+    assert (
+        is_block(
+            "[download] Got error: HTTPSConnection(host='rr2---sn-4pcxgf5t-w0ws.googlevideo.com', port=443): Failed to resolve 'rr2---sn-4pcxgf5t-w0ws.googlevideo.com' ([Errno -9] Address family for hostname not supported). Giving up after 3 retries",
+            [],
+        )
+        == "googlevideo timeout"
+    )
+    assert (
+        is_block(
+            "[download] Got error: HTTPSConnection(host='rr2---sn-4pcxgf5t-w0ws.googlevideo.com', port=443): Failed to establish a new connection: [Errno 101] Network is unreachable. Giving up after 3 retries",
+            [],
+        )
+        == "googlevideo timeout"
+    )
 
 
 def test_cookies_go_to_youtube_only():
@@ -48,17 +73,21 @@ def test_gate_paces_downloads_across_workers():
         now[0] += s
 
     g = Gate(20, 900, lambda: True, threading.Event(), clock=clock, sleep=sleep)
-    g.pace()                       # first start: no wait
-    g.pace()                       # second: must wait the full interval
+    g.pace()  # first start: no wait
+    g.pace()  # second: must wait the full interval
     g.pace()
     assert slept == [20.0, 20.0]
-    now[0] += 50                   # idle for a while: the next start is immediate
+    now[0] += 50  # idle for a while: the next start is immediate
     g.pace()
     assert slept == [20.0, 20.0]
 
 
 def test_gate_closes_on_block_and_reopens_when_probe_passes(tmp_path):
-    answers = [False, False, True]   # probe at report time, first recovery probe, second recovery probe
+    answers = [
+        False,
+        False,
+        True,
+    ]  # probe at report time, first recovery probe, second recovery probe
     probed = []
 
     def probe():
@@ -71,7 +100,9 @@ def test_gate_closes_on_block_and_reopens_when_probe_passes(tmp_path):
     g = Gate(0, 0.01, probe, stop, status_path=status)
     assert g.is_open() and json.loads(status.read_text())["state"] == "open"
     assert g.blocked("HTTP Error 403") is True
-    assert g.blocked("HTTP Error 403") is True   # second report during the same block: no extra probe
+    assert (
+        g.blocked("HTTP Error 403") is True
+    )  # second report during the same block: no extra probe
     assert g.blocks == 1 and probed == [False]
     assert json.loads(status.read_text())["state"] == "blocked"
     g.wait_open()
@@ -83,13 +114,13 @@ def test_gate_closes_on_block_and_reopens_when_probe_passes(tmp_path):
 
 def test_gate_stays_open_when_only_one_item_is_refused():
     g = Gate(0, 0.01, lambda: True, threading.Event())
-    assert g.blocked("HTTP Error 403") is False    # probe passed: the item is the problem
+    assert g.blocked("HTTP Error 403") is False  # probe passed: the item is the problem
     assert g.is_open() and g.blocks == 0
 
 
 def test_gate_rotates_the_ip_instead_of_waiting_out_a_block(tmp_path):
     """A blocked address was measured not to recover, so a new one is taken before any wait."""
-    probes = [False, True]          # at report time, then after the first rotation
+    probes = [False, True]  # at report time, then after the first rotation
     rotated = []
 
     def rotate():
@@ -100,7 +131,7 @@ def test_gate_rotates_the_ip_instead_of_waiting_out_a_block(tmp_path):
     status = tmp_path / "gate.json"
     g = Gate(0, 300, lambda: probes.pop(0), stop, status_path=status, rotate=rotate, settle_s=0.01)
     assert g.blocked("HTTP Error 403") is True
-    g.wait_open()                    # would hang for 300 s if it waited instead of rotating
+    g.wait_open()  # would hang for 300 s if it waited instead of rotating
     assert g.is_open() and rotated == ["1.2.3.0"] and g.rotations == 1
     assert json.loads(status.read_text())["rotations"] == 1
     stop.set()
@@ -112,9 +143,16 @@ def test_gate_stops_rotating_when_new_addresses_do_not_help(tmp_path):
     rotated = []
     stop = threading.Event()
     status = tmp_path / "gate.json"
-    g = Gate(0, 0.01, lambda: False, stop, status_path=status,
-             rotate=lambda: rotated.append(len(rotated)) or f"1.2.3.{len(rotated)}",
-             settle_s=0.001, max_failed_rotations=3)
+    g = Gate(
+        0,
+        0.01,
+        lambda: False,
+        stop,
+        status_path=status,
+        rotate=lambda: rotated.append(len(rotated)) or f"1.2.3.{len(rotated)}",
+        settle_s=0.001,
+        max_failed_rotations=3,
+    )
     g.blocked("HTTP Error 403")
     for _ in range(400):
         if g.failed_rotations >= 3:
@@ -129,10 +167,17 @@ def test_gate_stops_rotating_when_new_addresses_do_not_help(tmp_path):
 
 def test_gate_forgets_earlier_failures_once_a_rotation_works():
     """One unlucky address must not count towards the give-up limit forever."""
-    answers = [False, False, True]        # report-time probe, after rotation 1, after rotation 2
+    answers = [False, False, True]  # report-time probe, after rotation 1, after rotation 2
     stop = threading.Event()
-    g = Gate(0, 0.01, lambda: answers.pop(0), stop, rotate=lambda: "1.2.3.4",
-             settle_s=0.001, max_failed_rotations=3)
+    g = Gate(
+        0,
+        0.01,
+        lambda: answers.pop(0),
+        stop,
+        rotate=lambda: "1.2.3.4",
+        settle_s=0.001,
+        max_failed_rotations=3,
+    )
     g.blocked("HTTP Error 403")
     g.wait_open()
     assert g.is_open() and g.rotations == 2 and g.failed_rotations == 0
@@ -141,7 +186,9 @@ def test_gate_forgets_earlier_failures_once_a_rotation_works():
 
 def test_retry_tracks_requeues_tracks_and_their_seams(tmp_path):
     st = State(tmp_path / "s.sqlite")
-    st.add_mix("m1", "2019 - DJ X @ Club", "https://soundcloud.com/x/y", "soundcloud", 2019, ["Techno"])
+    st.add_mix(
+        "m1", "2019 - DJ X @ Club", "https://soundcloud.com/x/y", "soundcloud", 2019, ["Techno"]
+    )
     for t in ("ta", "tb", "tc", "td"):
         st.add_track(t, f"{t} - title", f"https://youtu.be/{t}", 300)
     st.add_seam("m1_ta_tb", "m1", "ta", "tb", "tier1", "raveform", {"window": [0, 100]})
@@ -155,37 +202,50 @@ def test_retry_tracks_requeues_tracks_and_their_seams(tmp_path):
     st.set_track("td", "ready", path="td.m4a")
     st.set_track("tb", "failed", error="HTTP Error 403: Requested format is not available")
     st.set_track("tc", "failed", error="ERROR: [youtube] tc: Video unavailable")
-    st.set_seam("m1_ta_tb", "failed", error="track: HTTP Error 403: Requested format is not available")
-    st.set_seam("m1_tb_tc", "failed", error="track: HTTP Error 403: Requested format is not available")
+    st.set_seam(
+        "m1_ta_tb", "failed", error="track: HTTP Error 403: Requested format is not available"
+    )
+    st.set_seam(
+        "m1_tb_tc", "failed", error="track: HTTP Error 403: Requested format is not available"
+    )
     st.set_seam("m1_tc_td", "failed", error="track: ERROR: [youtube] tc: Video unavailable")
 
     assert st.retry_tracks("HTTP Error 403") == {"tracks": 1, "seams": 1, "mixes": 0}
-    rows = {r["track_id"]: r["status"] for r in st._conn().execute("SELECT track_id, status FROM tracks")}
+    rows = {
+        r["track_id"]: r["status"]
+        for r in st._conn().execute("SELECT track_id, status FROM tracks")
+    }
     assert rows == {"ta": "ready", "tb": "pending", "tc": "failed", "td": "ready"}
-    seams = {r["seam_id"]: r["status"] for r in st._conn().execute("SELECT seam_id, status FROM seams")}
-    assert seams["m1_ta_tb"] == "ready"          # window exists, both tracks retryable
-    assert seams["m1_tb_tc"] == "failed"         # tc is a real failure, so the seam stays failed
+    seams = {
+        r["seam_id"]: r["status"] for r in st._conn().execute("SELECT seam_id, status FROM seams")
+    }
+    assert seams["m1_ta_tb"] == "ready"  # window exists, both tracks retryable
+    assert seams["m1_tb_tc"] == "failed"  # tc is a real failure, so the seam stays failed
     assert seams["m1_tc_td"] == "failed"
     assert st.claim_track(["tier1"], "w")["track_id"] == "tb"
     summary = st.failure_summary(["tier1"])
     assert summary["tracks_failed"] == {"ERROR: [youtube] Video unavailable": 1}
     assert summary["tracks_waiting"] == {}
-    assert sum(summary["seams_failed"].values()) == 2 and len(summary["seams_failed"]) == 2   # a 403 text and a "Video unavailable" text
+    assert (
+        sum(summary["seams_failed"].values()) == 2 and len(summary["seams_failed"]) == 2
+    )  # a 403 text and a "Video unavailable" text
 
 
 def test_a_seam_requeued_after_its_mix_was_cut_sends_the_mix_back(tmp_path):
     """The mix worker cuts windows only for pending seams and then deletes the mix audio, so a seam
     re-queued afterwards owes a window nothing would ever make. The run span on exactly this."""
     st = State(tmp_path / "s.sqlite")
-    st.add_mix("m1", "2019 - DJ X @ Club", "https://soundcloud.com/x/y", "soundcloud", 2019, ["Techno"])
+    st.add_mix(
+        "m1", "2019 - DJ X @ Club", "https://soundcloud.com/x/y", "soundcloud", 2019, ["Techno"]
+    )
     for t in ("ta", "tb"):
         st.add_track(t, f"{t} - t", f"https://youtu.be/{t}", 300)
         st.set_track(t, "ready", path=f"{t}.m4a")
     st.add_seam("m1_ta_tb", "m1", "ta", "tb", "tier1", "raveform", {"window": [0, 100]})
-    st.set_mix("m1", "windows_ready")           # cut and deleted while the seam was failed
+    st.set_mix("m1", "windows_ready")  # cut and deleted while the seam was failed
     st.set_seam("m1_ta_tb", "failed", error="track: HTTP Error 403")
     assert st.retry_tracks("HTTP Error 403")["seams"] == 1
-    assert st.claim_mix(["tier1"], "w")["mix_id"] == "m1"     # the mix goes back for another pass
+    assert st.claim_mix(["tier1"], "w")["mix_id"] == "m1"  # the mix goes back for another pass
 
     # and a restart repairs the same state left behind by an older version
     st.set_mix("m1", "windows_ready")

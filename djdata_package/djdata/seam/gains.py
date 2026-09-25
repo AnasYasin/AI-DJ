@@ -14,7 +14,7 @@ undefined and flagged quiet.
 import numpy as np
 from scipy.optimize import nnls
 
-from .align import SR, slots
+from .align import slots
 
 
 def db(x) -> np.ndarray:
@@ -22,7 +22,9 @@ def db(x) -> np.ndarray:
 
 
 class Fitter:
-    def __init__(self, SM, SS: dict, maps: dict, idx: dict, beats: np.ndarray, lam: float, local_ms: float):
+    def __init__(
+        self, SM, SS: dict, maps: dict, idx: dict, beats: np.ndarray, lam: float, local_ms: float
+    ):
         self.SM, self.SS, self.maps, self.idx, self.beats = SM, SS, maps, idx, beats
         self.lam, self.local = lam, local_ms
         self.H = {"A": 1.0, "B": 1.0}
@@ -56,7 +58,7 @@ class Fitter:
             out = np.empty_like(logH)
             for i in range(len(logH)):
                 w = max(int(i * 0.23 / 2), 2)
-                out[i] = logH[max(i - w, 0): i + w + 1].mean()
+                out[i] = logH[max(i - w, 0) : i + w + 1].mean()
             self.H[tag] = np.exp(out)
 
     def fit(self) -> dict:
@@ -108,17 +110,29 @@ class Fitter:
                     prev = sol
                 sols.append(sol_dir)
             sol = 0.5 * (sols[0] + sols[1])
-            gains["A"][b], gains["B"][b] = np.sqrt(np.maximum(sol[:, 0], 0)), np.sqrt(np.maximum(sol[:, 1], 0))
+            gains["A"][b], gains["B"][b] = (
+                np.sqrt(np.maximum(sol[:, 0], 0)),
+                np.sqrt(np.maximum(sol[:, 1], 0)),
+            )
             fb = np.abs(db(np.sqrt(np.maximum(sols[0], 0))) - db(np.sqrt(np.maximum(sols[1], 0))))
             ambiguous[("A", b)], ambiguous[("B", b)] = fb[:, 0] > 3.0, fb[:, 1] > 3.0
             for i, tag in enumerate(("A", "B")):
                 src_pow = np.array([data[k][1 + i][idx].sum() for k in range(nb)])
-                quiet[(tag, b)] = 10 * np.log10(src_pow + 1e-12) < 10 * np.log10(np.median(src_pow) + 1e-12) - 15.0
+                quiet[(tag, b)] = (
+                    10 * np.log10(src_pow + 1e-12)
+                    < 10 * np.log10(np.median(src_pow) + 1e-12) - 15.0
+                )
         for k in range(nb):
             M, XA, XB = data[k]
             m = M.ravel()
             X = np.stack([XA.ravel(), XB.ravel()], 1)
             s = np.linalg.norm(m) + 1e-12
             _, rn = nnls(X / s, m / s)
-            resid[k] = rn ** 2
-        return {"gains": gains, "ambiguous": ambiguous, "quiet": quiet, "unexplained": resid, "shift": shift}
+            resid[k] = rn**2
+        return {
+            "gains": gains,
+            "ambiguous": ambiguous,
+            "quiet": quiet,
+            "unexplained": resid,
+            "shift": shift,
+        }

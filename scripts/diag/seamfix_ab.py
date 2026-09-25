@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 from src.audio import audio_mixer as am  # noqa: E402
 from src.models.predict_model import plan_mix  # noqa: E402
 
-OUT = Path("data/external/ear_test_2026-09-07/seamfix")
+OUT = Path("data/external/ear_test/mixer_2026-09-07/seamfix")
 OUT.mkdir(parents=True, exist_ok=True)
 TRACKS = Path("data/external/test_tracks")
 PAD = 120.0
@@ -27,7 +27,7 @@ def mmss(s):
 
 
 jobs = []
-techno = json.loads(Path("data/external/ear_test_2026-09-07/techno/plan.json").read_text())[
+techno = json.loads(Path("data/external/ear_test/mixer_2026-09-07/techno/plan.json").read_text())[
     "tracks"
 ]
 a, b = techno[2], techno[3]

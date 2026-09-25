@@ -7,6 +7,17 @@ Generates a real mixed audio file (.mp3) from a description of what you want to 
 Trained on ~2,800 real DJ sets (1001tracklists) across six electronic genres:
 techno, trance, tech house, drum and bass, melodic house, afro house.
 
+## Data pipeline (djdata)
+
+`djdata_package/` turns real DJ mixes and the records in them into a labelled seam table. Eight
+stages, one command each, resumable: `locate` finds every listed record in its mix at its speed,
+`pairs` says which record follows which from what was heard, `cut` cuts and audits one window per
+seam, `measure` reads per band entry and exit, the bass swap and the bass words, `tempo` and `label`
+turn that into transition types in bars, `export-seams` writes one flat table, `ear-test` writes
+clips for a listen. Every threshold is a floor measured on control records in the same audio, and
+every number sits beside its floor. `START_HERE.md` says how to run it and read the tables,
+`DATASET_STATE.md` what was measured and heard.
+
 ## How it works
 
 ```

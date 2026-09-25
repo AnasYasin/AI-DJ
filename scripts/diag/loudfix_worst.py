@@ -13,11 +13,13 @@ sys.path.insert(0, ".")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 from src.audio import audio_mixer as am  # noqa: E402
 
-OUT = Path("data/external/ear_test_2026-09-07/loudfix")
+OUT = Path("data/external/ear_test/mixer_2026-09-07/loudfix")
 TRACKS = Path("data/external/test_tracks/techno")
 PAD = 120.0
 SR = am.SR
-plan = json.loads(Path("data/external/ear_test_2026-09-07/techno/plan.json").read_text())["tracks"]
+plan = json.loads(Path("data/external/ear_test/mixer_2026-09-07/techno/plan.json").read_text())[
+    "tracks"
+]
 a, b = plan[0], plan[1]
 paths = [TRACKS / f"{a['track_id']}.m4a", TRACKS / f"{b['track_id']}.m4a"]
 tmp = OUT / "_full_techno1b.flac"

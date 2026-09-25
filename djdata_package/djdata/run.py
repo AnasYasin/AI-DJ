@@ -39,11 +39,20 @@ def _mix_worker(cfg: Config, state: State, stop: threading.Event, gate: Gate):
     name = threading.current_thread().name
     tiers = cfg.run_tiers
     download_only = cfg.workers["seams"] == 0
+    # `download.fetch_only` stops after the audio is on disk: no locate, no windows. Use it while the
+    # window method is still being settled, so a method that later changes has not already cut hundreds
+    # of windows the wrong way. The mix is kept, so locate and cutting run later without re-downloading
+    # (Anas, 2026-09-20).
+    fetch_only = bool(cfg.download.get("fetch_only"))
+    # 1001tracklists: the tracks must be on disk before a mix can be cut, because the window position is
+    # found by fingerprinting them inside the mix. Raveform carries the alignment, so it cuts first.
+    tracks_first = cfg.source == "tracklists"
     while not stop.is_set():
         if not download_only and state.pending_unanalysed_mixes(tiers) >= cfg.workers["max_pending_mixes"]:
             time.sleep(POLL_S)
             continue
-        mix = state.claim_mix(tiers, name)
+        mix = (state.claim_mix_with_tracks_settled(tiers, name) if tracks_first
+               else state.claim_mix(tiers, name))
         if mix is None:
             time.sleep(POLL_S)
             continue
@@ -51,6 +60,13 @@ def _mix_worker(cfg: Config, state: State, stop: threading.Event, gate: Gate):
         try:
             if not mix["url"]:
                 raise RuntimeError("no audio url (run media-links first)")
+            if fetch_only:
+                full = fetch_mix.download_full(cfg, mix["url"], cfg.dirs["mixes_tmp"] / mix["mix_id"])
+                state.set_mix(mix["mix_id"], "downloaded", path=str(full))
+                size_mb = full.stat().st_size / 1e6 if full.exists() else 0.0
+                log.info("mix fetched %s: %.0f MB in %.1fs, no windows cut",
+                         mix["mix_id"], size_mb, time.time() - t0)
+                continue
             n = fetch_mix.process_mix(cfg, state, mix)
             state.set_mix(mix["mix_id"], "windows_ready")
             log.info("mix done %s: %d windows in %.1fs", mix["mix_id"], n, time.time() - t0)
@@ -75,15 +91,19 @@ def _track_worker(cfg: Config, state: State, stop: threading.Event, gate: Gate):
     tiers = cfg.run_tiers
     while not stop.is_set():
         gate.wait_open()
-        track = state.claim_track(tiers, name)
+        if cfg.download.get("fetch_all_pending"):
+            track = state.claim_any_pending_track(name)
+        else:
+            track = (state.claim_track_before_mixes(tiers, name) if cfg.source == "tracklists"
+                     else state.claim_track(tiers, name))
         if track is None:
             time.sleep(POLL_S)
             continue
         gate.pace()
         t0 = time.time()
         try:
-            path, dur = fetch_track.fetch(cfg, track)
-            state.set_track(track["track_id"], "ready", path=str(path), duration=dur)
+            path, dur, url = fetch_track.fetch(cfg, track)
+            state.set_track(track["track_id"], "ready", path=str(path), duration=dur, url=url)
             log.info("track done %s (%.0fs audio) in %.1fs", track["track_id"], dur, time.time() - t0)
         except Blocked as e:
             if gate.blocked(str(e)):
@@ -187,7 +207,9 @@ def run(cfg: Config) -> dict:
         while work_left(tiers):
             time.sleep(POLL_S)
             if time.time() - last > 60:
-                log.info("progress %s", state.counts(tiers))
+                counts = state.counts(tiers)
+                log.info("PROGRESS tracks %s | mixes %s | seams %s | blocks %d rotations %d",
+                         counts["tracks"], counts["mixes"], counts["seams"], gate.blocks, gate.rotations)
                 last = time.time()
     except KeyboardInterrupt:
         log.warning("interrupted; claimed items are released on the next start")

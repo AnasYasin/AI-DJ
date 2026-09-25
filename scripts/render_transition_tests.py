@@ -14,13 +14,13 @@ import sys
 from src.audio.audio_mixer import render_mix
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-DEFAULT_DIR = Path("data/external/transition_tests/tracks")
+DEFAULT_DIR = Path("data/external/ear_test/transition_types/tracks")
 if len(sys.argv) >= 3:
     A, B = Path(sys.argv[1]), Path(sys.argv[2])
 else:  # the pair the recipes were tuned against
     A = next(DEFAULT_DIR.glob("4f33cf8656f2.*"))  # Something More (Voorn Remix), 129 bpm
     B = next(DEFAULT_DIR.glob("967eeec2621a.*"))  # Drum Death, 128 bpm, intro→buildup→drop
-OUT = Path("data/external/transition_tests")
+OUT = Path("data/external/ear_test/transition_types")
 OUT.mkdir(parents=True, exist_ok=True)
 
 reports = {}

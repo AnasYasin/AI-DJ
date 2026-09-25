@@ -1,15 +1,24 @@
 """Command line. Every subcommand is one stage function, so an Airflow task can call the same thing.
 
-    djdata manifest   --config config.yaml            build the seam manifest into the state db
-    djdata run        --config config.yaml            fetch mixes and tracks, analyse seams (resumable)
-    djdata status     --config config.yaml            counts per status
-    djdata archivable --config config.yaml            files safe to move to S3 (json)
-    djdata archived   --config config.yaml FILE...    record files that were moved
-    djdata export     --config config.yaml            seams.csv, curves.csv, qa.csv
-    djdata probe      --config config.yaml [--n 20]   YouTube download test from this machine
-    djdata retry      --config config.yaml --match T  failed tracks whose error contains T back to pending
-    djdata media-links --config config.yaml           1001 mix pages → audio urls (needs a display: xvfb-run -a)
-    djdata scrape-tracklists --dj URL --genre G        legacy 1001 scraper (needs a display)
+  djdata manifest   --config config.yaml            build the seam manifest into the state db
+  djdata run        --config config.yaml            fetch mixes and tracks, analyse seams (resumable)
+  djdata status     --config config.yaml            counts per status
+  djdata archivable --config config.yaml            files safe to move to S3 (json)
+  djdata archived   --config config.yaml FILE...    record files that were moved
+  djdata export     --config config.yaml            seams.csv, curves.csv, qa.csv
+  djdata probe      --config config.yaml [--n 20]   YouTube download test from this machine
+  djdata retry      --config config.yaml --match T  failed tracks whose error contains T back to pending
+  djdata media-links --config config.yaml           1001 mix pages → audio urls (needs a display: xvfb-run -a)
+  djdata scrape-tracklists --dj URL --genre G        legacy 1001 scraper (needs a display)
+
+The profiling pipeline, one stage per subcommand, each resumable (see pipeline.py):
+  djdata locate     --config config_djs.yaml [--workers N] [--mixes ID...]   records found in mixes -> out/plays.csv
+  djdata pairs      --config config_djs.yaml                                  which record follows which -> out/seams.csv
+  djdata cut        --config config_djs.yaml [--workers N]                    windows cut and audited -> out/cuts.csv
+  djdata measure    --config config_djs.yaml [--workers N]                    bands, bass, presence, loop -> out/measures.csv
+  djdata tempo      --config config_djs.yaml [--workers N]                    BPM per record -> out/tempos.csv
+  djdata label      --config config_djs.yaml                                  transition types in bars -> out/labels.csv
+  djdata export-seams --config config_djs.yaml                                one flat table -> out/seams_index.csv
 """
 
 import argparse
@@ -38,7 +47,21 @@ def cmd_manifest(args):
     if cfg.source == "raveform":
         print(json.dumps(raveform.build(cfg, state)))
     else:
-        print(json.dumps(tracklists.build(cfg, state, args.djs)))
+        tier = cfg.tiers.get("tracklists", {})
+        timed = args.djs or tier.get("djs_timed", [])
+        every = args.djs_all or tier.get("djs_all", [])
+        print(
+            json.dumps(
+                tracklists.build(
+                    cfg,
+                    state,
+                    timed,
+                    every,
+                    min_tracks=tier.get("min_tracks", 8),
+                    min_timed=tier.get("min_timed", 0.95),
+                )
+            )
+        )
 
 
 def cmd_run(args):
@@ -80,7 +103,7 @@ def cmd_archived(args):
     cfg = _cfg(args)
     state = State(cfg.db_path)
     stems = [Path(f).stem for f in args.files]
-    tracks = [s for s in stems if not "_" in s or len(s) <= 12]
+    tracks = [s for s in stems if "_" not in s or len(s) <= 12]
     seams = [s for s in stems if s not in tracks]
     state.mark_archived(tracks, seams)
     print(json.dumps({"tracks": len(tracks), "seams": len(seams)}))
@@ -99,7 +122,12 @@ def cmd_probe(args):
     from .state import State
 
     cfg = _cfg(args)
-    rows = State(cfg.db_path)._conn().execute("SELECT track_id, url FROM tracks WHERE url IS NOT NULL").fetchall()
+    rows = (
+        State(cfg.db_path)
+        ._conn()
+        .execute("SELECT track_id, url FROM tracks WHERE url IS NOT NULL")
+        .fetchall()
+    )
     random.seed(0)
     sample = random.sample(rows, min(args.n, len(rows)))
     ok, fail, t0 = 0, [], time.time()
@@ -115,7 +143,16 @@ def cmd_probe(args):
         except Exception as e:
             fail.append((r["track_id"], str(e)[:120]))
             print(f"FAIL {r['track_id']} {str(e)[:120]}")
-    print(json.dumps({"ok": ok, "failed": len(fail), "seconds": round(time.time() - t0, 1), "errors": fail[:5]}))
+    print(
+        json.dumps(
+            {
+                "ok": ok,
+                "failed": len(fail),
+                "seconds": round(time.time() - t0, 1),
+                "errors": fail[:5],
+            }
+        )
+    )
 
 
 def cmd_media_links(args):
@@ -124,6 +161,29 @@ def cmd_media_links(args):
 
     cfg = _cfg(args)
     print(json.dumps({"filled": fill_media_links(cfg, State(cfg.db_path))}))
+
+
+def cmd_locate(args):
+    from . import pipeline
+
+    cfg = _cfg(args)
+    print(json.dumps(pipeline.locate(cfg, workers=args.workers, only=args.mixes)))
+
+
+def cmd_stage(args):
+    from . import pipeline
+
+    cfg = _cfg(args)
+    stage = getattr(pipeline, args.stage)
+    kwargs = {"workers": args.workers} if args.stage in ("cut", "measure", "tempo") else {}
+    print(json.dumps(stage(cfg, **kwargs)))
+
+
+def cmd_ear_test(args):
+    from . import pipeline
+
+    cfg = _cfg(args)
+    print(json.dumps(pipeline.ear_test(cfg, args.out, n=args.n, label=args.label, seed=args.seed)))
 
 
 def cmd_scrape_tracklists(args):
@@ -137,20 +197,69 @@ def cmd_scrape_tracklists(args):
 def main(argv=None):
     p = argparse.ArgumentParser(prog="djdata")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name, fn in (("manifest", cmd_manifest), ("run", cmd_run), ("status", cmd_status), ("archivable", cmd_archivable),
-                     ("archived", cmd_archived), ("export", cmd_export), ("probe", cmd_probe), ("media-links", cmd_media_links),
-                     ("retry", cmd_retry)):
+    for name, fn in (
+        ("manifest", cmd_manifest),
+        ("run", cmd_run),
+        ("status", cmd_status),
+        ("archivable", cmd_archivable),
+        ("archived", cmd_archived),
+        ("export", cmd_export),
+        ("probe", cmd_probe),
+        ("media-links", cmd_media_links),
+        ("retry", cmd_retry),
+    ):
         sp = sub.add_parser(name)
         sp.add_argument("--config", required=True)
         sp.set_defaults(fn=fn)
         if name == "manifest":
-            sp.add_argument("--djs", nargs="*", default=["Black Coffee"], help="tracklists source only")
+            sp.add_argument(
+                "--djs",
+                nargs="*",
+                default=None,
+                help="tracklists source: DJs whose mixes must carry start times (default: config)",
+            )
+            sp.add_argument(
+                "--djs-all",
+                nargs="*",
+                default=None,
+                help="tracklists source: DJs where every mix with a tracklist is taken, timed or not",
+            )
         if name == "archived":
             sp.add_argument("files", nargs="+")
         if name == "probe":
             sp.add_argument("--n", type=int, default=20)
         if name == "retry":
-            sp.add_argument("--match", required=True, help="substring of the track error, e.g. 'HTTP Error 403'")
+            sp.add_argument(
+                "--match",
+                required=True,
+                help="substring of the track error, e.g. 'HTTP Error 403'",
+            )
+    sp = sub.add_parser("locate")
+    sp.add_argument("--config", required=True)
+    sp.add_argument("--workers", type=int, default=1)
+    sp.add_argument(
+        "--mixes", nargs="*", default=None, help="only these mix ids (default: every mix on disk)"
+    )
+    sp.set_defaults(fn=cmd_locate)
+    for name, stage in (
+        ("pairs", "pairs"),
+        ("cut", "cut"),
+        ("measure", "measure"),
+        ("tempo", "tempo"),
+        ("label", "label"),
+        ("export-seams", "export"),
+    ):
+        sp = sub.add_parser(name)
+        sp.add_argument("--config", required=True)
+        sp.add_argument("--workers", type=int, default=1)
+        sp.set_defaults(fn=cmd_stage, stage=stage)
+    sp = sub.add_parser("ear-test")
+    sp.add_argument("--config", required=True)
+    sp.add_argument("--out", required=True)
+    sp.add_argument("--n", type=int, default=10)
+    sp.add_argument("--label", default=None, help="only seams with this main label")
+    sp.add_argument("--seed", type=int, default=25)
+    sp.set_defaults(fn=cmd_ear_test)
     sp = sub.add_parser("scrape-tracklists")
     sp.add_argument("--dj", nargs="+", required=True, help="1001tracklists DJ page urls")
     sp.add_argument("--genre", required=True)

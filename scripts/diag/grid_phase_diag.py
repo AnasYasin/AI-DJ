@@ -12,7 +12,7 @@ from scipy.signal import correlate  # noqa: E402
 from src.audio import audio_mixer as am  # noqa: E402
 from src.audio.audio_mixer import ONSET_HOP, SR, _to_mono  # noqa: E402
 
-plan = json.load(open("data/external/ear_test_2026-09-07/techno/plan.json"))["tracks"]
+plan = json.load(open("data/external/ear_test/mixer_2026-09-07/techno/plan.json"))["tracks"]
 a, b = plan[2], plan[3]  # pair 2
 pa, pb = [f"data/external/test_tracks/techno/{t['track_id']}.m4a" for t in (a, b)]
 target = 127.5

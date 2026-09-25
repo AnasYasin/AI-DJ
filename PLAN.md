@@ -1,3 +1,8 @@
+> **Current state of the data system is in `SYSTEM_STATE.md`.** That file says what is settled, what is
+> locked, and what is still open, with the sample size next to every number. Read it first.
+>
+> Sections moved out of this file on 2026-09-22 are in `PLAN_ARCHIVE.md`. Nothing was deleted.
+
 # AI-DJ — Plan (rev. 2026-07-07)
 
 > ORIGINAL PLAN, restored verbatim 2026-09-02. Everything above the divider is
@@ -113,96 +118,10 @@ stem separation — park until core loop ships.
 
 ---
 
-# Session record — 2026-09-02
-
-Everything above is the original plan, untouched. This section is what
-actually happened since, so the two can be compared.
-
-## Drift from the original plan
-- **ChromaDB is not used at inference.** The plan routed candidates through it;
-  `predict_model` brute-forces the full genre+BPM pool instead. Better quality
-  (no approximate-retrieval loss), cheap at ~2k candidates, but Model A's trained
-  role as a *retrieval* space is unused — it is only a scoring feature now.
-- **Jamendo was never used.** Full audio comes from YouTube via `track_fetcher.py`,
-  gated on duration and a fingerprint match against the track's own preview.
-- **Hard rules loosened**: BPM ±3% in the plan, ±5% in code (`MAX_BPM_LOG_RATIO`).
-- **Model C and the mix-audio corpus are still not started.** The 5,652 mix URLs
-  remain unused, so there is still no learned judgement of a rendered transition
-  and no evaluation metric against real DJ mixes.
-- **Model D (DJ profiles) still not started**, and it is now the best-measured
-  available win: DJ explains 0.22 of play-length variance against genre's 0.125.
-- **Overlays still parked**, as planned.
-- **Added, not in the original plan**: pair-compatibility gating of overlap length,
-  the lead/support model, real swept filters, stereo rendering, an energy floor,
-  and a compatibility weight in the beam score.
-
-## Where it stands
-
-Full pipeline works end to end, one command:
-
-```bash
-python -m scripts.make_mix --genre techno --bpm 134 142 --curve peak \
-    --n 6 --minutes 15 --min-energy-pct 65 --compat-weight 5 --out mix.flac
-```
-
-plan → fetch + verify → replan around failures → render. 214 tests, ruff clean.
-Architecture diagrams: `docs/architecture/ai-dj-component-map.html`.
-
-| | |
-|---|---|
-| Catalog | 2,834 mixes, 28,460 tracks with features |
-| Model A | contrastive encoder, val adjacency AUC 0.663 |
-| Model B | sequence transformer, +17% MRR |
-| GBM | edge scorer, val AUC 0.69 |
-| Compatibility | 4-term score, AUC 0.643 vs random pairs |
-
-## Fixed this session (all measured, all tested)
-
-1. **Transition types ignored set intent** → `gate_transition(curve)` demotes; a chill set never slams.
-2. **Mixer rendered MONO.** The largest audio defect. Side channel of every record (−10 to −17 dB rel. mid) was discarded by `librosa.load(mono=True)`. Audio path is now (samples, channels) stereo end to end; analysis still runs on the mono sum. YouTube was NOT the cause — source and render matched within 1-2 dB at every frequency.
-3. **EQ smeared the kick.** One-pass butterworth put the low band 2.38 ms behind the highs. `sosfiltfilt` → 0.00 ms.
-4. **RMS gain → LUFS**, measured on the played window, overlaps held to their louder neighbour, mix to −14 LUFS.
-5. **Seams were 180-215 ms out.** Grid calibration alone wasn't enough. `measure_seam_offset` cross-correlates kick envelopes, corrects and re-measures → ≤0.3 ms everywhere.
-6. **Short YouTube edits** → rebuilt `track_fetcher.py` (the old one was never committed and was lost). Duration 240-900 s checked on the decoded file, plus a constellation fingerprint against the track's own preview (real 457-14,466 votes, wrong ≤21).
-7. **"ID" tracks reached the planner** → `is_unidentified()`, drops 238 of 29,393.
-8. **Overlaps were mush.** Both records sat within 3 dB for 163 s across the seven types. `LEAD` model: A in front, B at −5 to −8 dB with mids cut, lead swaps over a fixed BAR count → 35 s.
-9. **Overlap length ignored the pair.** `pair_compatibility` (calibrated on 43,073 real pairs) caps at 16/32/60/90 s; STRETCHABLE types may run to 2× their default.
-10. **"Filters" were not filters.** Three fixed band gains at 180 Hz / 3 kHz. `_swept_filter` now moves a real corner, verified tracking 4 kHz → 25 Hz.
-11. **Onset was on two scales.** Catalog raw (1.1-2.5), thresholds written for raw/5. The labeler compared raw against 0.35 which 100% of tracks exceed, so the `wave` rule was a no-op. `normalise_onset()` is now the one definition. Re-labelling 43,073 pairs: wave 28.2% → 9.1%, 19.1% of pairs change label.
-12. **One-track-per-artist missed collaborations.** "Reinier Zonneveld & Miro" ≠ "Reinier Zonneveld". `split_artists()` fixes it.
-13. **Planner never planned for long overlaps** → `compat_weight` in the beam score (default 0).
-14. **`min_energy_pct`** — the curve maps onto pool quantiles, so a peak curve over a mixed pool is only a relative peak.
-
-## Open points
-
-**Missing entirely**
-- Intent parser (Phase 10) and the API service. No NL input; everything is CLI args.
-- Model C transition critic, mix-audio corpus (5,652 URLs collected, unused), learned cue points.
-- DJ profiles: `mix_profiler.py` exists, `dj_profiler.py` / `dj_profiles.json` do not. 48 DJs have 5+ mixes. Explains 0.22 of play-length variance vs genre's 0.125.
-- Overlays ("w/" tracks). Requests for a named artist, era, or a mood outside the five curves.
-
-**Known weak**
-- Beam dedupes on `frozenset(tracks)` → two orderings of the same set collide, ordering is never compared.
-- Opening track chosen by energy distance alone, no model.
-- `W_CTX / W_GBM / W_ENERGY = 1.0 / 1.0 / 0.7` never tuned.
-- A failed fetch replans the WHOLE set, not the failed slot. Discards good plans.
-- Exact duration is not a control; lands within ~10%.
-- ChromaDB is built but never read at inference.
-
-**Performance (measured, per 6.5 min track)**
-segmentation 0.0 s cached / 20.1 s cold · decode 2.1 s · **time-stretch 18.6 s** · grid phase 1.1 s · body 1.5 s.
-A 15.6 min mix = 192 s with everything local. Stretch is 80% of it and depends only on (track, target_bpm), so it is cacheable; `_prepare_track` is serial but independent, so parallelisable.
-
-**For a live demo**: prefetch a verified pool to S3 (`ai-dj-data`, eu-north-1) and restrict the planner with `plan_mix(track_ids=...)`. That removes the ~6 min fetch, the replan and the yt-dlp 403 risk, but not the 192 s render. Pre-stretch + parallel prepare should get it under a minute.
-
-## Next
-- [ ] Listen to `data/external/mixes/*_v4.flac` and `techno_peak_15min.flac`
-- [ ] Replace only the failed slot on replan
-- [ ] DJ profiles (Phase 9) — best available win on play length
-- [ ] Intent parser + FastAPI (Phase 10)
-- [ ] Tune the beam weights against something real
 
 ---
+
+# Mixer — decisions settled 2026-09-06 to 2026-09-09
 
 # Session record — 2026-09-06 / 2026-09-07
 
@@ -574,40 +493,8 @@ chroma helpers are removed; `src/audio/key_shift.py` keeps only `camelot_distanc
 accept: a wrong label on a melodic pair far apart can still let a grinding overlap through — watched by ear on melodic/trance
 sets; the compatibility tiers (label-based) still shorten far-key overlaps. Tests: 44 targeted pass. UNCOMMITTED (Anas commits).
 
-## LOCKED PLAN — "Data-driven DJ mimic" (agreed 2026-09-09, discussion only so far, nothing built)
-Order of work, each step verified before the next:
-1. Analytics notebook on the data we already hold (tracklist_clean.csv: 2,834 mixes with start times; features.parquet: 28,460
-   tracks; play counts; mix_profiler curve shapes). Questions: play length by energy trend around the change (rising / flat /
-   falling), by DJ, by genre, by fame (play count), first/last slot; curve-shape distribution per DJ. No downloads needed.
-2. Role table from the notebook: slot roles derived at PLAN time from the curve's movement (climb / hold / peak / release);
-   each role → play-length range + transition length. Roles come from the prompt-driven curve, not from per-track precompute.
-3. Energy check on rendered output: measured per-track energy of the mix vs the planned targets, in the render report; run on
-   the existing listening sets first.
-4. Loops + tension bass cut as ONE designed move, mixer-decided from role + audio, reported, ear-tested on the regression set:
-   loop = 4/8-bar phrase with identity (vocal/melodic, low kick share) at the outgoing cue-out, repeated 2–4× with movement
-   (filter/bass cut/level), ends on a phrase line where the incoming drop/downbeat lands; bass of both records off during
-   tension, back on the drop; rarely (well under half the seams), role- and profile-gated. Side benefit: stationary tail →
-   predictable seams on messy cue-outs. Recipe unchanged (loop is tail material; extra high-pass on the loop).
-5. Intent parser (Phase 10): a capable LLM maps a GENERAL vibe prompt to a small structured plan (genres, tempo range, length,
-   energy curve as numbers, mood words → roles/recipes, optional DJ reference); everything downstream deterministic; template
-   prompts are examples of the same schema; gaps filled by data defaults (genre-typical curve/length/tempo).
-Test points: notebook findings reviewed by Anas before the role table; role table checked against real sets by number; energy
-check on existing renders; loops/tension on regression pairs by ear; intent parser on template + vague prompts by plan diff.
-Still to discuss before building: transition type/recipe choice by pair/style/genre/profile; realistic evaluation of the models
-(A, B, GBM) beyond our own loss/AUC; DJ profiling (Fred again.. as the first profile); Fred in the data + retrain; DJ gimmicks.
 
-### Prior art for step 5/6 (found 2026-09-09)
-- Kim, Yang, Nam (KAIST): "A Computational Analysis of Real-World DJ Mixes using Mix-To-Track Subsequence Alignment" (ISMIR 2020,
-  1001Tracklists mixes → cue points/transition lengths) and "Reverse-Engineering The Transition Regions of Real-World DJ Mixes using
-  Sub-band Analysis with Convex Optimization" (NIME 2021; per-band gain curves of each record; validated by reconstruction + 14-person
-  listening test; beats linear crossfade). Code: https://github.com/mir-aidj/transition-analysis — reuse for the seam decomposition.
-- DJtransGAN (Chen et al., ICASSP 2022): GAN sets EQ+fader from real mixes; listening tests "competitive with baselines" (= matched good
-  rules, did not beat them). https://github.com/ChenPaulYu/DJtransGAN
-- Vande Veire & De Bie 2018 (rule-based DnB auto-DJ): high quality when MIR analysis correct (91 % of tracks); quality limited by
-  analysis, not rules. https://github.com/lenvdv/dnb-autodj-3
-- Raveform (TISMIR): metrical/functional structure annotations of EDM tracks in DJ mixes — candidate benchmark for our segmenter.
-Conclusion agreed: keep the deterministic mixer as the engine; learn the DECISIONS (track, length, overlap, swap timing) from measured
-real seams; every learned part must beat the rule baseline in a blind listen before it replaces it.
+---
 
 ## MASTER ROADMAP — "Data-driven DJ mimic" (final, agreed 2026-09-09; supersedes the short locked plan above)
 
@@ -711,3 +598,322 @@ Implementation: djdata_package/ (pip install -e), config.yaml with workers {mix 
 log, outputs seams.csv / curves.csv / qa.csv, `djdata archivable` for S3 moves, one CLI subcommand per stage for
 Airflow. Verified end to end on one mix (7 seams, 2 min wall clock, 30 s analysis per seam). VM: c6i.4xlarge, gp3 300 GB;
 first command on the VM is `djdata probe` (YouTube from a datacenter IP is the main risk).
+
+## Status 2026-09-13 (session hand-off)
+
+VM `aidj-data` (c6i.4xlarge, us-east-1, 200 GB) launched and set up to the manifest step, then stopped (no Elastic IP: IP changes
+on start). YouTube from a datacenter IP is solved and verified on the laptop: incognito-exported cookie file + deno + yt-dlp[default]
++ player_client=default,web_embedded (yt-dlp issue 17389); config keys `download.cookies_file`, `download.youtube_player_client`;
+PR 7 merged. Old S3 bucket deleted, data copied to `aidj-1` (us-east-1, talhanonstatic account). Next: start instance, copy the
+cookie file, run the VM prompt (probe, smoke test), then `djdata run` tier 1 in tmux; qa.csv review; tier 2 by config.
+
+
+---
+
+# Open items carried forward
+
+## NEXT STEP after the data problems are sorted (2026-09-19): the untimed mixes, Fred again first
+
+248 mixes of the seven profile DJs carry a full tracklist but no usable start times: the 1001 page listed
+none and the scraper wrote 0.0 for every track. They are deferred, not lost. List with DJ, page URL and
+track count: data/interim/untimed_mixes_deferred.csv (+ _README.md), on the VM and on S3 under interim/.
+The 30 that had reached the run manifest are marked `deferred_untimed` in data/djdata_djs/state.sqlite on
+both machines; the run holds 530 mixes, 9,040 seams, 7,329 tracks.
+
+Who it costs. Fred again 23 mixes in the run → 15, and the 8 deferred hold 460 track slots, about 57 tracks
+each, so they are his long mixtape sets. DJ Tennis 55 → 33. Sultan + Shepard (106 untimed), Solomun (48),
+Amelie Lens (40) and Black Coffee (24) lose nothing from the run, because the manifest rule had already
+excluded their untimed mixes before the deferral.
+
+Get Fred again's 8 back first, then DJ Tennis's 22, then the rest if it is worth it.
+
+Why they were deferred. A track with a listed time is searched inside a five-minute slice of the mix; with
+no time it is searched against the whole mix, and in the code as it stands every track re-fingerprints the
+entire mix, so a two-hour mix is scanned about fifteen times. 20 to 30 minutes of CPU per mix, roughly
+35 hours for all 248. Calculated, never measured.
+
+The change that makes them affordable: fingerprint the mix ONCE per mix and reuse it for every track,
+instead of once per track. Estimated 4 to 8 hours for all 248. Measure one untimed mix end to end before
+committing to it.
+
+## DJ profiling was cut down, and what was skipped (2026-09-19)
+
+The seven DJs' run was 530 mixes, 8,999 seams and 7,300 tracks, which is more download than the profiles
+need. It was cut to **213 mixes, 4,269 seams, 3,394 tracks** on two rules, keeping whole mixes only:
+
+- the three biggest DJs capped at about 1,000 seams each, club and festival sets taken first, then the
+  most recent radio shows
+- Sultan + Shepard's radio shows dropped entirely
+
+317 mixes were skipped and every one is listed in `data/interim/dj_profiling_mixes_skipped.csv`
+(dj, mix id, title, page url, track count, club or radio, year, and the reason):
+
+| DJ | mixes skipped | tracks | reason |
+|---|---|---|---|
+| Solomun | 105 | 2,120 | over the 1,000-seam cap |
+| Sultan + Shepard | 132 | 1,563 | radio show, club sets kept |
+| Amelie Lens | 80 | 1,364 | over the 1,000-seam cap |
+
+After the cut: Solomun 43 mixes / 1,012 seams, Amelie Lens 60 / 1,009, Black Coffee 47 / 742,
+Fred again 15 / 721, DJ Tennis 33 / 612, Roman Flügel 12 / 126, Sultan + Shepard 3 / 47.
+
+**Sultan + Shepard is the casualty.** Only 3 of his 135 surviving mixes are club sets, because his club
+sets are the ones whose pages carry no start times and were already deferred as untimed. Dropping his
+radio leaves him with 47 seams, which is not a profile. He comes back properly through his 106 deferred
+untimed mixes (see the untimed section above), or by keeping his radio shows after all.
+
+Adding any of these back later is just fetching their mixes and tracks; the tracklists are already in
+data/interim/tracklist.csv and nothing needs re-scraping.
+
+## TO DO: export the seam corpus as a CSV, stop treating state.sqlite as the dataset (2026-09-19)
+
+`djdata/state.sqlite` is the pipeline's resume log, not the dataset. It has to be sqlite because several
+workers claim rows from it at once and that must be transactional, which a CSV cannot do. But the dataset
+itself should not live inside it, and today it does: the seam definitions, the mix ids and Raveform's
+positions are only readable by opening a database.
+
+Export one row per seam, and make that the index of the seam corpus:
+
+    seam_id, mix_id, dj, genre, club_or_radio, year,
+    track_a, track_b, window_file, track_a_file, track_b_file,
+    raveform_mixin_t, raveform_mixout_t, rate_a, rate_b, match_rate_a, match_rate_b
+
+Seconds to produce, and then sqlite is demoted to a working file that the pipeline uses and nobody reads.
+Put the CSV next to the audio on S3 (djdata/seams_index.csv) so the corpus is self-describing.
+
+Do the same for the DJ-profiling run when it has data.
+
+## TO DO: recover the 1,111 seams that are missing one record (2026-09-19)
+
+Of the 6,666 seams in the Raveform run, 6,173 have the mix window cut but only 5,088 have both full
+tracks, so 5,062 have everything and are usable. The other 1,111 have the transition audio and one of
+the two records; the missing one is nearly always a YouTube id that no longer resolves.
+
+They are not measurable as they stand, and they are not lost either: the window is already cut and on S3,
+and the track has a name. Fetch the missing record by artist and title the way the 1001 path does
+(legacy fetch_track: YouTube search, duration gate, fingerprint check against the 30 s preview), then the
+seam joins the usable set and the measurement run picks it up with no other change.
+
+Worth about 1,111 extra seams on top of 5,062, a fifth more data, for roughly 1,100 track downloads.
+Nobody has tried it yet, so the hit rate is unknown.
+
+## Seam cutting and measurement: workers on the VM (2026-09-21)
+
+`aidj-data` is a c6i.4xlarge, 16 vCPU, 30 GB.
+
+**The cut can run 16 workers.** `scripts/diag/recut_windows_bounded.py` is an ffmpeg stream copy per
+seam, so it is IO bound and costs almost no memory. Sixteen is the sensible ceiling because the box has
+16 vCPUs. The script is serial today and cutting 50 seams took under a minute, so parallelising it only
+matters for the full 1,475.
+
+**The measurement is locked at 12.** `scripts/diag/measure_seam.py`, `WORKERS = 12`. Measured on DJ
+seams at 12 workers: peak worker 1,176 MB, 8 GB used of 30, 21 GB free, load 9.9 on 16 cores. Sixteen
+would take roughly 19 GB and squeeze the 15 GB page cache that makes the audio reads fast. That number
+only holds because each record is now fingerprinted over the stretch that can appear in the window
+instead of its whole length. Before that slice a worker held gigabytes of hash tables and 10 workers
+stalled the box: 49 seams, no row finished in 25 minutes.
+
+Full detail of the session that produced these numbers is in `SESSION_2026-09-22.md`.
+
+---
+
+# DATA PIPELINE, the plan agreed 2026-09-25
+
+This section is the whole plan for turning mix audio and track audio into DJ profiling data, and for
+running the same code over Raveform and over Fred. It records what exists and is proved, what exists
+and is not proved, what is dead, and the order of work. Read `DATA_ARCHITECTURE.md` section 9 for the
+folder and table layout that goes with it.
+
+## What the pipeline is for
+
+Three kinds of data go through the same stages.
+
+1. Raveform-like data. A dataset that ships mixes, track ids and an alignment. Locate is skipped.
+2. Our own DJ profiling data. 1001 tracklists, then the mix link from the page, then the tracks by name,
+   then locate, cut, measure, label, export.
+3. The old text-and-preview data. Tracklists plus 30 s previews. Fetch and seam stages are absent. It
+   joins for embeddings and analysis notebooks.
+
+Adding a DJ is one row in a config. Adding a source is one file in `sources/`. Every corpus writes the
+same tables, so the notebooks, the rule making and the model training read one shape.
+
+Later stages, not part of this plan but the layout leaves room for them. Embedding extraction and
+storage as one more stage after measure. Notebooks for analysis before the numbers reach the planner and
+mixer and before any model trains.
+
+## Anas's three steps, and how the stages map onto them
+
+Step 1. Locate every track in its mix, pair the records, cut every seam, mark the part of each track
+that played. Then an audit pass and a realign pass. Numbers to the db.
+
+Step 2. Band entry and exit, sweeps in and out (high pass in or out), highs, mids, lows, bass swap,
+transition label. Recheck, refine, numbers to the db.
+
+Step 3. Loop detection and seconds to bars for the transition length. Then the questions can be asked.
+Which two tracks, by which DJ, in which genre, had how long a transition. Which DJ mixes how long.
+
+Loops need the presence curve from step 2. Bars need a tempo per track. Both are added columns. Nothing
+upstream changes when they land.
+
+## What is proved and will be reused
+
+- Whole-mix locator with a per-mix control floor (`scripts/diag/mix_locate_once.py`). Checked on a
+  synthetic 3 % stretch, against the run's own locate, and by Anas's ear on six clips.
+- The bounded cut rule (`scripts/diag/recut_windows_bounded.py`). 149 of 149 exact to 0.026 s.
+- Band entry and exit and bass swap with control floors (`scripts/diag/measure_seam.py`, `fp_bands.py`,
+  `fp_bass.py`, `floors.py`). 30 of 30 on Raveform, separations 15 to 67 over the control.
+- The presence sweep giving each record's played span (inside `mix_locate_once.py`).
+- The bass timeline words, both, outgoing, incoming, cut, break (`fp_bass_timeline.py`).
+
+## What exists and is not proved on the DJ corpus
+
+- Transition labels. Nine rules in `transition_labels.py`. 124 Raveform seams labelled. Anas heard them
+  and they held. No verdict is written in `transition_labels/LABELS.csv`. The rules are ported as written
+  and checked again on the DJ corpus with ten clips per rule.
+- Loop detection. `transition_labels.loop_steps`, on the outgoing record's presence curve. Flagged 5 of
+  124 on Raveform. Anas heard it and it held. Same check on the DJ corpus.
+- Sweep in and out. Band order only. Anas heard them and they held. Same check.
+- Bars. No seconds to bars conversion exists for the DJ corpus. `transition_labels.bar_seconds` reads
+  Raveform's beat files only. The one tempo instrument proved anywhere in the repo is the mixer's kick
+  autocorrelation in `src/audio/audio_mixer.py`. It is checked on ten tracks against the catalog BPM
+  before it is trusted for bars.
+
+## What is dead and will not be used
+
+- The gain fit, `djdata/seam/gains.py`, `analyse.py`, `params.py`. Failed its wrong-record control.
+- Rate refinement, `--refine-rate` and the envelope fit in `align_windows.py`. Closed, made things worse.
+- The nine scripts on the old 120 s window geometry. `recut_windows.py`, `seam_window_check.py`,
+  `ear_test_djseams.py`, `align_windows.py`, `seam_reconstruct.py`, `fp_bands_dj.py`, `seam_rebuild.py`,
+  `audit_recut.py`, `fp_bands_keylock.py`.
+- `fetch/mix.py::_window_for`, the listed-time window inside the package.
+- The run's locate, `djdata/seam/locate.py::locate_one`, multiplies the offset by the rate after the
+  record was resampled. It reads 92.7 s where the answer is 90.00 s. Not fixed, avoided.
+
+## Three faults the new code fixes
+
+1. The old cutter reads record positions from `seams.coarse` in the database. Those were written by the
+   buggy locate. The new cutter reads the locator's own table. Which locator is settled by the test below.
+2. Pairs have no adjacency check. That produced the three silent ear-test clips on 2026-09-25. The rule
+   below replaces it and is tested against the time zero rule before it goes in.
+3. `djdata_package/` sits outside ruff and outside `make ci`. It gets added, with tests on synthetic audio.
+
+## The adjacency rule, in plain words
+
+Time zero, the mix minute where a record's own 0:00 falls, is not used to pair records. It means nothing
+when the DJ cues in deep.
+
+Each located record has a first-heard and a last-heard minute in the mix, from the presence sweep.
+Records are put in audio order by first-heard. A seam is each record and the next one heard after it.
+B's first-heard must sit before A's last-heard, or within a short gap after it for a cut. If the
+tracklist order and the audio order disagree, the audio order wins and the row says so. If a listed
+track between them was not located, the seam still forms and the row is flagged so the gap is visible.
+Nothing is dropped silently. The three broken clips of 2026-09-25 become flagged rows.
+
+This rule and the time zero rule are both run over the same 30 seams and compared before either is used.
+
+## The locator test, before step 1 is built
+
+Thirty seams are cut three ways. The run's locate, the whole-mix locate, and the whole-mix locate with
+the section consensus off. Each cut gets the ten second audit. In the first ten seconds A must clear its
+control floor and B must not. In the last ten seconds B must clear and A must not. Ten seconds is enough
+for a confident yes or no on one record, and a fixed longer window would fail on back-to-back cuts.
+The cutter that passes on the most of the 30 goes into step 1. Anas hears ten clips from the winner.
+
+## Fred-style long overlaps
+
+Some DJs keep two records running for minutes with bands cut on one of them. The pipeline records that
+behaviour and does not lose it.
+
+- The bounded window spans B first-heard to A last-heard with padding. There is no length cap. The old
+  900 s cap could truncate a long overlap. The length is written on every row.
+- The bass timeline words are carried per band, so a long stretch of both records with highs cut is
+  recorded as that and not folded into one label.
+- Three records at once. Step 1's played spans show when A still plays as C enters. Every seam whose
+  window holds a third located record is flagged. No extra audio work, only the spans.
+
+## Workers
+
+Every stage runs at 16 workers on the VM, memory and load watched for the first ten minutes, and dropped
+only if the numbers say so. The earlier numbers on record. The locator ran at 14 workers using 10 GB of
+30. The measurement was locked at 12 because 16 worker processes squeezed the RAM Linux uses to keep
+recently read audio files, which slowed reads. That was measured on an older version. Both jobs are
+compute bound now.
+
+Seam windows are not one size. The bounded rule gives 60 s to several minutes, median about three
+minutes on the 149 measured. Measurement cost scales with length. Any time estimate is an average until
+step 2 runs on a sample.
+
+## Stages, and what each writes
+
+1. locate. One row per track play. Mix, order heard, first heard, last heard, rate, votes, floor,
+   confidence, drift from the listed minute, played from and to in the record's own time.
+2. pairs. One row per seam in audio order, with the adjacency flags and the third-record flag.
+3. cut. The bounded window per seam, no cap, length written, ffmpeg stream copy.
+4. audit. The ten second start and end check on every cut. Rows that fail are listed, never deleted.
+5. measure. Per band entry and exit, bass swap, bass timeline words, control floors on every row.
+6. label. The nine rules, sweep in and out.
+7. loops and bars. Loop steps from the presence curve, tempo per track, overlap in bars.
+8. export. Flat CSVs for the notebooks.
+
+Every stage is resumable. Every stage is one function so Airflow can call it. Every row carries the
+control floor and the separation that produced its numbers.
+
+## Status 2026-09-25, end of day
+
+Steps 1 to 6 of the order below are done on the laptop, on the development sample, three passes, and
+the pass-three clips were right by Anas's ear. The locator test became the cut audit, which runs on
+every seam. Step 7 (Raveform) is built and tested on synthetic data, not run. Step 8 (Fred) is next,
+then the VM run over the 281 mixes. Numbers and findings in `DATASET_STATE.md`, how to run and use it
+in `START_HERE.md`.
+
+## Order of work
+
+1. The locator test above. Winner chosen by the count. Ten clips to Anas.
+2. The package module with tests, ruff clean, in `make ci`. Each stage checked on its own before it is
+   integrated. Take the time.
+3. Locate over the 281 DJ mixes at 16 workers in tmux, memory watched.
+4. Pairs, cut, audit. Ten cuts to Anas.
+5. Measure, label. Ten clips per rule to Anas.
+6. Loops and bars.
+7. Raveform through the same stages with locate skipped. Its final run is still to do.
+8. Fred. City proofs by play order run on the VM now, in parallel with the above, one city at a time
+   with three control tracks from another DJ. Vancouver is already proved. His solo segments join as a
+   corpus of their own once proved.
+
+## Fred, where it stands 2026-09-25
+
+- The laptop holds no Fred audio. No mixes, no segments, no tracks. Everything is on the VM.
+- VM has the four sources as m4a. The 108.5 h marathon is confirmed by ffprobe. 42 segments, 63 h,
+  18 solo.
+- VM has 314 of the 316 tour-mix track files. The 439 of 532 figure in `FRED_AGAIN_SETS.md` is stale.
+- Only Vancouver is proved, from marathon segment 19. Ten cities unproved. Two standalone sets unmatched.
+- `FRED_AGAIN_SETS.md` calls j9EkAYdouyM the Vancouver video. Its own title says HydeFM San Francisco.
+- The 49 existing Fred seams come from four non-tour mixes fetched by an unchecked title search.
+- Two more Fred videos, dWue64QOBfs and vwzl-SWu3mc, have metadata on the VM, no audio, and appear in
+  no doc.
+- He runs on the VM beside the others. Pulling him down would be about 3.5 GB.
+
+## What happens to the diagnostic scripts
+
+The proved parts move into the package by import or by rewriting as functions in the stage modules.
+The trial code for seam cutting and track locating is deleted once the package version has run and been
+heard. The scripts named dead above go first.
+
+## Where it is built and where it runs
+
+Built on the laptop, run on the VM. Code goes up by git push and pull. The laptop has 8 cores, 15 GB of
+RAM and one DJ mix on disk. It is enough for development, unit tests and single-mix runs. Every full run
+stays on the VM.
+
+A development sample comes down from the VM once, about 1 GB, so every stage is checked on each kind of
+data before it is integrated. Three DJ mixes with their tracks, one clean club set, one with quick
+back-to-back cuts, one with long overlaps. One Fred solo segment with its tour tracks. Twenty Raveform
+windows with both tracks and their alignment rows. Each stage is run over all four kinds on the laptop
+and its rows read before the stage is called done. The pytest tests use synthetic audio and run without
+this sample.
+
+## Code rules for this work
+
+Logger, not print. Few fallbacks. Simple code that reads plainly. Plain column names, times as 1:45.
+Ruff clean. Tests in pytest on synthetic audio, no network, run by `make ci`. One thing changed at a
+time and checked before the next.
