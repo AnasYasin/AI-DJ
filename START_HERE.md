@@ -133,6 +133,42 @@ The window audio is `data/djdata/<corpus>/windows/<seam_id>.<ext>`.
 corpus is a config with its own `root`. A proved Fred segment is a link in
 `data/djdata/fred/mixes_tmp/<mix_id>.m4a` to the segment file.
 
+**Where the code is.** Commit ef8c946 on `origin/dev` holds all of it, history cleaned of every
+co-author line. `main` is protected (no force-push, PR with lint-and-test required), so its 25 old
+commits keep their lines until the rule is relaxed once; the new work reaches main by a PR from dev.
+`data/interim/tracklist.csv` (34.5 MB) is still versioned and should be untracked in a later commit;
+the pipeline reads it from disk and the VM and S3 have copies.
+
+**Watch list for the VM run, noted while building.**
+
+- Memory. A locate worker holds about 1.5 GB (a two hour mix's hash table). Start locate at 14 on the
+  30 GB box and read `free -g` in the first ten minutes; everything else at 16.
+- Time. The laptop did 10 h of mix audio in 61 min at 4 workers. The 281 mixes are about 420 h.
+- The VM's clone must be reset to the rewritten history before anything runs:
+  `git fetch origin && git reset --hard origin/dev`. Then `pip install -e djdata_package` is not
+  needed; run with `PYTHONPATH=djdata_package`.
+- Floors. Every row carries `control_n` and the `*_floor_trusted` flags. A corpus with few mixes gives
+  thin floors; filter on them before using a number. Controls are chosen per mix by a seed from the
+  mix id, from the corpus's own records.
+- Seams set aside. `seams.csv` keeps every pair with `usable` and `reason`. On the sample 28 of 98
+  were gaps over 120 s with both records confident, records not found, or listed records between.
+  Read the reasons before changing `pairs.MAX_GAP_S`.
+- Cut audits. `audit_end_ok` failed on 6 of 70 windows on the sample: the outgoing record was still
+  there at the end. Look at those rows first when checking a run.
+- Loops in measure. A looped outgoing record is `unmeasured` (6 of 70). A loop-tolerant measure, per
+  band free matching of the record slice per step inside the window, is the next improvement.
+- Tempo. One record in eight disagrees with the catalog by more than 2 %, spoken word among them.
+  Bars on those seams are wrong; `tempos.csv` has the number per record.
+- Short records. Under 135 s a record cannot be "confident" (three 45 s sections cannot agree).
+- Presence constants. Windows of 30 s stepping 10 s, floor twice the loudest control window, first and
+  last heard at the first and last second holding 3 agreeing pairs. All in `seam/locate.py`.
+- This laptop's network drops long uploads (a push sat a day on a dead connection, scp to the VM ran at
+  6 KB/s). Move anything large through S3, and expect a stalled push to need a retry.
+- Fred on the VM needs the same links as the laptop: `data/djdata/fred/mixes_tmp/<mix_id>.m4a` to each
+  proved segment and `data/djdata/fred/tracks` to `../djs/tracks`.
+- The old `scripts/diag` code is untracked and untouched; `fetch/mix.py` still imports the legacy
+  locate. Both go after the VM run has been heard.
+
 **What is next.** Fred's segments proved by locate on the VM, then the full run over the 281 DJ mixes
 and Raveform on the VM, then the old `scripts/diag` code goes. The section below is the state before this.
 
