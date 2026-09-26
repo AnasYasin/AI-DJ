@@ -1,5 +1,4 @@
 # Claude context file
-CLAUDE.md
 
 # Data (never commit raw audio or processed features — use S3)
 /data/raw/
