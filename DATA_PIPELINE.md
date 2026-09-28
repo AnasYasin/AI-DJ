@@ -83,6 +83,28 @@ PYTHONPATH=djdata_package:. python -m djdata.cli layer-bands --config $C --worke
   count them once; `plays.csv` keeps both rows.
 - A windowed Fred record costs about 70 s, like a whole-mix one, because a record not in its window
   gets the whole-mix speed search so its presence is read at its real speed.
+- Resuming after a crash. Every stage skips what its table already holds: locate by mix (a mix's rows
+  are written when it finishes), pairs by mix, cut, measure and label by seam, tempo by record,
+  layer-bands by span; layers is rebuilt whole. A crash loses only the items in progress. To resume,
+  start the VM and run the same `~/profiling_run.sh` in tmux.
+- The run script's weak point (2026-09-28). An out-of-memory kill of one locate worker breaks the
+  whole process pool, so every mix still waiting in that run is marked failed and not written. The
+  locate stage still ends normally, and `profiling_run.sh` goes on through pairs, cut, measure and the
+  rest with the partial set, then syncs and shuts down. No data is lost, only time: after any run, read
+  `failed` in the locate line of `logs/profiling_run_2026-09-28.log`, and if it is not 0, rerun the
+  script. The next run script stops at the first stage that reports a failed item.
+- Memory, measured 2026-09-28 on the VM. A mix's fingerprint table barely grows with its length: 0.68 GB
+  for a 1 h mix, 0.77 GB for 2.5 h, peak 1.08 and 1.43 GB while fingerprinting. 14 locate workers held
+  13 to 15 GB of the 30 on one to two hour mixes. The corpus's longest mixes are 10.1 h (Solomun) and
+  9.75 h (DJ Tennis), and its heaviest stretch is 14 DJ Tennis mixes in a row with 40.6 h of audio,
+  estimated about 22 GB. A 10 GB swap file (`/swapfile`, made 2026-09-28) stands behind it, so a spike
+  slows the VM instead of killing a worker. It does not survive a reboot unless added to /etc/fstab.
+- Storage, 2026-09-28. The VM disk is 193 GB. The old September cuts (`djs/windows`, `windows_v2`,
+  `windows_v3`, 12.4 GB, all wrong cuts) were deleted for good on Anas's word, leaving 27 GB free.
+  The new seam windows need about 8 to 10 GB (about 3,100 seams, median window about 170 s, 128 kbps).
+- 14 locate workers on the VM's 16 vCPUs (8 physical cores, two threads each) keep the load near 14 to
+  17, and a record lookup then takes about 85 s instead of the 55 s one worker gives. More workers
+  would not help.
 
 ## State on 2026-09-25
 
