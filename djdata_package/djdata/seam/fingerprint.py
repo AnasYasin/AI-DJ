@@ -116,9 +116,12 @@ def pairs(track_fp: dict, mix_fp: dict) -> tuple[np.ndarray, np.ndarray]:
     return np.concatenate(mf), np.concatenate(off)
 
 
-def match(track_fp: dict, mix_fp: dict) -> tuple[int, int]:
-    """(votes at the best offset, that offset in mix frames). One vote per shared pair on one offset."""
-    _, offsets = pairs(track_fp, mix_fp)
+def match(track_fp: dict, mix_fp: dict, span: tuple[int, int] | None = None) -> tuple[int, int]:
+    """(votes at the best offset, that offset in mix frames). One vote per shared pair on one offset.
+    With `span` = (first, last) mix frame, only pairs whose mix frame lies inside it vote."""
+    mix_frames, offsets = pairs(track_fp, mix_fp)
+    if span is not None:
+        offsets = offsets[(mix_frames >= span[0]) & (mix_frames < span[1])]
     if not len(offsets):
         return 0, 0
     values, counts = np.unique(offsets, return_counts=True)

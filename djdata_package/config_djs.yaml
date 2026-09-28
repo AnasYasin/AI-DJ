@@ -7,6 +7,14 @@ root: data/djdata/djs
 raveform_dir: data/raw/raveform/raveform
 tracklists_csv: data/interim/tracklist.csv
 
+# Fred again.. joins this corpus (2026-09-28). His solo sets from the USB002 marathon are mixes named
+# usb_<segment>, linked in mixes_tmp to data/djdata/djs/fred/segments/, with the usb002-tracklist.app
+# lists as a second tracklist whose starting_time is the exact minute in the file (exact_time 1), so
+# they are searched at that time. His controls never come from his own records: his tour repeats them
+# night after night. Every other DJ keeps the controls he had.
+extra_tracklists: [data/djdata/djs/lists/usb002_solo_tracklist.csv]
+controls_exclude_own_dj: [Fredagain..]
+
 run_tiers: [tracklists]
 tiers:
   tracklists:

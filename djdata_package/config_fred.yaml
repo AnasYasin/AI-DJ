@@ -8,6 +8,11 @@ root: data/djdata/fred
 raveform_dir: data/raw/raveform/raveform
 tracklists_csv: data/interim/tracklist.csv
 
+# Controls come from other DJs (2026-09-28). His tour repeats its records every night, so a control drawn
+# from his other shows can be a real hit, and with one show on disk there would be no control at all.
+# Any record a Fred mix lists is left out of this pool.
+control_djs: [Romanflugel, Amelielens, Solomun, Black Coffee, Sultanplusshepard]
+
 run_tiers: [tracklists]
 tiers:
   tracklists:

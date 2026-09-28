@@ -24,7 +24,7 @@ import time
 from . import logs
 from .config import Config
 from .seam import cut as cut_mod
-from .seam import eartest
+from .seam import eartest, floors
 from .seam import labels as labels_mod
 from .seam import locate as locate_mod
 from .seam import measure as measure_mod
@@ -59,27 +59,109 @@ def _pool(cfg: Config, workers: int) -> ProcessPoolExecutor:
 def corpus(cfg: Config, only: list[str] | None = None) -> list[dict]:
     """The mixes this config's corpus holds on disk, with their records."""
     if cfg.source == "tracklists":
-        return tracklists.mixes_on_disk(cfg.root, cfg.tracklists_csv, only)
+        return tracklists.mixes_on_disk(
+            cfg.root, cfg.tracklists_csv, only, cfg.raw.get("extra_tracklists")
+        )
     if cfg.source == "raveform":
         return raveform.mixes_on_disk(cfg, only)
     raise ValueError(f"no corpus reader for source {cfg.source!r}")
 
 
+def _control_pool(cfg: Config, mixes: list[dict]) -> list[dict]:
+    """Where a corpus's control records come from. `control_djs` in the config names other DJs whose
+    records serve; without it the corpus's own other mixes do."""
+    control_djs = cfg.raw.get("control_djs")
+    if not control_djs or cfg.source != "tracklists":
+        return tracklists.track_pool(mixes)
+    own = {m["dj"] for m in mixes}
+    return tracklists.other_dj_pool(cfg.root, cfg.tracklists_csv, control_djs, own)
+
+
+def _own_dj_exclusions(cfg: Config) -> dict:
+    """dj -> every record that DJ lists anywhere, for the DJs named in `controls_exclude_own_dj`.
+
+    Why (2026-09-28). A DJ who plays his own records night after night (Fred again..'s tour USB) can
+    get a control that is really in the mix, and the floor rises over true plays. Off for every DJ not
+    named, so the DJs tested before keep their controls exactly."""
+    djs = cfg.raw.get("controls_exclude_own_dj") or []
+    extra = cfg.raw.get("extra_tracklists")
+    return {dj: tracklists.dj_records(cfg.tracklists_csv, [dj], extra) for dj in djs}
+
+
+def _controls(mix: dict, pool: list[dict], exclusions: dict) -> list[dict]:
+    return tracklists.controls_for(mix, pool, N_CONTROLS, exclusions.get(mix["dj"]))
+
+
 # ---------------------------------------------------------------- locate
 
 
-def _locate_job(job: dict) -> list[dict]:
-    """One mix in one process. Returns plays rows, records and controls alike."""
+def _probe(path) -> dict:
+    """codec, profile, bitrate, sample rate, channels and length of an audio file, by ffprobe."""
+    import json
+    import subprocess
+
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name,profile,bit_rate,sample_rate,channels:format=duration,bit_rate",
+            "-of",
+            "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        info = json.loads(out.stdout)
+    except ValueError:
+        return {}
+    stream = (info.get("streams") or [{}])[0]
+    fmt = info.get("format", {})
+    return {
+        "codec": stream.get("codec_name", ""),
+        "profile": stream.get("profile", ""),
+        "bitrate": stream.get("bit_rate") or fmt.get("bit_rate", ""),
+        "sample_rate": stream.get("sample_rate", ""),
+        "channels": stream.get("channels", ""),
+        "duration_s": round(float(fmt["duration"]), 1) if fmt.get("duration") else "",
+    }
+
+
+def _locate_job(job: dict) -> dict:
+    """One mix in one process. Returns {plays, presence, mix}: plays rows for records and controls,
+    presence rows (every window where a record beats the loudest control window), one mixes row."""
     got = locate_mod.locate_mix(job["path"], job["tracks"], job["controls"])
     floor = got["floor"]
     rows = []
     for entry, found in zip(job["tracks"] + job["controls"], got["records"] + got["controls"]):
         is_control = entry.get("is_control", 0)
-        conf = (
-            "control"
-            if is_control
-            else locate_mod.confidence(found.votes, floor, found.sections_agree)
-        )
+        if is_control:
+            conf = "control"
+        elif found.search == "window":
+            # a windowed record is judged on its window votes against the controls in that window
+            wf = floors.Floor(
+                floor=found.window_floor,
+                control_max=found.window_control_max,
+                control_n=len(job["controls"]),
+                control_votes=(),
+                margin=floors.MARGIN,
+                trusted=len(job["controls"]) >= floors.MIN_CONTROLS,
+            )
+            # sections count only when they were searched in the window, which is when the votes
+            # there cleared the window floor; a record not in its window is not found, whatever it
+            # scores elsewhere in the mix (its presence rows still show where it plays)
+            conf = (
+                locate_mod.confidence(found.window_votes, wf, found.sections_agree)
+                if wf.clears(found.window_votes)
+                else "not found"
+            )
+        else:
+            conf = locate_mod.confidence(found.votes, floor, found.sections_agree)
         listed_min = entry.get("listed_min")
         drift = None
         if listed_min is not None and not is_control:
@@ -117,9 +199,44 @@ def _locate_job(job: dict) -> list[dict]:
                 "sweep_floor": found.sweep_floor,
                 "track_len_s": found.track_len_s,
                 "seconds": found.seconds,
+                "search": found.search,
+                "near_s": found.near_s,
+                "window_votes": found.window_votes,
+                "window_floor": found.window_floor,
+                "window_control_max": found.window_control_max,
             }
         )
-    return rows
+    presence_rows, seen = [], set()
+    sweep_floor = got["controls"][0].sweep_floor if got["controls"] else None
+    for found in got["records"]:
+        if found.track_id in seen:
+            continue  # a record listed twice is one record in the audio
+        seen.add(found.track_id)
+        for start_s, votes, offset in found.windows:
+            presence_rows.append(
+                {
+                    "mix_id": job["mix_id"],
+                    "track_id": found.track_id,
+                    "window_start_s": start_s,
+                    "votes": votes,
+                    "state": "present" if votes >= found.sweep_floor else "weak",
+                    # the part of the record playing at the window start, along that window's offset
+                    "record_at_s": round((start_s - offset * locate_mod.FRAME_S) * found.rate, 1),
+                    "sweep_floor": found.sweep_floor,
+                    "weak_level": got["weak_level"],
+                }
+            )
+    mix_row = {
+        "mix_id": job["mix_id"],
+        "dj": job["dj"],
+        "file": Path(job["path"]).name,
+        **_probe(job["path"]),
+        "floor": floor.floor,
+        "sweep_floor": sweep_floor,
+        "weak_level": got["weak_level"],
+        "control_n": floor.control_n,
+    }
+    return {"plays": rows, "presence": presence_rows, "mix": mix_row}
 
 
 def locate(cfg: Config, workers: int = 1, only: list[str] | None = None) -> dict:
@@ -143,7 +260,8 @@ def locate(cfg: Config, workers: int = 1, only: list[str] | None = None) -> dict
             "seconds": 0.0,
         }
     mixes = corpus(cfg, only)
-    pool_tracks = tracklists.track_pool(mixes)
+    pool_tracks = _control_pool(cfg, mixes)
+    exclusions = _own_dj_exclusions(cfg)
     jobs = []
     for m in mixes:
         if m["mix_id"] in done:
@@ -151,9 +269,7 @@ def locate(cfg: Config, workers: int = 1, only: list[str] | None = None) -> dict
         if not m["tracks"]:
             log.warning("locate %s: no track audio on disk, skipped", m["mix_id"])
             continue
-        controls = [
-            {**c, "is_control": 1} for c in tracklists.controls_for(m, pool_tracks, N_CONTROLS)
-        ]
+        controls = [{**c, "is_control": 1} for c in _controls(m, pool_tracks, exclusions)]
         jobs.append({**m, "controls": controls})
     log.info(
         "locate: %d mixes on disk, %d already done, %d to run at %d workers",
@@ -169,12 +285,15 @@ def locate(cfg: Config, workers: int = 1, only: list[str] | None = None) -> dict
         for fut in as_completed(futures):
             mix_id = futures[fut]
             try:
-                rows = fut.result()
+                got = fut.result()
             except Exception as error:  # one bad mix must not stop the run
                 counts["failed"] += 1
                 log.error("locate FAILED %s: %s: %s", mix_id, type(error).__name__, error)
                 continue
-            table.append(rows)
+            rows = got["plays"]
+            tables.presence(cfg.dirs["out"]).append(got["presence"])
+            tables.mixes(cfg.dirs["out"]).append([got["mix"]])
+            table.append(rows)  # last, so a mix counts as done only once all three are written
             own = [r for r in rows if not r["is_control"]]
             found = sum(r["found"] for r in own)
             counts["ran"] += 1
@@ -188,6 +307,490 @@ def locate(cfg: Config, workers: int = 1, only: list[str] | None = None) -> dict
                 rows[0]["floor"],
                 sum(r["seconds"] for r in rows),
             )
+    counts["seconds"] = round(time.time() - t0, 1)
+    return counts
+
+
+# ---------------------------------------------------------------- prove
+
+
+def lists_1001(cfg: Config, djs: list[str]) -> list[dict]:
+    """PROOF_LISTS rows for every 1001 mix by these DJs, one list per mix id, track paths left to the
+    glob in tracks/."""
+    out = []
+    for mix_id, rows in tracklists.listed(cfg.tracklists_csv).items():
+        if rows[0]["dj"] not in djs:
+            continue
+        for r in rows:
+            out.append(
+                {
+                    "list_id": mix_id,
+                    "dj": r["dj"],
+                    "source": "1001",
+                    "order_listed": r["order_listed"],
+                    "track_id": r["track_id"],
+                    "title": r["title"],
+                    "listed_min": r["listed_min"],
+                    "track_path": "",
+                }
+            )
+    return out
+
+
+def _prove_job(job: dict) -> list[dict]:
+    """One candidate file in one process: every record of the lists paired with it, and the controls."""
+    got = locate_mod.locate_mix(job["path"], job["tracks"], job["controls"])
+    floor = got["floor"]
+    by_track = {t["track_id"]: f for t, f in zip(job["tracks"], got["records"])}
+    base = {
+        "file_id": job["file_id"],
+        "floor": floor.floor,
+        "control_max": floor.control_max,
+        "control_n": floor.control_n,
+        "file_minutes": round(got["mix_len_s"] / 60, 1),
+    }
+
+    def row(located, **extra):
+        return {
+            **base,
+            **extra,
+            "votes": located.votes,
+            "rate": located.rate,
+            "time_zero_s": located.time_zero_s,
+            "sections": located.sections,
+            "sections_agree": located.sections_agree,
+            "first_heard_s": located.first_heard_s,
+            "last_heard_s": located.last_heard_s,
+            "sweep_floor": located.sweep_floor,
+            "seconds": located.seconds,
+        }
+
+    rows = []
+    for entry in job["entries"]:
+        found = by_track[entry["track_id"]]
+        conf = locate_mod.confidence(found.votes, floor, found.sections_agree)
+        rows.append(
+            row(
+                found,
+                list_id=entry["list_id"],
+                order_listed=entry["order_listed"],
+                track_id=entry["track_id"],
+                title=entry["title"],
+                is_control=0,
+                confidence=conf,
+                found=int(conf != "not found"),
+            )
+        )
+    for c, found in zip(job["controls"], got["controls"]):
+        rows.append(
+            row(
+                found,
+                list_id="",
+                order_listed="",
+                track_id=c["track_id"],
+                title="",
+                is_control=1,
+                confidence="control",
+                found=0,
+            )
+        )
+    return rows
+
+
+def prove(cfg: Config, candidates_csv, lists_csv, pairs_csv=None, workers: int = 1) -> dict:
+    """Which candidate file is which show. Each file is fingerprinted once and every record of every
+    list paired with it is looked up, with three controls by other DJs (`control_djs`). Pairs default
+    to every list against every file. Writes proofs.csv, one row per file, list and listed record, and
+    rewrites proof_summary.csv, one row per list and file (see `seam/prove.py` for the rule)."""
+    import csv
+
+    from .seam import prove as prove_mod
+
+    candidates = list(csv.DictReader(open(candidates_csv, newline="")))
+    entries = list(csv.DictReader(open(lists_csv, newline="")))
+    for e in entries:
+        e["order_listed"] = int(e["order_listed"])
+    lists = {}
+    for e in entries:
+        lists.setdefault(e["list_id"], []).append(e)
+    if pairs_csv:
+        wanted = {
+            (r["file_id"], r["list_id"]) for r in csv.DictReader(open(pairs_csv, newline=""))
+        }
+    else:
+        wanted = {(c["file_id"], lid) for c in candidates for lid in lists}
+
+    own_djs = {e["dj"] for e in entries}
+    pool = tracklists.other_dj_pool(
+        cfg.root, cfg.tracklists_csv, cfg.raw.get("control_djs", []), own_djs
+    )
+    listed_anywhere = {e["track_id"] for e in entries}
+    pool = [c for c in pool if c["track_id"] not in listed_anywhere]
+
+    table = tables.proofs(cfg.dirs["out"])
+    done = {k[0] for k in table.keys()}
+    jobs, missing = [], set()
+    for c in candidates:
+        if c["file_id"] in done:
+            continue
+        mine = [e for lid, es in lists.items() if (c["file_id"], lid) in wanted for e in es]
+        tracks, on_disk = {}, []
+        for e in mine:
+            path = (
+                Path(e["track_path"])
+                if e.get("track_path")
+                else tracklists.audio_file(cfg.dirs["tracks"], e["track_id"])
+            )
+            if path is None or not Path(path).exists():
+                missing.add(e["track_id"])
+                continue
+            tracks.setdefault(e["track_id"], {"track_id": e["track_id"], "path": path})
+            on_disk.append(e)
+        if not tracks:
+            log.warning("prove %s: no listed record on disk, skipped", c["file_id"])
+            continue
+        controls = tracklists.controls_for(
+            {"mix_id": c["file_id"], "tracks": []}, pool, N_CONTROLS
+        )
+        if len(controls) < N_CONTROLS:
+            log.warning("prove %s: only %d controls in the pool", c["file_id"], len(controls))
+        jobs.append(
+            {
+                "file_id": c["file_id"],
+                "path": c["path"],
+                "tracks": list(tracks.values()),
+                "entries": on_disk,
+                "controls": controls,
+            }
+        )
+    log.info(
+        "prove: %d files, %d done before, %d to run at %d workers, %d listed records not on disk",
+        len(candidates),
+        len(done),
+        len(jobs),
+        workers,
+        len(missing),
+    )
+    counts = {"files": len(candidates), "done_before": len(done), "ran": 0, "failed": 0}
+    t0 = time.time()
+    with _pool(cfg, workers) as pool_x:
+        futures = {pool_x.submit(_prove_job, j): j["file_id"] for j in jobs}
+        for fut in as_completed(futures):
+            file_id = futures[fut]
+            try:
+                rows = fut.result()
+            except Exception as error:
+                counts["failed"] += 1
+                log.error("prove FAILED %s: %s: %s", file_id, type(error).__name__, error)
+                continue
+            table.append(rows)
+            counts["ran"] += 1
+            log.info("prove done %s: %d rows, floor %s", file_id, len(rows), rows[0]["floor"])
+
+    summary = []
+    by_pair = {}
+    listed_at = {(e["list_id"], e["order_listed"]): num(e.get("listed_min")) for e in entries}
+    for r in table.rows():
+        if r["is_control"] == "1":
+            continue
+        by_pair.setdefault((r["list_id"], r["file_id"]), []).append(
+            {
+                "order_listed": int(r["order_listed"]),
+                "time_zero_s": float(r["time_zero_s"]),
+                "first_heard_s": num(r["first_heard_s"]),
+                "listed_min": listed_at.get((r["list_id"], int(r["order_listed"]))),
+                "found": r["found"] == "1",
+                "confidence": r["confidence"],
+                "floor": r["floor"],
+                "control_max": r["control_max"],
+            }
+        )
+    for (list_id, file_id), rows in sorted(by_pair.items()):
+        summary.append(prove_mod.summarise(list_id, file_id, rows, len(lists.get(list_id, []))))
+    out = tables.proof_summary(cfg.dirs["out"])
+    if out.path.exists():
+        out.path.unlink()
+    out.append(summary)
+    counts["proved"] = sum(s["proved"] for s in summary)
+    counts["seconds"] = round(time.time() - t0, 1)
+    return counts
+
+
+# ---------------------------------------------------------------- layers
+
+
+LAYER_GRID_S = (
+    10.0  # every record's presence windows snap to one 10 s grid so they can be compared
+)
+MAX_SPAN_S = 300.0  # a long stack is read in pieces this long, so one job stays small
+
+
+def _presence_by_mix(cfg: Config) -> dict:
+    by = {}
+    for r in tables.presence(cfg.dirs["out"]).rows():
+        by.setdefault(r["mix_id"], []).append(r)
+    return by
+
+
+def _grid(t: float) -> float:
+    return round(round(float(t) / LAYER_GRID_S) * LAYER_GRID_S, 1)
+
+
+def _stack(rows: list[dict]) -> dict:
+    """grid time -> {track_id: state}, a record present in any window snapped there counts present."""
+    out = {}
+    for r in rows:
+        cell = out.setdefault(_grid(r["window_start_s"]), {})
+        if cell.get(r["track_id"]) != "present":
+            cell[r["track_id"]] = r["state"]
+    return out
+
+
+def layers(cfg: Config) -> dict:
+    """Stage 7a. The layer timeline: per mix and per 10 s grid time, which records are present (at or
+    above the sweep floor, twice the loudest control window) and which are weak (above the loudest
+    control window, under twice it). Several weak records at one place is kept as a signal of its own.
+    Rewrites layers.csv from presence.csv."""
+    out = tables.layers(cfg.dirs["out"])
+    djs = {r["mix_id"]: r["dj"] for r in tables.plays(cfg.dirs["out"]).rows()}
+    rows = []
+    for mix_id, pres in sorted(_presence_by_mix(cfg).items()):
+        for t, cell in sorted(_stack(pres).items()):
+            present = sorted(k for k, v in cell.items() if v == "present")
+            weak = sorted(k for k, v in cell.items() if v == "weak")
+            rows.append(
+                {
+                    "mix_id": mix_id,
+                    "dj": djs.get(mix_id, ""),
+                    "window_start_s": t,
+                    "n_present": len(present),
+                    "n_weak": len(weak),
+                    "present": " ".join(present),
+                    "weak": " ".join(weak),
+                }
+            )
+    if out.path.exists():
+        out.path.unlink()
+    out.append(rows)
+    counts = {
+        "mixes": len({r["mix_id"] for r in rows}),
+        "windows": len(rows),
+        "two_or_more_present": sum(1 for r in rows if r["n_present"] >= 2),
+        "three_or_more_present_or_weak": sum(1 for r in rows if r["n_present"] + r["n_weak"] >= 3),
+    }
+    log.info("layers: %s", counts)
+    return counts
+
+
+def _adjacent_pairs(plays_rows: list[dict]) -> set:
+    """Consecutive records in audio order (by first heard): the ordinary seams the measure stage reads."""
+    heard = sorted(
+        (num(r["first_heard_s"]), r["track_id"])
+        for r in plays_rows
+        if r["is_control"] == "0" and r["found"] == "1" and num(r["first_heard_s"]) is not None
+    )
+    ids = [t for _, t in heard]
+    return {frozenset(p) for p in zip(ids, ids[1:])}
+
+
+def layer_spans(stack: dict, adjacent: set) -> list[dict]:
+    """Runs of grid times whose records (present or weak) are three or more, or two that are not a
+    consecutive pair in audio order. [{start_s, end_s, records: {track_id: state}}], each at most
+    MAX_SPAN_S long."""
+    spans, cur = [], None
+    for t in sorted(stack):
+        cell = stack[t]
+        ids = frozenset(cell)
+        qualifies = len(ids) >= 3 or (len(ids) == 2 and ids not in adjacent)
+        if (
+            qualifies
+            and cur is not None
+            and t - cur["last"] <= LAYER_GRID_S + 0.1
+            and (t - cur["start_s"] < MAX_SPAN_S)
+        ):
+            cur["last"] = t
+            for k, v in cell.items():
+                if cur["records"].get(k) != "present":
+                    cur["records"][k] = v
+        elif qualifies:
+            cur = {"start_s": t, "last": t, "records": dict(cell)}
+            spans.append(cur)
+        else:
+            cur = None
+    for sp in spans:
+        sp["end_s"] = sp.pop("last") + locate_mod.SWEEP_WIN_S
+    return spans
+
+
+def _layer_band_job(job: dict) -> list[dict]:
+    import subprocess
+    import tempfile
+
+    from .seam import bands
+    from .seam.fingerprint import SR
+
+    t0, t1 = job["start_s"], job["end_s"]
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = Path(tmp) / "span.wav"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{t0:.2f}",
+                "-t",
+                f"{t1 - t0:.2f}",
+                "-i",
+                str(job["mix_path"]),
+                "-ac",
+                "1",
+                "-ar",
+                str(SR),
+                str(wav),
+            ],
+            check=True,
+        )
+        window = load_audio(wav)
+    span_len = len(window) / SR
+    tracks, anchors = {}, {}
+    for rec in job["records"]:
+        tracks[rec["track_id"]], anchors[rec["track_id"]] = measure_mod.lay_out(
+            t0, span_len, rec, load_audio(rec["path"])
+        )
+    first = job["records"][0]
+    names = []
+    for i, path in enumerate(job["controls"], 1):
+        name = f"__control_{i}"
+        tracks[name], anchors[name] = measure_mod.lay_out(t0, span_len, first, load_audio(path))
+        names.append(name)
+    rows = []
+    for band in bands.BANDS:
+        fps = {name: bands.band_fp(audio, band) for name, audio in tracks.items()}
+        curves = bands.band_votes(window, band, fps, anchors)
+        floor = floors.from_controls([int(curves[n].max()) for n in names])
+        for rec in job["records"]:
+            tid = rec["track_id"]
+            seen = curves[tid] >= floor.floor
+            f, last = bands.first_last(curves, tid, floor.floor)
+            rows.append(
+                {
+                    "mix_id": job["mix_id"],
+                    "dj": job["dj"],
+                    "span_id": job["span_id"],
+                    "span_start_s": round(t0, 1),
+                    "span_end_s": round(t1, 1),
+                    "n_records": len(job["records"]),
+                    "records": " ".join(r["track_id"] for r in job["records"]),
+                    "track_id": tid,
+                    "state": rec["state"],
+                    "band": band,
+                    "votes": int(curves[tid].max()),
+                    "floor": floor.floor,
+                    "control_max": floor.control_max,
+                    "control_n": floor.control_n,
+                    "separation": floors.separation(curves[tid].max(), floor),
+                    "seen_s": round(float(seen.sum()) * bands.HOP_S, 1),
+                    "first_seen_s": None if f is None else round(t0 + f, 1),
+                    "last_seen_s": None if last is None else round(t0 + last, 1),
+                }
+            )
+    return rows
+
+
+def layer_bands(cfg: Config, workers: int = 1) -> dict:
+    """Stage 7b. For every span where records stack beyond an ordinary seam (three or more present or
+    weak, or two that are not consecutive in audio order), per record and per band: votes at the
+    record's own alignment in that span, the band floor from three controls laid on the same span,
+    and the seconds it is seen. The two-record seam measure is left as it is. Writes layer_bands.csv."""
+    out = tables.layer_bands(cfg.dirs["out"])
+    done = {(k[0], k[1]) for k in out.keys()}
+    plays_rows = tables.plays(cfg.dirs["out"]).rows()
+    by_mix = {}
+    for r in plays_rows:
+        by_mix.setdefault(r["mix_id"], []).append(r)
+    mixes = {m["mix_id"]: m for m in corpus(cfg)}
+    paths = _track_paths(cfg)
+    jobs = []
+    for mix_id, pres in sorted(_presence_by_mix(cfg).items()):
+        mix = mixes.get(mix_id)
+        if mix is None or mix["path"] is None:
+            continue
+        rows = by_mix.get(mix_id, [])
+        rate = {r["track_id"]: num(r["rate"]) for r in rows if r["is_control"] == "0"}
+        controls = [
+            paths[r["track_id"]] for r in rows if r["is_control"] == "1" and r["track_id"] in paths
+        ]
+        stack = _stack(pres)
+        for k, sp in enumerate(layer_spans(stack, _adjacent_pairs(rows)), 1):
+            span_id = f"{mix_id}_L{k:04d}"
+            if (mix_id, span_id) in done:
+                continue
+            records = []
+            for tid, state in sorted(sp["records"].items()):
+                if tid not in paths or tid not in rate:
+                    continue
+                inside = [
+                    num(r["window_start_s"]) - num(r["record_at_s"]) / rate[tid]
+                    for r in pres
+                    if r["track_id"] == tid
+                    and sp["start_s"] - 5 <= _grid(r["window_start_s"]) < sp["end_s"]
+                ]
+                if not inside:
+                    continue
+                inside.sort()
+                records.append(
+                    {
+                        "track_id": tid,
+                        "path": paths[tid],
+                        "rate": rate[tid],
+                        "time_zero_s": inside[len(inside) // 2],
+                        "state": state,
+                    }
+                )
+            if len(records) < 2:
+                continue
+            jobs.append(
+                {
+                    "mix_id": mix_id,
+                    "dj": mix["dj"],
+                    "span_id": span_id,
+                    "mix_path": mix["path"],
+                    "start_s": sp["start_s"],
+                    "end_s": sp["end_s"],
+                    "records": records,
+                    "controls": controls,
+                }
+            )
+    log.info(
+        "layer-bands: %d spans to read at %d workers, %d done before",
+        len(jobs),
+        workers,
+        len(done),
+    )
+    counts = {"spans": len(jobs), "done_before": len(done), "ran": 0, "failed": 0}
+    t0 = time.time()
+    with _pool(cfg, workers) as pool:
+        futures = {pool.submit(_layer_band_job, j): j["span_id"] for j in jobs}
+        for i, fut in enumerate(as_completed(futures), 1):
+            try:
+                out.append(fut.result())
+                counts["ran"] += 1
+            except Exception as error:
+                counts["failed"] += 1
+                log.error(
+                    "layer-bands FAILED %s: %s: %s", futures[fut], type(error).__name__, error
+                )
+            if i % 20 == 0 or i == len(jobs):
+                el = time.time() - t0
+                log.info(
+                    "layer-bands: %d of %d spans, %.0f s, about %.0f s left",
+                    i,
+                    len(jobs),
+                    el,
+                    el / i * (len(jobs) - i),
+                )
     counts["seconds"] = round(time.time() - t0, 1)
     return counts
 
@@ -289,7 +892,8 @@ def cut(cfg: Config, workers: int = 1) -> dict:
     done = cuts_t.keys()
     mixes = {m["mix_id"]: m for m in corpus(cfg)}
     paths = _track_paths(cfg)
-    pool_tracks = tracklists.track_pool(list(mixes.values()))
+    pool_tracks = _control_pool(cfg, list(mixes.values()))
+    exclusions = _own_dj_exclusions(cfg)
     jobs = []
     for seam in seams_t.rows():
         if seam["seam_id"] in done or seam["usable"] != "1":
@@ -304,7 +908,7 @@ def cut(cfg: Config, workers: int = 1) -> dict:
         ):
             log.warning("cut %s: no full mix and no window on disk, skipped", seam["seam_id"])
             continue
-        controls = tracklists.controls_for(mix, pool_tracks, N_CONTROLS)
+        controls = _controls(mix, pool_tracks, exclusions)
         jobs.append(
             {
                 "seam": seam,
@@ -362,7 +966,8 @@ def measure(cfg: Config, workers: int = 1) -> dict:
     done = measures_t.keys()
     mixes = {m["mix_id"]: m for m in corpus(cfg)}
     paths = _track_paths(cfg)
-    pool_tracks = tracklists.track_pool(list(mixes.values()))
+    pool_tracks = _control_pool(cfg, list(mixes.values()))
+    exclusions = _own_dj_exclusions(cfg)
     jobs = []
     for c in cuts_t.rows():
         seam = seams.get(c["seam_id"])
@@ -371,7 +976,7 @@ def measure(cfg: Config, workers: int = 1) -> dict:
         mix = mixes.get(seam["mix_id"])
         if mix is None or seam["track_a"] not in paths or seam["track_b"] not in paths:
             continue
-        controls = tracklists.controls_for(mix, pool_tracks, N_CONTROLS)
+        controls = _controls(mix, pool_tracks, exclusions)
         jobs.append(
             {
                 "seam_id": seam["seam_id"],

@@ -87,6 +87,12 @@ the pipeline reads it from disk and the VM and S3 have copies.
 - The VM's clone must be reset to the rewritten history before anything runs:
   `git fetch origin && git reset --hard origin/dev`. Then `pip install -e djdata_package` is not
   needed; run with `PYTHONPATH=djdata_package`.
+- Partial runs pick other controls (found 2026-09-28). Each mix's three controls are drawn from the
+  records of the other mixes in the same run. `locate --mixes A B` builds that pool from A and B only,
+  so its controls, floors and first and last heard differ from a full run's. Measured: Amelie Lens
+  be77589ff6 got floor 136 instead of 140 and three first or last heard times moved; with the full
+  five-mix pool all 38 rows matched pass three exactly. Rerun a subset only into a fresh root, and
+  never mix its rows with a full run's.
 - Floors. Every row carries `control_n` and the `*_floor_trusted` flags. A corpus with few mixes gives
   thin floors; filter on them before using a number. Controls are chosen per mix by a seed from the
   mix id, from the corpus's own records.

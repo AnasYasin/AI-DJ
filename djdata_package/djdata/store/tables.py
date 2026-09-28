@@ -259,3 +259,162 @@ def tempos(out_dir: Path) -> Table:
 
 def labels(out_dir: Path) -> Table:
     return Table(Path(out_dir) / "labels.csv", LABELS, key="seam_id")
+
+
+# ---------------------------------------------------------------- proofs (which file is which show)
+
+PROOF_LISTS = [
+    "list_id",
+    "dj",
+    "source",
+    "order_listed",
+    "track_id",
+    "title",
+    "listed_min",
+    "track_path",
+]
+
+PROOFS = [
+    "file_id",
+    "list_id",
+    "order_listed",
+    "track_id",
+    "title",
+    "is_control",
+    "votes",
+    "rate",
+    "time_zero_s",
+    "sections",
+    "sections_agree",
+    "confidence",
+    "found",
+    "first_heard_s",
+    "last_heard_s",
+    "floor",
+    "control_max",
+    "control_n",
+    "sweep_floor",
+    "file_minutes",
+    "seconds",
+]
+
+PROOF_SUMMARY = [
+    "list_id",
+    "file_id",
+    "listed",
+    "on_disk",
+    "found",
+    "confident",
+    "in_order",
+    "chance_in_order",
+    "p_order",
+    "proved",
+    "chain_orders",
+    "chain_from_min",
+    "chain_to_min",
+    "time_checked",
+    "time_median_off_s",
+    "time_within_60s",
+    "floor",
+    "control_max",
+]
+
+
+def proofs(out_dir: Path) -> Table:
+    return Table(
+        Path(out_dir) / "proofs.csv",
+        PROOFS,
+        key=("file_id", "list_id", "order_listed", "track_id"),
+    )
+
+
+def proof_summary(out_dir: Path) -> Table:
+    return Table(Path(out_dir) / "proof_summary.csv", PROOF_SUMMARY, key=("list_id", "file_id"))
+
+
+# ---------------------------------------------------------------- layering and source quality (2026-09-28)
+# Added for DJs who stack records, Fred again.. first. Separate tables, so every table above keeps its
+# columns and its numbers. A DJ who plays two records at a seam and no more has two-record windows here
+# and nothing in layer_bands.
+
+PLAYS += ["search", "near_s", "window_votes", "window_floor", "window_control_max"]
+
+PRESENCE = [
+    "mix_id",
+    "track_id",
+    "window_start_s",
+    "votes",
+    "state",
+    "record_at_s",
+    "sweep_floor",
+    "weak_level",
+]
+
+MIXES = [
+    "mix_id",
+    "dj",
+    "file",
+    "codec",
+    "profile",
+    "bitrate",
+    "sample_rate",
+    "channels",
+    "duration_s",
+    "floor",
+    "sweep_floor",
+    "weak_level",
+    "control_n",
+]
+
+LAYERS = [
+    "mix_id",
+    "dj",
+    "window_start_s",
+    "n_present",
+    "n_weak",
+    "present",
+    "weak",
+]
+
+LAYER_BANDS = [
+    "mix_id",
+    "dj",
+    "span_id",
+    "span_start_s",
+    "span_end_s",
+    "n_records",
+    "records",
+    "track_id",
+    "state",
+    "band",
+    "votes",
+    "floor",
+    "control_max",
+    "control_n",
+    "separation",
+    "seen_s",
+    "first_seen_s",
+    "last_seen_s",
+]
+
+
+def presence(out_dir: Path) -> Table:
+    return Table(
+        Path(out_dir) / "presence.csv", PRESENCE, key=("mix_id", "track_id", "window_start_s")
+    )
+
+
+def mixes(out_dir: Path) -> Table:
+    return Table(Path(out_dir) / "mixes.csv", MIXES, key="mix_id")
+
+
+def layers(out_dir: Path) -> Table:
+    return Table(Path(out_dir) / "layers.csv", LAYERS, key=("mix_id", "window_start_s"))
+
+
+def layer_bands(out_dir: Path) -> Table:
+    return Table(
+        Path(out_dir) / "layer_bands.csv",
+        LAYER_BANDS,
+        key=("mix_id", "span_id", "track_id", "band"),
+    )

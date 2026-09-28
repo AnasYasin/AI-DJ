@@ -36,7 +36,7 @@ Checked 2026-09-24: a synthetic record played 3 % fast at 90.00 s comes back at 
 against the run's old locate on 35 tracks the time zero agrees to a median 0.6 s; six clips heard.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import logging
 import time
 
@@ -77,6 +77,12 @@ OFFSET_TOLERANCE = 2  # frames: a pair agrees with the offset within this
 EDGE_PAIRS_PER_S = (
     3  # first and last heard: the first and last second holding this many agreeing pairs
 )
+# A list that carries the exact time a record is heard (the USB002 app, 2026-09-28) is searched only
+# here around that time. The noise of a whole two hour mix buried Fred's one to two minute plays: over
+# the whole file the controls scored up to 135, inside such a window at most 64 (window check,
+# 2026-09-28, 739 lookups on ten solo segments), and 40 to 60 % of his records were found instead of 1 in 5.
+NEAR_BEFORE_S = 180.0
+NEAR_AFTER_S = 300.0
 
 
 @dataclass
@@ -97,16 +103,37 @@ class Located:
     sweep_floor: int
     track_len_s: float
     seconds: float
+    # "whole" or "window"; in a window search the decision votes, the window's control floor and the
+    # listed time the window is centred on
+    search: str = "whole"
+    near_s: float | None = None
+    window_votes: int | None = None
+    window_floor: int | None = None
+    window_control_max: int | None = None
+    # every 30 s window where the record beats the loudest control window of this mix:
+    # (window start in mix s, votes, offset in frames); the layer timeline is built from these
+    windows: list = field(default_factory=list, repr=False)
 
     def as_row(self) -> dict:
-        return asdict(self)
+        row = asdict(self)
+        row.pop("windows")
+        return row
 
 
-def speed_and_offset(track: np.ndarray, mix_fp: dict) -> dict:
-    """The speed the mix plays the record at and its whole-record best offset, by votes."""
+def coarse_fps(track: np.ndarray) -> dict:
+    """The record fingerprinted at each of the coarse speeds, {rate: table}."""
+    return {rate: fingerprint(at_mix_speed(track, rate)) for rate in COARSE_RATES}
+
+
+def speed_and_offset(
+    track: np.ndarray, mix_fp: dict, coarse: dict | None = None, span: tuple | None = None
+) -> dict:
+    """The speed the mix plays the record at and its whole-record best offset, by votes. `coarse` is
+    `coarse_fps(track)` when the caller already has it; `span` limits the votes to those mix frames."""
     best = {"votes": 0, "rate": 1.0, "offset": 0}
     for rate in COARSE_RATES:
-        votes, offset = match(fingerprint(at_mix_speed(track, rate)), mix_fp)
+        fp = coarse[rate] if coarse is not None else fingerprint(at_mix_speed(track, rate))
+        votes, offset = match(fp, mix_fp, span)
         if votes > best["votes"]:
             best = {"votes": votes, "rate": rate, "offset": offset}
         if rate == 1.0 and votes >= EARLY_ACCEPT:
@@ -116,13 +143,15 @@ def speed_and_offset(track: np.ndarray, mix_fp: dict) -> dict:
     steps = int(round(FINE_RATE_SPAN / FINE_RATE_STEP))
     for k in range(1, steps + 1):
         for rate in (best["rate"] - k * FINE_RATE_STEP, best["rate"] + k * FINE_RATE_STEP):
-            votes, offset = match(fingerprint(at_mix_speed(track, rate)), mix_fp)
+            votes, offset = match(fingerprint(at_mix_speed(track, rate)), mix_fp, span)
             if votes > best["votes"]:
                 best = {"votes": votes, "rate": rate, "offset": offset}
     return best
 
 
-def section_offsets(track_at_speed: np.ndarray, mix_fp: dict, near: int) -> list[tuple[int, int]]:
+def section_offsets(
+    track_at_speed: np.ndarray, mix_fp: dict, near: int, span: tuple | None = None
+) -> list[tuple[int, int]]:
     """(votes, offset) per SECTION_S section, each searched only within LOCAL_FRAMES of `near`.
 
     A free search per section drowned in a two-hour mix's coincidences (2026-09-24). Searched locally a
@@ -132,7 +161,9 @@ def section_offsets(track_at_speed: np.ndarray, mix_fp: dict, near: int) -> list
     for start in range(0, len(track_at_speed) - step // 2, step):
         piece = track_at_speed[start : start + step]
         shift = int(round(start / SR / FRAME_S))
-        _, offsets = pairs(fingerprint(piece), mix_fp)
+        mix_frames, offsets = pairs(fingerprint(piece), mix_fp)
+        if span is not None:
+            offsets = offsets[(mix_frames >= span[0]) & (mix_frames < span[1])]
         offsets = offsets - shift
         local = offsets[np.abs(offsets - near) <= LOCAL_FRAMES]
         if not len(local):
@@ -161,16 +192,13 @@ def consensus(sections: list[tuple[int, int]], near: int) -> tuple[int, int]:
     return agree, refined
 
 
-def presence(
-    track_fp: dict, mix_fp: dict, floor: int = SWEEP_MIN_HASHES
-) -> tuple[float | None, float | None, int, int, int]:
-    """(first heard, last heard, best window count, offset at first, offset at last), mix seconds and
-    frames. Per SWEEP_WIN_S window the record's best offset in that window is counted, so a looped or
-    edited record is present wherever any part of it plays. The times are the first and last shared
-    pair inside the first and last present window. None when nothing is shared."""
+def window_counts(track_fp: dict, mix_fp: dict) -> dict:
+    """Per SWEEP_WIN_S window stepping SWEEP_HOP_S: the record's best offset in that window and the
+    pairs on it. Returns {starts, counts, offsets (per window), mix_frames, pair_offsets, lo, hi}, or
+    None when nothing is shared."""
     mix_frames, offsets = pairs(track_fp, mix_fp)
     if not len(mix_frames):
-        return None, None, 0, 0, 0
+        return None
     order = np.argsort(mix_frames, kind="stable")
     mix_frames, offsets = mix_frames[order], offsets[order]
     win, hop = int(SWEEP_WIN_S / FRAME_S), int(SWEEP_HOP_S / FRAME_S)
@@ -185,6 +213,42 @@ def presence(
         values, n = np.unique(offsets[a:b], return_counts=True)
         k = int(np.argmax(n))
         counts[i], best_offset[i] = n[k], values[k]
+    return {
+        "starts": starts,
+        "counts": counts,
+        "offsets": best_offset,
+        "mix_frames": mix_frames,
+        "pair_offsets": offsets,
+        "lo": lo,
+        "hi": hi,
+    }
+
+
+def windows_above(w: dict | None, level: int) -> list:
+    """(window start in mix s, votes, offset in frames) for every window with more than `level` votes."""
+    if w is None:
+        return []
+    keep = np.nonzero(w["counts"] > level)[0]
+    return [
+        (round(float(w["starts"][i] * FRAME_S), 1), int(w["counts"][i]), int(w["offsets"][i]))
+        for i in keep
+    ]
+
+
+def presence(
+    track_fp: dict, mix_fp: dict, floor: int = SWEEP_MIN_HASHES, w: dict | None = None
+) -> tuple[float | None, float | None, int, int, int]:
+    """(first heard, last heard, best window count, offset at first, offset at last), mix seconds and
+    frames. Per SWEEP_WIN_S window the record's best offset in that window is counted, so a looped or
+    edited record is present wherever any part of it plays. The times are the first and last shared
+    pair inside the first and last present window. None when nothing is shared. `w` is
+    `window_counts(track_fp, mix_fp)` when the caller already has it."""
+    if w is None:
+        w = window_counts(track_fp, mix_fp)
+    if w is None:
+        return None, None, 0, 0, 0
+    counts, best_offset = w["counts"], w["offsets"]
+    mix_frames, offsets, lo, hi = w["mix_frames"], w["pair_offsets"], w["lo"], w["hi"]
     best = int(counts.max())
     present = np.nonzero(counts >= max(SWEEP_MIN_HASHES, floor))[0]
     if not len(present):
@@ -216,19 +280,62 @@ def _edge(mix_frames: np.ndarray, offsets: np.ndarray, offset: int, first: bool)
     return int(inside[0] if first else inside[-1])
 
 
+def near_span(near_s: float) -> tuple[int, int]:
+    """The mix frames a record listed at `near_s` is searched in."""
+    return (
+        int(max(0.0, near_s - NEAR_BEFORE_S) / FRAME_S),
+        int((near_s + NEAR_AFTER_S) / FRAME_S),
+    )
+
+
+def window_control_votes(control_coarse: list[dict], mix_fp: dict, span: tuple) -> list[int]:
+    """Each control's best votes over the coarse speeds inside one span: the identical path a windowed
+    record's decision votes take."""
+    return [max(match(fp, mix_fp, span)[0] for fp in c.values()) for c in control_coarse]
+
+
 def locate_track(
-    track_id: str, track: np.ndarray, mix_fp: dict, sweep_floor: int = SWEEP_MIN_HASHES
+    track_id: str,
+    track: np.ndarray,
+    mix_fp: dict,
+    sweep_floor: int = SWEEP_MIN_HASHES,
+    weak_level: int | None = None,
+    near_s: float | None = None,
+    control_coarse: list[dict] | None = None,
 ) -> Located:
     """One record against one mix table. `track` is the record's audio at the fingerprint rate.
-    `sweep_floor` is the presence floor from this mix's controls (`sweep_floor_from`)."""
+    `sweep_floor` is the presence floor from this mix's controls (`sweep_floor_from`), `weak_level` the
+    loudest control window (`weak_level_from`): windows above it are kept for the layer timeline.
+
+    With `near_s` (a list that carries the exact time the record is heard) the speed, offset and
+    sections are searched only in `near_span(near_s)`, and the decision votes are the best over the
+    coarse speeds there, beside the same number for every control in `control_coarse`. Presence is
+    always read over the whole mix, so a record used again far from its listed time is still seen."""
     t0 = time.time()
-    best = speed_and_offset(track, mix_fp)
+    span = near_span(near_s) if near_s is not None else None
+    coarse = coarse_fps(track) if span is not None else None
+    extra, search_span = {}, None
+    if span is not None:
+        wf = floors.from_controls(window_control_votes(control_coarse or [], mix_fp, span))
+        window_votes = max(match(fp, mix_fp, span)[0] for fp in coarse.values())
+        extra = {
+            "search": "window",
+            "near_s": round(near_s, 1),
+            "window_votes": window_votes,
+            "window_floor": wf.floor,
+            "window_control_max": wf.control_max,
+        }
+        # found in its window: speed, offset and sections come from the window. Not found there: the
+        # whole-mix search as for any record, so its speed is real and presence can hear it where it
+        # does play (test_layers: a record listed at 520 s that plays at 60 s)
+        if wf.clears(window_votes):
+            search_span = span
+    best = speed_and_offset(track, mix_fp, coarse, search_span)
     at_speed = at_mix_speed(track, best["rate"])
-    sections = section_offsets(at_speed, mix_fp, best["offset"])
+    sections = section_offsets(at_speed, mix_fp, best["offset"], search_span)
     n_agree, offset = consensus(sections, best["offset"])
-    first, last, sweep_best, off_first, off_last = presence(
-        fingerprint(at_speed), mix_fp, sweep_floor
-    )
+    w = window_counts(fingerprint(at_speed), mix_fp)
+    first, last, sweep_best, off_first, off_last = presence(None, mix_fp, sweep_floor, w)
     time_zero = offset * FRAME_S
     rate = round(best["rate"], 4)
     track_len = len(track) / SR
@@ -252,6 +359,8 @@ def locate_track(
         sweep_floor=sweep_floor,
         track_len_s=round(track_len, 1),
         seconds=round(time.time() - t0, 1),
+        windows=windows_above(w, weak_level) if weak_level is not None else [],
+        **extra,
     )
 
 
@@ -273,30 +382,69 @@ def sweep_floor_from(controls: list[Located]) -> int:
     return max(SWEEP_MIN_HASHES, floors.from_controls([c.sweep_votes for c in controls]).floor)
 
 
+def weak_level_from(controls: list[Located]) -> int:
+    """The loudest 30 s window any control scored in this mix. A record window above it is `weak`
+    evidence, above twice it (the sweep floor) `present`. Several records weak at one place is a
+    signal of layering (Anas, 2026-09-28)."""
+    return max([c.sweep_votes for c in controls] + [SWEEP_MIN_HASHES - 1])
+
+
 def locate_mix(mix_path, tracks: list[dict], controls: list[dict]) -> dict:
     """Fingerprint the mix once, then every record and every control against it.
 
-    `tracks` and `controls` are [{track_id, path}]. Returns {"mix_len_s", "floor", "records": [Located],
-    "controls": [Located]}. The floor is from the controls' votes, and the caller decides found and
-    confidence per record with `confidence`."""
+    `tracks` and `controls` are [{track_id, path}], a track may carry `near_s` (see `locate_track`).
+    Returns {"mix_len_s", "floor", "weak_level", "records": [Located], "controls": [Located]}. The floor
+    is from the controls' votes, and the caller decides found and confidence per record with
+    `confidence` (a windowed record with its own `window_floor`)."""
     t0 = time.time()
     mix_fp, mix_len = mix_fingerprint(mix_path)
     log.info(
         "locate %s: mix fingerprinted, %.1f min, %.0f s", mix_path, mix_len / 60, time.time() - t0
     )
-    ctrl = [locate_track(c["track_id"], load(c["path"]), mix_fp) for c in controls]
+    control_audio = [load(c["path"]) for c in controls]
+    ctrl = [locate_track(c["track_id"], a, mix_fp) for c, a in zip(controls, control_audio)]
     sweep_floor = sweep_floor_from(ctrl)
-    records = [locate_track(t["track_id"], load(t["path"]), mix_fp, sweep_floor) for t in tracks]
+    weak_level = weak_level_from(ctrl)
+    control_coarse = (
+        [coarse_fps(a) for a in control_audio]
+        if any(t.get("near_s") is not None for t in tracks)
+        else None
+    )
+    records = []
+    for i, t in enumerate(tracks, 1):
+        records.append(
+            locate_track(
+                t["track_id"],
+                load(t["path"]),
+                mix_fp,
+                sweep_floor,
+                weak_level,
+                t.get("near_s"),
+                control_coarse,
+            )
+        )
+        if i % 10 == 0 or i == len(tracks):
+            log.info(
+                "locate %s: %d of %d records, %.0f s", mix_path, i, len(tracks), time.time() - t0
+            )
     floor = floors.from_controls([c.votes for c in ctrl])
     found = sum(1 for r in records if confidence(r.votes, floor, r.sections_agree) != "not found")
     log.info(
-        "locate %s: %d of %d records found, floor %d, sweep floor %d, from %d controls, %.0f s",
+        "locate %s: %d of %d records found on the whole-mix floor, floor %d, sweep floor %d, "
+        "weak level %d, from %d controls, %.0f s",
         mix_path,
         found,
         len(records),
         floor.floor,
         sweep_floor,
+        weak_level,
         floor.control_n,
         time.time() - t0,
     )
-    return {"mix_len_s": mix_len, "floor": floor, "records": records, "controls": ctrl}
+    return {
+        "mix_len_s": mix_len,
+        "floor": floor,
+        "weak_level": weak_level,
+        "records": records,
+        "controls": ctrl,
+    }

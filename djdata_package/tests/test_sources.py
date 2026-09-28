@@ -125,3 +125,15 @@ def test_controls_come_from_other_mixes_and_are_stable_per_mix(tmp_path):
     ids = [c["track_id"] for c in first]
     assert ids == [c["track_id"] for c in again]
     assert set(ids) == {"t9", "t8"}  # never the mix's own records, and no more than the pool has
+
+
+def test_other_dj_pool_takes_other_djs_records_never_one_the_own_dj_plays(tmp_path):
+    _corpus(tmp_path)
+    (tmp_path / "tracks" / "t8.m4a").write_bytes(b"x")
+    rows = list(csv.DictReader(open(tmp_path / "tracklist.csv")))
+    shared = dict(rows[3], mix_id="m3", track_id="t1")  # Dj B also plays Dj A's t1
+    extra = dict(rows[3], mix_id="m3", track_id="t8")
+    no_audio = dict(rows[3], mix_id="m3", track_id="t7")
+    _tracklist(tmp_path / "tracklist.csv", rows + [shared, extra, no_audio])
+    pool = tracklists.other_dj_pool(tmp_path, tmp_path / "tracklist.csv", ["Dj B"], {"Dj A"})
+    assert [c["track_id"] for c in pool] == ["t8", "t9"]

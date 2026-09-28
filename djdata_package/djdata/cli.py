@@ -12,6 +12,9 @@
   djdata scrape-tracklists --dj URL --genre G        legacy 1001 scraper (needs a display)
 
 The profiling pipeline, one stage per subcommand, each resumable (see pipeline.py):
+  djdata prove      --config config_fred.yaml --candidates C --lists L [--pairs P] [--workers N]
+                    which audio file is which show, by play order -> out/proofs.csv, out/proof_summary.csv
+  djdata prove-lists --config config_fred.yaml --djs Fredagain.. --out L   the 1001 lists for prove
   djdata locate     --config config_djs.yaml [--workers N] [--mixes ID...]   records found in mixes -> out/plays.csv
   djdata pairs      --config config_djs.yaml                                  which record follows which -> out/seams.csv
   djdata cut        --config config_djs.yaml [--workers N]                    windows cut and audited -> out/cuts.csv
@@ -19,6 +22,8 @@ The profiling pipeline, one stage per subcommand, each resumable (see pipeline.p
   djdata tempo      --config config_djs.yaml [--workers N]                    BPM per record -> out/tempos.csv
   djdata label      --config config_djs.yaml                                  transition types in bars -> out/labels.csv
   djdata export-seams --config config_djs.yaml                                one flat table -> out/seams_index.csv
+  djdata layers     --config config_djs.yaml                                  the layer timeline -> out/layers.csv
+  djdata layer-bands --config config_djs.yaml [--workers N]                   bands of stacked records -> out/layer_bands.csv
 """
 
 import argparse
@@ -170,12 +175,57 @@ def cmd_locate(args):
     print(json.dumps(pipeline.locate(cfg, workers=args.workers, only=args.mixes)))
 
 
+def cmd_prove(args):
+    from . import pipeline
+
+    cfg = _cfg(args)
+    print(
+        json.dumps(
+            pipeline.prove(
+                cfg, args.candidates, args.lists, pairs_csv=args.pairs, workers=args.workers
+            )
+        )
+    )
+
+
+def cmd_prove_lists(args):
+    import csv
+
+    from . import pipeline
+    from .store import tables
+
+    cfg = _cfg(args)
+    rows = pipeline.lists_1001(cfg, args.djs)
+    with open(args.out, "w", newline="") as handle:
+        w = csv.DictWriter(handle, fieldnames=tables.PROOF_LISTS)
+        w.writeheader()
+        w.writerows(rows)
+    print(json.dumps({"lists": len({r["list_id"] for r in rows}), "records": len(rows)}))
+
+
+def cmd_usb002_tracklist(args):
+    import csv
+
+    from .sources import usb002
+
+    rows = usb002.tracklist_rows(args.app, args.tracks, args.segments)
+    with open(args.out, "w", newline="") as handle:
+        w = csv.DictWriter(handle, fieldnames=usb002.TRACKLIST_COLUMNS)
+        w.writeheader()
+        w.writerows(rows)
+    print(json.dumps({"lists": len({r["mix_id"] for r in rows}), "records": len(rows)}))
+
+
 def cmd_stage(args):
     from . import pipeline
 
     cfg = _cfg(args)
     stage = getattr(pipeline, args.stage)
-    kwargs = {"workers": args.workers} if args.stage in ("cut", "measure", "tempo") else {}
+    kwargs = (
+        {"workers": args.workers}
+        if args.stage in ("cut", "measure", "tempo", "layer_bands")
+        else {}
+    )
     print(json.dumps(stage(cfg, **kwargs)))
 
 
@@ -241,6 +291,24 @@ def main(argv=None):
         "--mixes", nargs="*", default=None, help="only these mix ids (default: every mix on disk)"
     )
     sp.set_defaults(fn=cmd_locate)
+    sp = sub.add_parser("prove")
+    sp.add_argument("--config", required=True)
+    sp.add_argument("--candidates", required=True, help="csv: file_id, path")
+    sp.add_argument("--lists", required=True, help="csv with the PROOF_LISTS columns")
+    sp.add_argument("--pairs", default=None, help="csv: file_id, list_id (default: every pair)")
+    sp.add_argument("--workers", type=int, default=1)
+    sp.set_defaults(fn=cmd_prove)
+    sp = sub.add_parser("usb002-tracklist")
+    sp.add_argument("--app", required=True, help="the app's data.json, saved")
+    sp.add_argument("--tracks", required=True, help="usb002_solo_tracks.csv")
+    sp.add_argument("--segments", required=True, help="the marathon segments.csv")
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(fn=cmd_usb002_tracklist)
+    sp = sub.add_parser("prove-lists")
+    sp.add_argument("--config", required=True)
+    sp.add_argument("--djs", nargs="+", required=True)
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(fn=cmd_prove_lists)
     for name, stage in (
         ("pairs", "pairs"),
         ("cut", "cut"),
@@ -248,6 +316,8 @@ def main(argv=None):
         ("tempo", "tempo"),
         ("label", "label"),
         ("export-seams", "export"),
+        ("layers", "layers"),
+        ("layer-bands", "layer_bands"),
     ):
         sp = sub.add_parser(name)
         sp.add_argument("--config", required=True)
