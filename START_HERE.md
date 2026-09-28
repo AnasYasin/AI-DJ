@@ -25,13 +25,14 @@ Detail never lives here.
 
 New kinds of work, for example model fine-tuning or retraining, get their own md and a row here.
 
-## State in one paragraph (2026-09-27)
+## State in one paragraph (2026-09-28)
 
-The seam pipeline is built, tested and on `origin/dev` (see `DATA_PIPELINE.md` for how to run it and
-`DATASET_STATE.md` for what it measured on the five mix development sample and what Anas heard). The
-next steps are Fred's segments proved by locate on the VM, the full run over the 281 DJ mixes and
-Raveform on the VM, then deleting the old `scripts/diag` code. The VM is stopped. Never call the old
-dataset "the catalog". Raveform's tier 1 and tier 2 are one dataset; the split was run order only.
+The seam pipeline is built, tested and on `origin/dev`. On 2026-09-28 Fred again.. joined the DJ corpus
+through the USB002 app's tracklists, and the layer tables were added for DJs who stack records
+(`DATA_PIPELINE.md` for how, `DATASET_STATE.md` for the numbers, `FRED_AGAIN_SETS.md` for him). The full
+profiling run over every DJ with Fred started on the VM on 2026-09-28; Raveform follows it. Then the old
+`scripts/diag` code goes. Never call the old dataset "the catalog". Raveform's tier 1 and tier 2 are one
+dataset; the split was run order only.
 
 ## How Anas works, follow this
 

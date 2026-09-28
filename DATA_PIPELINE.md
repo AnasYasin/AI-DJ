@@ -2,6 +2,88 @@
 
 Moved from START_HERE.md on 2026-09-27, content unchanged. What was built, what it is proved by, how to run it, where the data lands, how to add data, and the watch list for a run. The numbers and the findings behind it are in DATASET_STATE.md; the layout in DATA_ARCHITECTURE.md; the code in djdata_package with its own README.
 
+## Added 2026-09-28: Fred again.. in the DJ corpus, layer tables, exact-time lookup
+
+Commits 3a563ab, 2908560 and 241f24c on `origin/dev`. The numbers behind each choice are in
+`DATASET_STATE.md` under 2026-09-28.
+
+**Fred is part of the DJ run, not a corpus of his own.** His 17 solo sets from the USB002 marathon that
+have a tracklist are mixes named `usb_<segment>` (for example `usb_fred_07_madrid_fred`), each a link in
+`data/djdata/djs/mixes_tmp/` to `data/djdata/djs/fred/segments/<segment>.m4a`. Their tracklists come
+from usb002-tracklist.app, saved as `data/djdata/djs/fred/lists/usb002_app_2026-09-28.json`, turned into
+tracklist rows with
+
+```
+PYTHONPATH=djdata_package python -m djdata.cli usb002-tracklist \
+  --app data/djdata/djs/fred/lists/usb002_app_2026-09-28.json \
+  --tracks data/djdata/djs/fred/lists/usb002_solo_tracks.csv \
+  --segments data/djdata/djs/fred/segments/segments.csv \
+  --out data/djdata/djs/lists/usb002_solo_tracklist.csv
+```
+
+and read beside the 1001 scrape through `extra_tracklists` in `config_djs.yaml`. Their tracks are in
+`djs/tracks/`: 1001 ids where title and an artist agree, `usb_<hash>` ids otherwise
+(`usb002_solo_tracks.csv` maps them). His three 1001 shows proved on their own audio are ordinary mixes
+(452b91b4c4, 4560f420f5, and 51f57bd5cc linked to `fred/bWUsbsTUKV4.m4a`). The two 1001 shows whose
+audio came from a wrong title search (40caea7a7d, e3249f53e6) are moved to `mixes_tmp/old_searched/`.
+
+**What changed in locate, and what did not.** A tracklist row whose `exact_time` column is 1 carries
+the exact minute the record is heard inside the file. Such a record is searched only from 3 min before
+to 5 min after it (`locate.NEAR_BEFORE_S`, `NEAR_AFTER_S`), on the mix table cut to that window, with the
+three controls matched in the same window. A record not in its window is `not found` there, and its
+presence rows still show where it plays. Every 1001 list keeps the whole-mix search. On two dev mixes
+the new locate gives all 38 plays rows identical to pass three.
+
+`controls_exclude_own_dj: [Fredagain..]` keeps every record he lists anywhere out of his controls; his
+tour repeats its records every night. Every other DJ keeps the controls he had.
+
+**New stages and tables.** None of the tables above changed its columns except `plays.csv`, which gains
+`search`, `near_s`, `window_votes`, `window_floor`, `window_control_max` at the end.
+
+```
+djdata locate       also writes out/presence.csv and out/mixes.csv
+djdata layers       the layer timeline per 10 s                                           -> out/layers.csv
+djdata layer-bands  which record carries which band where records stack                   -> out/layer_bands.csv
+```
+
+`presence.csv` is one row per record per 30 s window where it beats the loudest control window of the
+mix: `present` at twice that (the sweep floor), `weak` between the two, with `record_at_s`, the part of
+the record playing there. `layers.csv` counts present and weak records per 10 s and names them;
+`same_audio` names two ids of one recording, which are counted once. `layer_bands.csv` is per record and
+per band (low, mid, high) for every span of three or more present records, or two present records that
+are not a consecutive pair: votes at the record's own alignment, the band floor from three controls on
+that span, seconds seen. `mixes.csv` is codec, profile, bitrate, sample rate, length, and the mix's
+floors.
+
+**The run, every stage, from the repo root on the VM.**
+
+```
+C=djdata_package/config_djs.yaml
+PYTHONPATH=djdata_package:. python -m djdata.cli locate --config $C --workers 14
+PYTHONPATH=djdata_package:. python -m djdata.cli pairs --config $C
+PYTHONPATH=djdata_package:. python -m djdata.cli cut --config $C --workers 16
+PYTHONPATH=djdata_package:. python -m djdata.cli measure --config $C --workers 16
+PYTHONPATH=djdata_package:. python -m djdata.cli tempo --config $C --workers 16
+PYTHONPATH=djdata_package:. python -m djdata.cli label --config $C
+PYTHONPATH=djdata_package:. python -m djdata.cli export-seams --config $C
+PYTHONPATH=djdata_package:. python -m djdata.cli layers --config $C
+PYTHONPATH=djdata_package:. python -m djdata.cli layer-bands --config $C --workers 16
+```
+
+`.` on `PYTHONPATH` is needed since `seam/tempo.py` imports the mixer from `src/`.
+
+**Watch list, added 2026-09-28.**
+
+- Weak is chance-level evidence. A weak window is the best of many offsets, so on Black Coffee, who does
+  not stack records, one record read weak at eight places in two hours. Weak never makes a span and is
+  never band-read. Judge Fred's weak stacks only against a non-stacking DJ's rate in the same run.
+- Fred's cut audits fail more by nature: on NY6 1 of 5 windows started with A alone and 2 of 5 ended
+  with B alone, because two records often play together. Read his seams with that in mind.
+- One recording can sit under two ids (NY6's two Skepta & PlaqueBoyMax versions). The layer tables
+  count them once; `plays.csv` keeps both rows.
+- A windowed Fred record costs about 70 s, like a whole-mix one, because a record not in its window
+  gets the whole-mix speed search so its presence is read at its real speed.
+
 ## State on 2026-09-25
 
 **What exists.** `djdata_package/djdata` holds the whole chain from mix and track audio to a labelled

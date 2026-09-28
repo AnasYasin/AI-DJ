@@ -26,6 +26,79 @@ the speed part is superseded, the quad fingerprint remains a valid second opinio
 
 ---
 
+# 2026-09-28, Fred again.. checked, fixed and joined to the DJ corpus
+
+All on the VM unless it says laptop. The code is in `DATA_PIPELINE.md` under 2026-09-28.
+
+## His tracklists and his audio
+
+The USB002 marathon (`GiXKukOtmeE`, 108.5 h, 48 kbps HE-AAC) is cut into 42 segments, 18 solo. The
+tracklists for it come from usb002-tracklist.app: its `data.json` has 20 shows, 103 sets and 3,267
+tracks, each with the marathon second it is heard at, and its set times equal our `segments.csv`
+exactly. 17 of the 18 solo segments have a list (San Francisco's is empty). Anas's screenshot lists of
+2026-09-21 are the same data for five sets.
+
+Tracks fetched 2026-09-28 into `djs/tracks/` with a fresh cookie, no block: 189 of the 193 missing 1001
+Fred tracks (Fred's 1001 lists now 1,118 of 1,153 on disk, 31 ID or blank, 4 with no upload), and 171 of
+the 175 app solo tracks not already held.
+
+## Spot check, 3 to 5 random records per show, whole-file search
+
+76 show and file pairs, 38 files, 64 min at 12 workers, `data/djdata/fred/spot_report.csv`. On the app
+lists, 9 of 17 solo segments had most records found near the app time, the rest 0 to 2 of 5. Most 1001
+city lists do not match the marathon's solo audio (Brussels, Dublin, Lyon solo, Chicago, SF, HydeFM: 0
+to 1 of 5); Toronto 2 (f0015906a0, 5 of 5 on the Four Tet b2b), Toronto 1 (56bf970778, 4 of 5) and Lyon
+(cea5b407bc, 3 of 5 on the b2b) do. Own audio: 452b91b4c4 3 of 5, 4560f420f5 4 of 5, bWUsbsTUKV4 is
+51f57bd5cc (2 of 3 at 10,442 and 29,449 votes); 40caea7a7d and e3249f53e6 1 of 5, the wrong files.
+
+## The whole file was the noise, not the bitrate
+
+Bitrate test, Black Coffee 74a372440e, the same 17 records and 3 controls at three qualities:
+
+```
+version              control votes   floor   found   median record votes
+MP3 128 kbps         79 67 64          158    15/17     646
+AAC 48 kbps 22 kHz   86 61 58          172    14/17     446
+AAC 32 kbps 22 kHz   86 51 29          172    14/17     295
+```
+
+The floor hardly moves with bitrate; records lose 30 to 55 % of their votes. Better uploads of his shows
+would help a little, not decide it.
+
+Window check, every app record searched only from 3 min before to 5 min after its app time, controls in
+the same windows (`data/djdata/fred/window_check.csv`, 739 lookups):
+
+```
+segment              floor   found            segment           floor   found
+Brussels fred_05       102   34 of 63         NY1 fred_23          94   43 of 77
+Toronto 1 fred_12      108    5 of 19         NY2 fred_26         128   23 of 57
+Toronto 1 fred_13      108   35 of 60         LDN 3 fred_42       110    5 of 12
+Vancouver fred_19      110   32 of 53         LDN 4 fred_43        96   12 of 26
+Chicago (known)        102   19 of 28         Madrid (known)       94   31 of 44
+```
+
+Controls peak at 47 to 64 inside a window against up to 135 over a whole two hour file. All 17 solo
+segments are their shows; 40 to 60 % of his records found is his realistic yield.
+
+## What the misses are: layers
+
+Ten missed records cut from the mix at their app time (`data/external/ear_test/fred_shazam_2026-09-28/test10`)
+and run through Shazam by Anas: almost all are two or more records playing at once, for example Café
+Del Mar with Fred and Romy's "strong" over its end, "Set Me Free" under the vocal of "backseat". He
+layers on purpose, bass from one record and vocal from another. The layer tables were built for that.
+
+## The small real run before the full one
+
+Black Coffee and Fred's NY6 solo set (22 min, 10 records) through every stage on the VM, 2026-09-28,
+`data/djdata/test_2026-09-28/`: no stage failed. NY6 located in 12.6 min, 6 of 10 found in their
+windows (10,000 to 16,700 votes against floors 70 to 106). Black Coffee 14 of 17 found, 10 of 10 cut,
+audits 9 and 10 of 10. It found two faults, both fixed before the full run: weak rows made 17 of Black
+Coffee's 18 layer spans (so spans now need present records), and one recording under two ids read as
+two records together (now merged when time zero, windows and the audio itself agree). After the fixes
+Black Coffee has 3 spans, one pair of present records at 1:49:20 to 1:52:30, NY6 two.
+
+---
+
 # 2026-09-25, the profiling pipeline is in the package, checked on synthetic audio, three passes on
 # five real mixes, and heard
 

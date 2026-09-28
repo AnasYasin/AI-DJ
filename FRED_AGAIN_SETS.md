@@ -274,3 +274,23 @@ the hour and rolls over hourly, not seconds from the mix start.
 3. Register the proved segments as mix audio in `state.sqlite` so the seam stage can see them.
 4. Cut with the bounded rule, solo segments only.
 5. Expect to lose most of the commercial titles and keep his own records.
+
+---
+
+# 2026-09-28, where he stands
+
+Everything above this line is as written before and parts of it are superseded here. The numbers are in
+`DATASET_STATE.md` under 2026-09-28, the code and the run in `DATA_PIPELINE.md` under the same date.
+
+- **His tracklists are the USB002 app's, not 1001's.** usb002-tracklist.app lists every set of the
+  marathon with the second each track is heard, and its set times equal our segment cuts. Most 1001
+  city lists do not describe the marathon's solo audio; only Toronto 1, Toronto 2 and the Lyon b2b match.
+- **All 17 solo segments with a list are proved** by the windowed check, 26 to 70 % of their records
+  found at the app time against controls in the same windows. San Francisco's solo set has no list.
+- **Proved on their own audio:** 452b91b4c4, 4560f420f5, and 51f57bd5cc (the Canada Twitch video
+  `bWUsbsTUKV4`). **Wrong audio:** 40caea7a7d and e3249f53e6, moved out of the corpus.
+- **The b2b segments are not in the profile**, as decided on 2026-09-21.
+- **He layers two and more records at once** (Anas's Shazam check of ten misses). His profile is read
+  from the layer tables as much as from the seams.
+- **He is part of the DJ profiling run**, as mixes `usb_<segment>` in `djs/`, not a corpus of his own;
+  `config_fred.yaml` and the separate `fred` root are no longer used for the run.
