@@ -137,3 +137,12 @@ def test_other_dj_pool_takes_other_djs_records_never_one_the_own_dj_plays(tmp_pa
     _tracklist(tmp_path / "tracklist.csv", rows + [shared, extra, no_audio])
     pool = tracklists.other_dj_pool(tmp_path, tmp_path / "tracklist.csv", ["Dj B"], {"Dj A"})
     assert [c["track_id"] for c in pool] == ["t8", "t9"]
+
+
+def test_excluded_mixes_are_read_from_the_list(tmp_path):
+    with open(tmp_path / "excluded.csv", "w", newline="") as h:
+        w = csv.DictWriter(h, fieldnames=["mix_id", "reason"])
+        w.writeheader()
+        w.writerow({"mix_id": "m1", "reason": "radio show"})
+    assert tracklists.excluded_mixes(tmp_path / "excluded.csv") == {"m1"}
+    assert tracklists.excluded_mixes(None) == set()

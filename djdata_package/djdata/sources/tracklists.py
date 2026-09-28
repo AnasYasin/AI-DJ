@@ -129,6 +129,16 @@ def other_dj_pool(
     return out
 
 
+def excluded_mixes(path) -> set:
+    """Mix ids dropped from the corpus for good (`dj_mixes_excluded.csv`, Anas's list: radio shows, no
+    or dead audio link on the 1001 page). Their old audio may still sit in mixes_tmp (2026-09-28: 31 of
+    them did, so the corpus read 316 mixes where 285 belong), so the corpus reads the list."""
+    if not path:
+        return set()
+    with open(path, newline="") as handle:
+        return {r["mix_id"] for r in csv.DictReader(handle)}
+
+
 def dj_records(tracklists_csv: Path, djs: list, extra: list | None = None) -> set:
     """Every track id any mix by these DJs lists."""
     wanted = set(djs)

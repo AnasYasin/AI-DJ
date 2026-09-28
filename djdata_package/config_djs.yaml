@@ -14,6 +14,9 @@ tracklists_csv: data/interim/tracklist.csv
 # night after night. Every other DJ keeps the controls he had.
 extra_tracklists: [data/djdata/djs/lists/usb002_solo_tracklist.csv]
 controls_exclude_own_dj: [Fredagain..]
+# Mixes dropped for good (radio shows, no or dead audio link on the 1001 page). Old audio for some of
+# them still sits in mixes_tmp, so the corpus reads this list and leaves them out.
+excluded_mixes_csv: data/djdata/djs/lists/dj_mixes_excluded.csv
 
 run_tiers: [tracklists]
 tiers:

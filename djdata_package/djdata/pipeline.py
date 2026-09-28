@@ -59,9 +59,11 @@ def _pool(cfg: Config, workers: int) -> ProcessPoolExecutor:
 def corpus(cfg: Config, only: list[str] | None = None) -> list[dict]:
     """The mixes this config's corpus holds on disk, with their records."""
     if cfg.source == "tracklists":
-        return tracklists.mixes_on_disk(
+        mixes = tracklists.mixes_on_disk(
             cfg.root, cfg.tracklists_csv, only, cfg.raw.get("extra_tracklists")
         )
+        excluded = tracklists.excluded_mixes(cfg.raw.get("excluded_mixes_csv"))
+        return [m for m in mixes if m["mix_id"] not in excluded]
     if cfg.source == "raveform":
         return raveform.mixes_on_disk(cfg, only)
     raise ValueError(f"no corpus reader for source {cfg.source!r}")
