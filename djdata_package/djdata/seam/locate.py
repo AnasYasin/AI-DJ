@@ -288,6 +288,20 @@ def near_span(near_s: float) -> tuple[int, int]:
     )
 
 
+def restrict(mix_fp: dict, span: tuple) -> dict:
+    """The mix table cut down to the frames of `span`. Matching against it gives exactly the votes
+    `match(..., span)` gives on the whole table, at a fraction of the cost, because only the hashes
+    inside the window are paired (2026-09-28: the span filter alone left a windowed lookup slower than
+    a whole-mix one, Fred's NY1 set at about 2 min a record)."""
+    lo, hi = span
+    out = {}
+    for key, frames in mix_fp.items():
+        inside = frames[(frames >= lo) & (frames < hi)]
+        if len(inside):
+            out[key] = inside
+    return out
+
+
 def window_control_votes(control_coarse: list[dict], mix_fp: dict, span: tuple) -> list[int]:
     """Each control's best votes over the coarse speeds inside one span: the identical path a windowed
     record's decision votes take."""
@@ -314,10 +328,11 @@ def locate_track(
     t0 = time.time()
     span = near_span(near_s) if near_s is not None else None
     coarse = coarse_fps(track) if span is not None else None
-    extra, search_span = {}, None
+    extra, search_fp = {}, mix_fp
     if span is not None:
-        wf = floors.from_controls(window_control_votes(control_coarse or [], mix_fp, span))
-        window_votes = max(match(fp, mix_fp, span)[0] for fp in coarse.values())
+        sub = restrict(mix_fp, span)
+        wf = floors.from_controls(window_control_votes(control_coarse or [], sub, None))
+        window_votes = max(match(fp, sub)[0] for fp in coarse.values())
         extra = {
             "search": "window",
             "near_s": round(near_s, 1),
@@ -329,10 +344,10 @@ def locate_track(
         # whole-mix search as for any record, so its speed is real and presence can hear it where it
         # does play (test_layers: a record listed at 520 s that plays at 60 s)
         if wf.clears(window_votes):
-            search_span = span
-    best = speed_and_offset(track, mix_fp, coarse, search_span)
+            search_fp = sub
+    best = speed_and_offset(track, search_fp, coarse)
     at_speed = at_mix_speed(track, best["rate"])
-    sections = section_offsets(at_speed, mix_fp, best["offset"], search_span)
+    sections = section_offsets(at_speed, search_fp, best["offset"])
     n_agree, offset = consensus(sections, best["offset"])
     w = window_counts(fingerprint(at_speed), mix_fp)
     first, last, sweep_best, off_first, off_last = presence(None, mix_fp, sweep_floor, w)

@@ -207,3 +207,19 @@ def test_layer_spans_skip_an_ordinary_seam_and_keep_a_stack_or_a_far_pair():
     sp = spans[0]
     assert sp["start_s"] == 40.0 and sp["end_s"] == 50.0 + 30.0
     assert sp["records"] == {"b": "present", "c": "present", "d": "weak"}
+
+
+def test_matching_the_cut_table_gives_the_votes_of_the_span_filter():
+    from djdata.seam import locate
+    from djdata.seam.fingerprint import FRAME_S, as_arrays, fingerprint, match
+
+    rec = synth.record(60.0, seed=700)
+    mix = synth.mix([(rec, 40.0, 1.0), (synth.record(60.0, seed=701), 120.0, 1.0)], 200.0)
+    table = as_arrays(fingerprint(mix))
+    fp = fingerprint(rec)
+    for span in (
+        (0, int(200 / FRAME_S)),
+        (int(30 / FRAME_S), int(90 / FRAME_S)),
+        (int(110 / FRAME_S), int(190 / FRAME_S)),
+    ):
+        assert match(fp, locate.restrict(table, span)) == match(fp, table, span)
