@@ -207,7 +207,8 @@ def _locate_job(job: dict) -> dict:
             }
         )
     presence_rows, seen = [], set()
-    sweep_floor = got["controls"][0].sweep_floor if got["controls"] else None
+    # the presence floor the records were judged on (a control itself is located with the minimum)
+    sweep_floor = got["records"][0].sweep_floor if got["records"] else None
     for found in got["records"]:
         if found.track_id in seen:
             continue  # a record listed twice is one record in the audio
@@ -536,14 +537,88 @@ def _grid(t: float) -> float:
     return round(round(float(t) / LAYER_GRID_S) * LAYER_GRID_S, 1)
 
 
-def _stack(rows: list[dict]) -> dict:
-    """grid time -> {track_id: state}, a record present in any window snapped there counts present."""
+SAME_AUDIO_T0_S = 1.0  # two ids whose time zero agrees this closely ...
+SAME_AUDIO_OVERLAP = 0.8  # ... and who are present in mostly the same windows are one recording
+
+
+def same_recording(a_path, b_path, control_paths: list) -> bool:
+    """Are two record files the same recording? A's fingerprint is matched against B's, and against
+    each control, and the floor is twice the loudest control (the one rule, `floors.from_controls`).
+    Time zero and windows alone cannot decide it: two different records started on the same second
+    look the same there (test_layers, r2 and r3)."""
+    from .seam.fingerprint import as_arrays, fingerprint, match
+
+    a_fp = fingerprint(load_audio(a_path))
+    votes = match(a_fp, as_arrays(fingerprint(load_audio(b_path))))[0]
+    ctrl = [match(a_fp, as_arrays(fingerprint(load_audio(c))))[0] for c in control_paths]
+    return floors.from_controls(ctrl).clears(votes)
+
+
+def same_audio(plays_rows: list[dict], pres: list[dict], is_same=None) -> dict:
+    """track_id -> the one id it is counted under. One recording listed under two ids (NY6 lists two
+    Skepta & PlaqueBoyMax versions, found at 425.31 s and 425.27 s with the same votes, 2026-09-28)
+    would read as two records playing together. A pair is a candidate when their time zero agrees
+    within SAME_AUDIO_T0_S and their present windows overlap by SAME_AUDIO_OVERLAP of the smaller set;
+    `is_same(a, b)` then decides on the audio (`same_recording`). Without it nothing is merged."""
+    t0 = {
+        r["track_id"]: num(r["time_zero_s"])
+        for r in plays_rows
+        if r["is_control"] == "0" and num(r["time_zero_s"]) is not None
+    }
+    windows = {}
+    for r in pres:
+        if r["state"] == "present":
+            windows.setdefault(r["track_id"], set()).add(_grid(r["window_start_s"]))
+    ids = sorted(k for k in windows if k in t0)
+    canon = {k: k for k in ids}
+    for i, a in enumerate(ids):
+        for b in ids[i + 1 :]:
+            if abs(t0[a] - t0[b]) > SAME_AUDIO_T0_S:
+                continue
+            small = min(len(windows[a]), len(windows[b]))
+            if not small or len(windows[a] & windows[b]) < SAME_AUDIO_OVERLAP * small:
+                continue
+            if is_same is not None and is_same(a, b):
+                canon[b] = canon[a]
+    return canon
+
+
+def _is_same_for(cfg: Config, plays_rows: list[dict]):
+    """`is_same` for one mix: files from tracks/, this mix's own control records as the floor."""
+    paths = _track_paths(cfg)
+    controls = [
+        paths[r["track_id"]]
+        for r in plays_rows
+        if r["is_control"] == "1" and r["track_id"] in paths
+    ]
+
+    def is_same(a, b):
+        if a not in paths or b not in paths or not controls:
+            return False
+        return same_recording(paths[a], paths[b], controls)
+
+    return is_same
+
+
+def _stack(rows: list[dict], canon: dict | None = None) -> dict:
+    """grid time -> {track_id: state}, a record present in any window snapped there counts present.
+    With `canon`, ids of one recording are counted once, under its first id."""
     out = {}
+    canon = canon or {}
     for r in rows:
+        tid = canon.get(r["track_id"], r["track_id"])
         cell = out.setdefault(_grid(r["window_start_s"]), {})
-        if cell.get(r["track_id"]) != "present":
-            cell[r["track_id"]] = r["state"]
+        if cell.get(tid) != "present":
+            cell[tid] = r["state"]
     return out
+
+
+def _aliases(canon: dict) -> dict:
+    """canonical id -> "id=other id" for every recording counted under more than one id."""
+    groups = {}
+    for k, v in canon.items():
+        groups.setdefault(v, []).append(k)
+    return {v: "=".join(sorted(ks)) for v, ks in groups.items() if len(ks) > 1}
 
 
 def layers(cfg: Config) -> dict:
@@ -552,10 +627,17 @@ def layers(cfg: Config) -> dict:
     control window, under twice it). Several weak records at one place is kept as a signal of its own.
     Rewrites layers.csv from presence.csv."""
     out = tables.layers(cfg.dirs["out"])
-    djs = {r["mix_id"]: r["dj"] for r in tables.plays(cfg.dirs["out"]).rows()}
+    plays_rows = tables.plays(cfg.dirs["out"]).rows()
+    djs = {r["mix_id"]: r["dj"] for r in plays_rows}
+    by_mix = {}
+    for r in plays_rows:
+        by_mix.setdefault(r["mix_id"], []).append(r)
     rows = []
     for mix_id, pres in sorted(_presence_by_mix(cfg).items()):
-        for t, cell in sorted(_stack(pres).items()):
+        mix_rows = by_mix.get(mix_id, [])
+        canon = same_audio(mix_rows, pres, _is_same_for(cfg, mix_rows))
+        alias = _aliases(canon)
+        for t, cell in sorted(_stack(pres, canon).items()):
             present = sorted(k for k, v in cell.items() if v == "present")
             weak = sorted(k for k, v in cell.items() if v == "weak")
             rows.append(
@@ -567,6 +649,7 @@ def layers(cfg: Config) -> dict:
                     "n_weak": len(weak),
                     "present": " ".join(present),
                     "weak": " ".join(weak),
+                    "same_audio": " ".join(alias[k] for k in present + weak if k in alias),
                 }
             )
     if out.path.exists():
@@ -594,12 +677,16 @@ def _adjacent_pairs(plays_rows: list[dict]) -> set:
 
 
 def layer_spans(stack: dict, adjacent: set) -> list[dict]:
-    """Runs of grid times whose records (present or weak) are three or more, or two that are not a
-    consecutive pair in audio order. [{start_s, end_s, records: {track_id: state}}], each at most
-    MAX_SPAN_S long."""
+    """Runs of grid times whose PRESENT records are three or more, or two that are not a consecutive
+    pair in audio order. [{start_s, end_s, records: {track_id: "present"}}], each at most MAX_SPAN_S.
+
+    Weak records never make or join a span (2026-09-28). A weak window is the best of many chance
+    offsets, and on Black Coffee, who does not stack records, one record read weak at eight places over
+    two hours; the band floor, from controls given no such best-of choice, then passed chance as a
+    band. Weak stays in layers.csv, where Fred's weak stacks can be set against a non-stacking DJ's."""
     spans, cur = [], None
     for t in sorted(stack):
-        cell = stack[t]
+        cell = {k: v for k, v in stack[t].items() if v == "present"}
         ids = frozenset(cell)
         qualifies = len(ids) >= 3 or (len(ids) == 2 and ids not in adjacent)
         if (
@@ -719,11 +806,13 @@ def layer_bands(cfg: Config, workers: int = 1) -> dict:
             continue
         rows = by_mix.get(mix_id, [])
         rate = {r["track_id"]: num(r["rate"]) for r in rows if r["is_control"] == "0"}
+        canon = same_audio(rows, pres, _is_same_for(cfg, rows))
         controls = [
             paths[r["track_id"]] for r in rows if r["is_control"] == "1" and r["track_id"] in paths
         ]
-        stack = _stack(pres)
-        for k, sp in enumerate(layer_spans(stack, _adjacent_pairs(rows)), 1):
+        stack = _stack(pres, canon)
+        adjacent = {frozenset(canon.get(t, t) for t in p) for p in _adjacent_pairs(rows)}
+        for k, sp in enumerate(layer_spans(stack, adjacent), 1):
             span_id = f"{mix_id}_L{k:04d}"
             if (mix_id, span_id) in done:
                 continue
@@ -735,6 +824,7 @@ def layer_bands(cfg: Config, workers: int = 1) -> dict:
                     num(r["window_start_s"]) - num(r["record_at_s"]) / rate[tid]
                     for r in pres
                     if r["track_id"] == tid
+                    and r["state"] == "present"
                     and sp["start_s"] - 5 <= _grid(r["window_start_s"]) < sp["end_s"]
                 ]
                 if not inside:

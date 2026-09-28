@@ -374,6 +374,7 @@ LAYERS = [
     "n_weak",
     "present",
     "weak",
+    "same_audio",
 ]
 
 LAYER_BANDS = [

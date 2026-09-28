@@ -196,17 +196,58 @@ def test_layer_spans_skip_an_ordinary_seam_and_keep_a_stack_or_a_far_pair():
     stack = {
         0.0: {"a": "present"},
         10.0: {"a": "present", "b": "present"},  # a -> b, the ordinary seam
-        20.0: {"a": "present", "b": "present"},
+        20.0: {
+            "a": "present",
+            "b": "present",
+            "x": "weak",
+            "y": "weak",
+        },  # weak never makes a span
         30.0: {"b": "present"},
-        40.0: {"b": "present", "d": "weak"},  # b with d, not adjacent in audio order
-        50.0: {"b": "present", "c": "present", "d": "weak"},  # three at once
+        40.0: {"b": "present", "d": "present"},  # b with d, not adjacent in audio order
+        50.0: {"b": "present", "c": "present", "d": "present", "z": "weak"},  # three at once
         60.0: {"c": "present"},
     }
     spans = pipeline.layer_spans(stack, {frozenset({"a", "b"}), frozenset({"b", "c"})})
     assert len(spans) == 1
     sp = spans[0]
     assert sp["start_s"] == 40.0 and sp["end_s"] == 50.0 + 30.0
-    assert sp["records"] == {"b": "present", "c": "present", "d": "weak"}
+    assert sp["records"] == {"b": "present", "c": "present", "d": "present"}
+
+
+def test_one_recording_under_two_ids_is_counted_once():
+    plays_rows = [
+        {"track_id": "v1", "is_control": "0", "time_zero_s": "425.31"},
+        {"track_id": "v2", "is_control": "0", "time_zero_s": "425.27"},  # the same audio, other id
+        {"track_id": "w", "is_control": "0", "time_zero_s": "300.0"},  # a real second record
+    ]
+    pres = [
+        {"track_id": t, "window_start_s": str(s), "state": "present"}
+        for t in ("v1", "v2")
+        for s in (430, 440, 450, 460)
+    ] + [{"track_id": "w", "window_start_s": str(s), "state": "present"} for s in (440, 450)]
+    # without an audio check nothing is merged: two records started together look the same here
+    assert pipeline.same_audio(plays_rows, pres)["v2"] == "v2"
+    canon = pipeline.same_audio(plays_rows, pres, lambda a, b: {a, b} == {"v1", "v2"})
+    assert canon["v2"] == "v1" and canon["w"] == "w"
+    stack = pipeline._stack(pres, canon)
+    assert stack[450.0] == {"v1": "present", "w": "present"}
+    assert pipeline._aliases(canon) == {"v1": "v1=v2"}
+
+
+def test_same_recording_is_decided_on_the_audio_against_controls(tmp_path):
+    rec = synth.record(90.0, seed=800)
+    other = synth.record(90.0, seed=801)
+    ctrls = [synth.record(90.0, seed=810 + i) for i in range(3)]
+    for name, audio in {
+        "a": rec,
+        "a_copy": rec,
+        "b": other,
+        **{f"c{i}": c for i, c in enumerate(ctrls)},
+    }.items():
+        sf.write(tmp_path / f"{name}.wav", audio, SR)
+    c = [tmp_path / f"c{i}.wav" for i in range(3)]
+    assert pipeline.same_recording(tmp_path / "a.wav", tmp_path / "a_copy.wav", c)
+    assert not pipeline.same_recording(tmp_path / "a.wav", tmp_path / "b.wav", c)
 
 
 def test_matching_the_cut_table_gives_the_votes_of_the_span_filter():
