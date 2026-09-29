@@ -95,6 +95,7 @@ solo segments and `51f57bd5cc.m4a` to `fred/bWUsbsTUKV4.m4a`; the two wrong titl
 40caea7a7d and e3249f53e6 are in `mixes_tmp/old_searched/`. New tables in `djs/out/`: `presence.csv`,
 `layers.csv`, `layer_bands.csv`, `mixes.csv` (`DATA_PIPELINE.md` 2026-09-28). The corpus reads
 `djs/lists/dj_mixes_excluded.csv` and `djs/lists/usb002_solo_tracklist.csv` through `config_djs.yaml`.
+On S3 the corpus mirrors the VM: the final tables in `s3://aidj-1/djdata_djs/out/`, the run logs in `s3://aidj-1/djdata_djs/logs/`, beside `mixes_tmp/` and `tracks/`.
 Sections 2 to 7 below predate this and describe the September state.
 
 ## 1. The id scheme

@@ -29,7 +29,7 @@ the speed part is superseded, the quad fingerprint remains a valid second opinio
 # 2026-09-29, the full DJ profiling run, every DJ with Fred
 
 Run on the VM 2026-09-28 16:05 to 2026-09-29 16:01 UTC, then a fix-up to 17:08 UTC, code 75d703f.
-Tables in `data/djdata/djs/out/` on the VM and at `s3://aidj-1/djdata_djs/out_2026-09-28/out/`.
+Tables in `data/djdata/djs/out/` on the VM and at `s3://aidj-1/djdata_djs/out/`.
 285 mixes (265 from their 1001 page, Fred's 3 own-audio shows and 17 solo sets), 5,571 records on disk.
 
 ```
