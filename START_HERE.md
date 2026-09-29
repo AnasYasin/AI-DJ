@@ -30,7 +30,7 @@ New kinds of work, for example model fine-tuning or retraining, get their own md
 The DJ profiling run over every DJ with Fred again.. is done (285 mixes, 3,365 seams, 2,459 cut,
 measured and labelled, layer tables for the stacking DJs; `DATASET_STATE.md` 2026-09-29 for the numbers,
 `DATA_PIPELINE.md` for how it runs). The tables are on the VM in `data/djdata/djs/out/` and on S3 at
-`s3://aidj-1/djdata_djs/out_2026-09-28/`. Next: Raveform, starting with feature extraction. Then the old
+`s3://aidj-1/djdata_djs/out_2026-09-28/`. Next: Raveform, starting with feature extraction. The VM was left running on 2026-09-29 for that session (stop it when done; after a reboot `sudo swapon /swapfile`). Then the old
 `scripts/diag` code goes. Never call the old dataset "the catalog". Raveform's tier 1 and tier 2 are one
 dataset; the split was run order only.
 

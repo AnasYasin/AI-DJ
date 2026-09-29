@@ -275,4 +275,5 @@ MLflow :5000 · Airflow :8080 (airflow/airflow) · ChromaDB :8000 · W&B · S3 `
 ## Notes
 - `starting_time` rolls over hourly: if time_B < time_A → gap = (60−time_A)+time_B; skip pairs > 15 min
 - `tests/conftest.py` — `tmp_audio_file` fixture (sine wave WAV). 214 tests, ruff clean.
+- `test_stretch_uses_the_r3_engine` fails on the laptop only: `data/interim/stretch/` holds a cached stretch of the test's own input, so `_stretch` returns it and never calls the mocked rubberband. CI has no cache. Checked 2026-09-28.
 - S3 sync: `aws s3 sync data/processed/ s3://aidj-1/processed/`
