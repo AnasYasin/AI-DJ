@@ -26,6 +26,45 @@ the speed part is superseded, the quad fingerprint remains a valid second opinio
 
 ---
 
+# 2026-09-29, the full DJ profiling run, every DJ with Fred
+
+Run on the VM 2026-09-28 16:05 to 2026-09-29 16:01 UTC, then a fix-up to 17:08 UTC, code 75d703f.
+Tables in `data/djdata/djs/out/` on the VM and at `s3://aidj-1/djdata_djs/out_2026-09-28/out/`.
+285 mixes (265 from their 1001 page, Fred's 3 own-audio shows and 17 solo sets), 5,571 records on disk.
+
+```
+dj                 records   found        seams  usable  measured (both records clear)
+Amelie Lens          1,135     922  81 %     833     659     593
+Black Coffee           395     277  70 %     235     169     152
+DJ Tennis              703     462  65 %     395     237     203
+Fred again..           649     376  57 %     266     165     113
+Roman Flügel           153     117  76 %     102      65      60
+Solomun              2,021   1,267  62 %   1,131     810     730
+Sultan + Shepard       515     453  87 %     403     354     261
+total                5,571   3,874         3,365   2,459   2,112
+```
+
+Cut audits: start 2,149 of 2,459, end 2,075. Labels: edit_or_talk 594, tension 487, unmeasured 414,
+long_blend 396, short_blend 244, loop 107, sweep_in 78, sweep_out 73, cut 62, layer 4. Layers: 112,105
+windows of 10 s, 6,781 with two or more records present, 226 with three or more, 457 with one
+recording under two ids; 382 stacked spans band-read (Amelie Lens 136, Solomun 94, Sultan + Shepard 61,
+Fred 46, DJ Tennis 16, Black Coffee 15, Roman Flügel 14).
+
+Times: locate 14.5 h at 14 workers, pairs 2 s, cut 45 min, measure 7.1 h at 16, tempo 10 min.
+
+**What the fix-up changed, 2026-09-29.** (1) Fred's LDN 3 solo set had failed locate on an ffmpeg read
+timeout while the VM swapped (RAM full, 7 GB in swap); relocated, 3 seams. (2) A record listed twice in
+one tracklist made two identical plays rows, and pairs paired them: 84 seams from a record to itself (82
+of them Fred's) and 18 doubled seam ids. Pairs now uses each record once (48c5496); the fix-up redid pairs
+for the affected mixes, kept every seam whose window came out the same with its cut and measure, and
+dropped the rest with their windows: 3,448 seams to 3,365, 2,541 cut and measured to 2,459. Most of the 29
+"layer" labels were those self-seams; 4 remain. (3) The layers stage ran one mix at a time, about 19 s a
+mix with no progress line, and was stopped after 83 min; it now runs in the pool (75d703f). Checks after
+the fix-up, all 0: self seams, duplicate ids in every table, usable seams without a cut, good cuts
+without a measure, measures without a label.
+
+---
+
 # 2026-09-28, Fred again.. checked, fixed and joined to the DJ corpus
 
 All on the VM unless it says laptop. The code is in `DATA_PIPELINE.md` under 2026-09-28.

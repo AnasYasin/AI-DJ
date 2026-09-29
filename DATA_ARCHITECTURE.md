@@ -86,6 +86,17 @@ locate for that reason). Anything that reads a path from the database should fal
 
 **The VM has the same layout** since 2026-09-24, and the same exclusions applied to its database.
 
+## 0b. Changes on 2026-09-28/29
+
+The three old DJ window folders (`djs/windows` listed-time cut, `windows_v2` virtual-zero cut,
+`windows_v3` bounded sample, 12.4 GB) were deleted for good on Anas's word; `djs/windows/` now holds only
+the 2,459 windows of the 2026-09-28 run. `djs/mixes_tmp/` also holds 17 links `usb_fred_*.m4a` to Fred's
+solo segments and `51f57bd5cc.m4a` to `fred/bWUsbsTUKV4.m4a`; the two wrong title-search files
+40caea7a7d and e3249f53e6 are in `mixes_tmp/old_searched/`. New tables in `djs/out/`: `presence.csv`,
+`layers.csv`, `layer_bands.csv`, `mixes.csv` (`DATA_PIPELINE.md` 2026-09-28). The corpus reads
+`djs/lists/dj_mixes_excluded.csv` and `djs/lists/usb002_solo_tracklist.csv` through `config_djs.yaml`.
+Sections 2 to 7 below predate this and describe the September state.
+
 ## 1. The id scheme
 
 `seam_id = mix_id + "_" + a + "_" + b` on both corpora. Verified true on samples from each.

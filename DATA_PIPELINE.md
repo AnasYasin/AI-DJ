@@ -72,6 +72,12 @@ PYTHONPATH=djdata_package:. python -m djdata.cli layer-bands --config $C --worke
 
 `.` on `PYTHONPATH` is needed since `seam/tempo.py` imports the mixer from `src/`.
 
+**The full run, 2026-09-28/29.** Done: `profiling_run.sh` for all stages, then `fixup_2026-09-29.py`
+(both in the VM's home folder) for the four things the run left, see `DATASET_STATE.md` 2026-09-29.
+The VM's swap is `/swapfile`, 10 GB, not in /etc/fstab: after a reboot run `sudo swapon /swapfile`.
+A run script that should leave the VM on must not end in `shutdown`; on 2026-09-29 a tmux session
+`noshut` cancelled the fix-up's scheduled shutdown every 10 s for three hours.
+
 **Watch list, added 2026-09-28.**
 
 - Weak is chance-level evidence. A weak window is the best of many offsets, so on Black Coffee, who does

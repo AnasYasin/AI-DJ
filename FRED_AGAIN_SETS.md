@@ -294,3 +294,6 @@ Everything above this line is as written before and parts of it are superseded h
   from the layer tables as much as from the seams.
 - **He is part of the DJ profiling run**, as mixes `usb_<segment>` in `djs/`, not a corpus of his own;
   `config_fred.yaml` and the separate `fred` root are no longer used for the run.
+
+**2026-09-29.** In the full DJ run: 649 of his listed records on disk, 376 found (57 %), 266 seams, 165
+usable, 113 measured with both records clear, 46 stacked spans band-read. Numbers in `DATASET_STATE.md`.

@@ -25,12 +25,12 @@ Detail never lives here.
 
 New kinds of work, for example model fine-tuning or retraining, get their own md and a row here.
 
-## State in one paragraph (2026-09-28)
+## State in one paragraph (2026-09-29)
 
-The seam pipeline is built, tested and on `origin/dev`. On 2026-09-28 Fred again.. joined the DJ corpus
-through the USB002 app's tracklists, and the layer tables were added for DJs who stack records
-(`DATA_PIPELINE.md` for how, `DATASET_STATE.md` for the numbers, `FRED_AGAIN_SETS.md` for him). The full
-profiling run over every DJ with Fred started on the VM on 2026-09-28; Raveform follows it. Then the old
+The DJ profiling run over every DJ with Fred again.. is done (285 mixes, 3,365 seams, 2,459 cut,
+measured and labelled, layer tables for the stacking DJs; `DATASET_STATE.md` 2026-09-29 for the numbers,
+`DATA_PIPELINE.md` for how it runs). The tables are on the VM in `data/djdata/djs/out/` and on S3 at
+`s3://aidj-1/djdata_djs/out_2026-09-28/`. Next: Raveform, starting with feature extraction. Then the old
 `scripts/diag` code goes. Never call the old dataset "the catalog". Raveform's tier 1 and tier 2 are one
 dataset; the split was run order only.
 
