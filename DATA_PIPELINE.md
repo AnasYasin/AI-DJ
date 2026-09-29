@@ -78,6 +78,10 @@ The VM's swap is `/swapfile`, 10 GB, not in /etc/fstab: after a reboot run `sudo
 A run script that should leave the VM on must not end in `shutdown`; on 2026-09-29 a tmux session
 `noshut` cancelled the fix-up's scheduled shutdown every 10 s for three hours.
 
+**S3 from the VM, 2026-09-29.** The VM's role `aidj-eip` can write to S3 but not delete from it;
+deletes go from the laptop with the `talhanonstatic` profile. `aws s3 sync` follows links: syncing
+`data/djdata/fred/` uploaded its `tracks` link as 31 GB of duplicate tracks. Use `--no-follow-symlinks`.
+
 **Watch list, added 2026-09-28.**
 
 - Weak is chance-level evidence. A weak window is the best of many offsets, so on Black Coffee, who does

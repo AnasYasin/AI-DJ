@@ -96,6 +96,14 @@ solo segments and `51f57bd5cc.m4a` to `fred/bWUsbsTUKV4.m4a`; the two wrong titl
 `layers.csv`, `layer_bands.csv`, `mixes.csv` (`DATA_PIPELINE.md` 2026-09-28). The corpus reads
 `djs/lists/dj_mixes_excluded.csv` and `djs/lists/usb002_solo_tracklist.csv` through `config_djs.yaml`.
 On S3 the corpus mirrors the VM: the final tables in `s3://aidj-1/djdata_djs/out/`, the run logs in `s3://aidj-1/djdata_djs/logs/`, beside `mixes_tmp/` and `tracks/`.
+**VM cleaned for Raveform, 2026-09-29.** Everything of the DJ profiling run was uploaded to
+`s3://aidj-1/djdata_djs/` (mixes_tmp, tracks, windows, fred, lists, logs, out, state.sqlite, and Fred's
+check outputs in `fred/checks/`), checked file by file (name and size, 0 missing), then deleted from the
+VM except `djs/tracks/` (5,294 files, 31 GB, kept for feature extraction), the tables in `djs/out/`,
+`lists/`, `logs/` and `state.sqlite`. Deleted without upload: `mixes_tmp/old_searched/` (wrong
+title-search mixes), the audio of the excluded mixes, `out/curves`, `out/played`, the pre-fix-up table
+backup, old `state.sqlite.bak-*` copies, the 2026-09-28 test root. Raveform's data was not touched.
+VM disk after: 61 GB free of 193 GB. To work on DJ mixes or windows again, sync them back from S3.
 Sections 2 to 7 below predate this and describe the September state.
 
 ## 1. The id scheme
