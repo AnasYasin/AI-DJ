@@ -133,3 +133,18 @@ def test_a_record_looped_past_its_end_bounds_the_window_by_last_heard():
     p = pairs.pairs_for_mix(rows, mix_len_s=900.0)[0]
     assert p.window_t1 == 400.0 + pairs.PAD_S
     assert p.usable == 1
+
+
+def test_a_record_listed_twice_is_paired_once_and_never_with_itself():
+    # the app lists "a" again at 4 when he brings it back; locate gives both rows the same numbers
+    rows = [
+        play("m", "a", 1, 0.0, 300.0),
+        play("m", "b", 2, 280.0, 580.0),
+        play("m", "c", 3, 560.0, 860.0),
+        play("m", "a", 4, 0.0, 300.0),
+    ]
+    got = pairs.pairs_for_mix(rows, mix_len_s=900.0)
+    assert [p.seam_id for p in got] == ["m_a_b", "m_b_c"]
+    assert all(p.track_a != p.track_b for p in got)
+    # b -> c keeps its listed neighbours: the second listing of a is not a record between them
+    assert got[1].listed_between == 0 and got[1].order_ok == 1

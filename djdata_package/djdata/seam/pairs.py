@@ -88,10 +88,21 @@ def window_for(a: dict, b: dict, mix_len_s: float) -> tuple[float, float]:
     return max(0.0, t0), min(mix_len_s, t1)
 
 
+def once_each(rows: list[dict]) -> list[dict]:
+    """One row per record, at its first listed position. A record listed twice in one tracklist is one
+    recording in the audio; its two plays rows are identical, so pairing both made a seam from the
+    record to itself (84 of 3,448 on the 2026-09-28 run, 82 of them Fred's, whose app lists name every
+    return of a record) and doubled the seams beside it."""
+    first = {}
+    for r in sorted(rows, key=lambda r: num(r["order_listed"])):
+        first.setdefault(r["track_id"], r)
+    return list(first.values())
+
+
 def pairs_for_mix(rows: list[dict], mix_len_s: float) -> list[Pair]:
     """`rows` are one mix's plays rows (controls excluded). Returns every consecutive pair in audio
     order among the records that were heard."""
-    own = [r for r in rows if r["is_control"] not in (1, "1", True)]
+    own = once_each([r for r in rows if r["is_control"] not in (1, "1", True)])
     heard = sorted(
         (r for r in own if _heard(r) and r["play_type"] != "simultaneous"),
         key=lambda r: num(r["first_heard_s"]),
