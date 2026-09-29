@@ -585,23 +585,6 @@ def same_audio(plays_rows: list[dict], pres: list[dict], is_same=None) -> dict:
     return canon
 
 
-def _is_same_for(cfg: Config, plays_rows: list[dict]):
-    """`is_same` for one mix: files from tracks/, this mix's own control records as the floor."""
-    paths = _track_paths(cfg)
-    controls = [
-        paths[r["track_id"]]
-        for r in plays_rows
-        if r["is_control"] == "1" and r["track_id"] in paths
-    ]
-
-    def is_same(a, b):
-        if a not in paths or b not in paths or not controls:
-            return False
-        return same_recording(paths[a], paths[b], controls)
-
-    return is_same
-
-
 def _stack(rows: list[dict], canon: dict | None = None) -> dict:
     """grid time -> {track_id: state}, a record present in any window snapped there counts present.
     With `canon`, ids of one recording are counted once, under its first id."""
@@ -623,48 +606,113 @@ def _aliases(canon: dict) -> dict:
     return {v: "=".join(sorted(ks)) for v, ks in groups.items() if len(ks) > 1}
 
 
-def layers(cfg: Config) -> dict:
+def _layers_job(job: dict) -> list[dict]:
+    """One mix's layer rows: which ids are one recording (checked on the audio), then per grid time
+    the present and weak records."""
+    canon = same_audio(job["rows"], job["presence"], _is_same_paths(job["paths"], job["rows"]))
+    alias = _aliases(canon)
+    out = []
+    for t, cell in sorted(_stack(job["presence"], canon).items()):
+        present = sorted(k for k, v in cell.items() if v == "present")
+        weak = sorted(k for k, v in cell.items() if v == "weak")
+        out.append(
+            {
+                "mix_id": job["mix_id"],
+                "dj": job["dj"],
+                "window_start_s": t,
+                "n_present": len(present),
+                "n_weak": len(weak),
+                "present": " ".join(present),
+                "weak": " ".join(weak),
+                "same_audio": " ".join(alias[k] for k in present + weak if k in alias),
+            }
+        )
+    return out
+
+
+def _is_same_paths(paths: dict, plays_rows: list[dict]):
+    """`is_same` from a ready path map, so it crosses a process boundary as plain data."""
+    controls = [
+        paths[r["track_id"]]
+        for r in plays_rows
+        if r["is_control"] == "1" and r["track_id"] in paths
+    ]
+
+    def is_same(a, b):
+        if a not in paths or b not in paths or not controls:
+            return False
+        return same_recording(paths[a], paths[b], controls)
+
+    return is_same
+
+
+def layers(cfg: Config, workers: int = 1) -> dict:
     """Stage 7a. The layer timeline: per mix and per 10 s grid time, which records are present (at or
     above the sweep floor, twice the loudest control window) and which are weak (above the loudest
     control window, under twice it). Several weak records at one place is kept as a signal of its own.
-    Rewrites layers.csv from presence.csv."""
+    Two ids of one recording, checked on the audio, are counted once and named in `same_audio`.
+    One mix per worker. Rewrites layers.csv from presence.csv."""
     out = tables.layers(cfg.dirs["out"])
     plays_rows = tables.plays(cfg.dirs["out"]).rows()
     djs = {r["mix_id"]: r["dj"] for r in plays_rows}
     by_mix = {}
     for r in plays_rows:
         by_mix.setdefault(r["mix_id"], []).append(r)
-    rows = []
-    for mix_id, pres in sorted(_presence_by_mix(cfg).items()):
-        mix_rows = by_mix.get(mix_id, [])
-        canon = same_audio(mix_rows, pres, _is_same_for(cfg, mix_rows))
-        alias = _aliases(canon)
-        for t, cell in sorted(_stack(pres, canon).items()):
-            present = sorted(k for k, v in cell.items() if v == "present")
-            weak = sorted(k for k, v in cell.items() if v == "weak")
-            rows.append(
-                {
-                    "mix_id": mix_id,
-                    "dj": djs.get(mix_id, ""),
-                    "window_start_s": t,
-                    "n_present": len(present),
-                    "n_weak": len(weak),
-                    "present": " ".join(present),
-                    "weak": " ".join(weak),
-                    "same_audio": " ".join(alias[k] for k in present + weak if k in alias),
-                }
-            )
+    paths = {k: str(v) for k, v in _track_paths(cfg).items()}
+    jobs = [
+        {
+            "mix_id": mix_id,
+            "dj": djs.get(mix_id, ""),
+            "rows": by_mix.get(mix_id, []),
+            "presence": pres,
+            "paths": {
+                r["track_id"]: paths[r["track_id"]]
+                for r in by_mix.get(mix_id, [])
+                if r["track_id"] in paths
+            },
+        }
+        for mix_id, pres in sorted(_presence_by_mix(cfg).items())
+    ]
+    log.info("layers: %d mixes at %d workers", len(jobs), workers)
+    rows, t0 = {}, time.time()
+    with _pool(cfg, workers) as pool:
+        futures = {pool.submit(_layers_job, j): j["mix_id"] for j in jobs}
+        for i, fut in enumerate(as_completed(futures), 1):
+            rows[futures[fut]] = fut.result()
+            if i % 10 == 0 or i == len(jobs):
+                el = time.time() - t0
+                log.info(
+                    "layers: %d of %d mixes, %.0f s, about %.0f s left",
+                    i,
+                    len(jobs),
+                    el,
+                    el / i * (len(jobs) - i),
+                )
+    flat = [r for mix_id in sorted(rows) for r in rows[mix_id]]
     if out.path.exists():
         out.path.unlink()
-    out.append(rows)
+    out.append(flat)
     counts = {
-        "mixes": len({r["mix_id"] for r in rows}),
-        "windows": len(rows),
-        "two_or_more_present": sum(1 for r in rows if r["n_present"] >= 2),
-        "three_or_more_present_or_weak": sum(1 for r in rows if r["n_present"] + r["n_weak"] >= 3),
+        "mixes": len(rows),
+        "windows": len(flat),
+        "two_or_more_present": sum(1 for r in flat if r["n_present"] >= 2),
+        "three_or_more_present_or_weak": sum(1 for r in flat if r["n_present"] + r["n_weak"] >= 3),
     }
     log.info("layers: %s", counts)
     return counts
+
+
+def _canon_from_layers(cfg: Config) -> dict:
+    """mix_id -> {track_id: the id it is counted under}, from layers.csv's same_audio column, so
+    layer-bands does not check the audio a second time."""
+    out = {}
+    for r in tables.layers(cfg.dirs["out"]).rows():
+        for group in r.get("same_audio", "").split():
+            ids = group.split("=")
+            m = out.setdefault(r["mix_id"], {})
+            for k in ids:
+                m[k] = ids[0]
+    return out
 
 
 def _adjacent_pairs(plays_rows: list[dict]) -> set:
@@ -801,6 +849,9 @@ def layer_bands(cfg: Config, workers: int = 1) -> dict:
         by_mix.setdefault(r["mix_id"], []).append(r)
     mixes = {m["mix_id"]: m for m in corpus(cfg)}
     paths = _track_paths(cfg)
+    if not tables.layers(cfg.dirs["out"]).exists():
+        raise RuntimeError("layer-bands reads layers.csv: run djdata layers first")
+    canon_by_mix = _canon_from_layers(cfg)
     jobs = []
     for mix_id, pres in sorted(_presence_by_mix(cfg).items()):
         mix = mixes.get(mix_id)
@@ -808,7 +859,7 @@ def layer_bands(cfg: Config, workers: int = 1) -> dict:
             continue
         rows = by_mix.get(mix_id, [])
         rate = {r["track_id"]: num(r["rate"]) for r in rows if r["is_control"] == "0"}
-        canon = same_audio(rows, pres, _is_same_for(cfg, rows))
+        canon = canon_by_mix.get(mix_id, {})
         controls = [
             paths[r["track_id"]] for r in rows if r["is_control"] == "1" and r["track_id"] in paths
         ]

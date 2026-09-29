@@ -223,7 +223,7 @@ def cmd_stage(args):
     stage = getattr(pipeline, args.stage)
     kwargs = (
         {"workers": args.workers}
-        if args.stage in ("cut", "measure", "tempo", "layer_bands")
+        if args.stage in ("cut", "measure", "tempo", "layers", "layer_bands")
         else {}
     )
     print(json.dumps(stage(cfg, **kwargs)))
