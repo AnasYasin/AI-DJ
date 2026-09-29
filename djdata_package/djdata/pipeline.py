@@ -1003,6 +1003,7 @@ def _cut_job(job: dict) -> dict:
         dest = cut_mod.cut_window(job["mix_path"], t0, t1, job["dest_stem"])
         status = "ok"
     actual = cut_mod.duration_s(dest)
+    start = cut_mod.file_start(t0, t1 - t0, actual, status == "adopted")
     row = {
         "seam_id": seam["seam_id"],
         "window_file": dest.name,
@@ -1016,7 +1017,7 @@ def _cut_job(job: dict) -> dict:
     row.update(
         cut_mod.audit(
             dest,
-            t0,
+            start,
             a,
             b,
             load_audio(job["a_path"]),
@@ -1093,6 +1094,16 @@ def cut(cfg: Config, workers: int = 1) -> dict:
 # ---------------------------------------------------------------- measure
 
 
+def _file_start(seam: dict, cut_row: dict) -> float:
+    """The mix time the window file starts at, from its seams row and its cuts row."""
+    return cut_mod.file_start(
+        num(seam["window_t0"]),
+        num(cut_row["asked_s"]),
+        num(cut_row["actual_s"]),
+        cut_row["status"] == "adopted",
+    )
+
+
 def _measure_job(job: dict) -> dict:
     t0 = time.time()
     row, _ = measure_mod.measure_one(job)
@@ -1124,7 +1135,7 @@ def measure(cfg: Config, workers: int = 1) -> dict:
             {
                 "seam_id": seam["seam_id"],
                 "window_path": cfg.dirs["windows"] / c["window_file"],
-                "window_t0": num(seam["window_t0"]),
+                "window_t0": _file_start(seam, c),
                 "a": {
                     "path": paths[seam["track_a"]],
                     "time_zero_s": num(seam["a_time_zero_s"]),
@@ -1301,7 +1312,7 @@ def ear_test(cfg: Config, out_dir, n: int = 10, label: str | None = None, seed: 
             "rate": num(seam["b_rate"]),
         }
         length = eartest.clip(
-            cfg.dirs["windows"] / c["window_file"], num(seam["window_t0"]), a, b, out_dir / name
+            cfg.dirs["windows"] / c["window_file"], _file_start(seam, c), a, b, out_dir / name
         )
         rows.append(
             {

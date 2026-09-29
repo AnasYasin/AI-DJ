@@ -21,6 +21,21 @@ AUDIT_S = 10.0
 SLICE_PAD_S = (
     5.0  # the record slice is this much longer either side, so a small drift still matches
 )
+# An adopted Raveform window longer than asked by at least this much starts early by the excess.
+# mp3 and m4a windows land within 0.12 s of the asked length (82 sample windows, 2026-09-29).
+FRONT_EXCESS_MIN_S = 0.25
+
+
+def file_start(window_t0: float, asked_s: float, actual_s: float, adopted: bool) -> float:
+    """Where the window file really starts in the mix. The manifest cut the webm windows with `-ss`
+    before `-i` and `-c copy`, which starts at the keyframe before the asked start, so the file holds
+    extra audio at the front and its end is where it was asked (9 of 300 windows, 2026-09-18). On the
+    2026-09-29 sample the 14 webm windows ran 0.06 to 9.8 s long, and every record read at the asked
+    start sat off its 0.5 s presence anchor. A window we cut ourselves keeps the asked start."""
+    excess = actual_s - asked_s
+    if adopted and excess >= FRONT_EXCESS_MIN_S:
+        return window_t0 - excess
+    return window_t0
 
 
 def existing_window(folder: Path, seam_id: str) -> Path | None:

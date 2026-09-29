@@ -2,12 +2,14 @@
 
 import json
 
+import numpy as np
 import pytest
 import soundfile as sf
 import yaml
 
 from djdata import config as config_mod
 from djdata import pipeline
+from djdata.seam import cut, measure
 from djdata.seam.fingerprint import SR
 from djdata.state import State
 from djdata.store import tables
@@ -214,3 +216,48 @@ def test_cut_adopts_and_audits_then_measures_and_labels(rave):
     pipeline.tempo(rave, workers=1)
     assert pipeline.label(rave)["labelled"] == 3
     assert pipeline.export(rave)["seams"] == 3
+
+
+EXCESS_S = 8.0
+
+
+def test_a_window_that_starts_early_is_read_from_its_real_start(rave):
+    """The manifest's webm windows start at the keyframe before the asked start, so the file holds
+    extra audio at the front. Read from the asked start every record sits EXCESS_S off its anchor;
+    read from file_start it is where it belongs."""
+    t0, asked = 60.0, 140.0
+    a, _ = sf.read(rave.dirs["tracks"] / "vidA.wav", dtype="float32")
+    clean_audio, _ = sf.read(rave.dirs["windows"] / "mixX_vidA_vidB.wav", dtype="float32")
+    path = rave.root / "early.wav"
+    sf.write(path, np.concatenate([a[int((t0 - EXCESS_S) * SR) : int(t0 * SR)], clean_audio]), SR)
+    actual = len(clean_audio) / SR + EXCESS_S
+    start = cut.file_start(t0, asked, actual, adopted=True)
+    assert start == pytest.approx(t0 - EXCESS_S, abs=0.01)
+    assert cut.file_start(t0, asked, actual, adopted=False) == t0
+    assert cut.file_start(t0, asked, asked + 0.1, adopted=True) == t0
+
+    tracks = rave.dirs["tracks"]
+
+    def job(window_t0):
+        return {
+            "seam_id": "early",
+            "window_path": path,
+            "window_t0": window_t0,
+            "a": {"path": tracks / "vidA.wav", "time_zero_s": A_ZERO, "rate": 1.0},
+            "b": {"path": tracks / "vidB.wav", "time_zero_s": B_ZERO, "rate": B_RATE},
+            "controls": [tracks / f"vid{k}.wav" for k in "DEF"],
+        }
+
+    right, _ = measure.measure_one(job(start))
+    wrong, _ = measure.measure_one(job(t0))
+    clean, _ = measure.measure_one(
+        dict(job(t0), window_path=rave.dirs["windows"] / "mixX_vidA_vidB.wav")
+    )
+    # the early file holds the clean window EXCESS_S later, so every band time moves by exactly that
+    for key in ("low_in_s", "mid_in_s", "bass_swap_s", "low_out_s", "mid_out_s"):
+        assert right[key] == pytest.approx(clean[key] + EXCESS_S, abs=1.0), key
+    assert right["mid_a_separation"] > 20 and right["mid_b_separation"] > 20
+    # read from the asked start, both records sit at their floor and presence finds neither
+    assert wrong["mid_a_separation"] <= 1.5 and wrong["mid_b_separation"] <= 1.5
+    assert wrong["in_s"] is None and wrong["out_s"] is None
+    assert right["presence_a_votes"] > 50 * max(1, wrong["presence_a_votes"])
