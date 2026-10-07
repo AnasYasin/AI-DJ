@@ -13,9 +13,22 @@ adopts those files and audits them the same way.
 
 import json
 from pathlib import Path
+import re
 import sqlite3
 
 from .tracklists import audio_file
+
+_DATE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?$")  # a date, a month or a year alone
+
+
+def dj_from_title(title: str) -> str:
+    """Raveform titles read "2017-04-27 - Armin van Buuren - A State Of Trance 812" or
+    "2019-03-29 - Carl Cox @ Ultra Music Festival, MMW"; the DJ is the segment after the date, up to
+    the next " - " or " @ ". Until 2026-10-08 the first segment was taken, so the dj column held dates."""
+    parts = [p.strip() for p in title.split(" - ")]
+    if len(parts) > 1 and _DATE.match(parts[0]):
+        parts = parts[1:]
+    return parts[0].split(" @ ")[0].strip()[:60]
 
 
 def alignments(raveform_dir: Path) -> dict[str, list[dict]]:
@@ -81,7 +94,7 @@ def plays_rows(cfg, only: list[str] | None = None) -> list[dict]:
             rows.append(
                 {
                     "mix_id": mix_id,
-                    "dj": m["title"].split(" - ")[0][:60],
+                    "dj": dj_from_title(m["title"]),
                     "genre": " ".join(m.get("genres") or []),
                     "mix_title": m["title"],
                     "mix_minutes": round(mix_len / 60, 1),
@@ -147,7 +160,7 @@ def mixes_on_disk(cfg, only: list[str] | None = None) -> list[dict]:
             {
                 "mix_id": mix_id,
                 "mix_title": m["title"],
-                "dj": m["title"].split(" - ")[0][:60],
+                "dj": dj_from_title(m["title"]),
                 "genre": " ".join(m.get("genres") or []),
                 "path": None,
                 "tracks": have,

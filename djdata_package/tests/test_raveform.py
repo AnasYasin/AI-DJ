@@ -11,6 +11,7 @@ from djdata import config as config_mod
 from djdata import pipeline
 from djdata.seam import cut, measure
 from djdata.seam.fingerprint import SR
+from djdata.sources.raveform import dj_from_title
 from djdata.state import State
 from djdata.store import tables
 from tests import synth
@@ -266,3 +267,13 @@ def test_a_window_that_starts_early_is_read_from_its_real_start(rave):
     assert wrong["mid_a_separation"] <= 1.5 and wrong["mid_b_separation"] <= 1.5
     assert wrong["in_s"] is None and wrong["out_s"] is None
     assert right["presence_a_votes"] > 50 * max(1, wrong["presence_a_votes"])
+
+
+def test_dj_is_the_segment_after_the_date():
+    assert dj_from_title(
+        "2017-04-27 - Armin van Buuren, Sied van Riel - A State Of Trance 812"
+    ) == ("Armin van Buuren, Sied van Riel")
+    assert dj_from_title("Some DJ - Some Set 2020") == "Some DJ"
+    assert dj_from_title("2016-01-06 - Vladimir Acic - 1605 Podcast 248") == "Vladimir Acic"
+    assert dj_from_title("2019-03-29 - Carl Cox @ Ultra Music Festival, MMW") == "Carl Cox"
+    assert dj_from_title("2013 - DJ Freeze - Early Rave Generation Vol.4") == "DJ Freeze"
