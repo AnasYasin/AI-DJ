@@ -277,3 +277,7 @@ def test_dj_is_the_segment_after_the_date():
     assert dj_from_title("2016-01-06 - Vladimir Acic - 1605 Podcast 248") == "Vladimir Acic"
     assert dj_from_title("2019-03-29 - Carl Cox @ Ultra Music Festival, MMW") == "Carl Cox"
     assert dj_from_title("2013 - DJ Freeze - Early Rave Generation Vol.4") == "DJ Freeze"
+    assert (
+        dj_from_title("2014-0X - Dave Seaman, Markus Schulz @ White Ocean")
+        == "Dave Seaman, Markus Schulz"
+    )
