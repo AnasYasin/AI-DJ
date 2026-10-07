@@ -214,6 +214,11 @@ def test_cut_adopts_and_audits_then_measures_and_labels(rave):
     assert tables.num(row["in_s"]) == pytest.approx(B_IN - 60.0, abs=10.0)
     assert tables.num(row["out_s"]) == pytest.approx(A_OUT - 60.0, abs=10.0)
     pipeline.tempo(rave, workers=1)
+    assert len(tables.tempos(rave.dirs["out"]).keys()) == 5  # the records that sit in a seam
+    assert (
+        pipeline.tempo(rave, workers=1, all_tracks=True)["measured"] == 1
+    )  # vidC never made a seam
+    assert len(tables.tempos(rave.dirs["out"]).keys()) == 6
     assert pipeline.label(rave)["labelled"] == 3
     assert pipeline.export(rave)["seams"] == 3
 

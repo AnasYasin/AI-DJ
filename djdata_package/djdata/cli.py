@@ -226,6 +226,8 @@ def cmd_stage(args):
         if args.stage in ("cut", "measure", "tempo", "layers", "layer_bands")
         else {}
     )
+    if args.stage == "tempo":
+        kwargs["all_tracks"] = args.all_tracks
     print(json.dumps(stage(cfg, **kwargs)))
 
 
@@ -322,6 +324,12 @@ def main(argv=None):
         sp = sub.add_parser(name)
         sp.add_argument("--config", required=True)
         sp.add_argument("--workers", type=int, default=1)
+        if name == "tempo":
+            sp.add_argument(
+                "--all-tracks",
+                action="store_true",
+                help="every audio file in tracks/, not only records that sit in a seam",
+            )
         sp.set_defaults(fn=cmd_stage, stage=stage)
     sp = sub.add_parser("ear-test")
     sp.add_argument("--config", required=True)

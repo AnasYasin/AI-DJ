@@ -1191,13 +1191,20 @@ def _tempo_job(job: dict) -> dict:
     }
 
 
-def tempo(cfg: Config, workers: int = 1) -> dict:
-    """Stage 5. BPM for every record that appears in a seam. Writes tempos.csv."""
+def tempo(cfg: Config, workers: int = 1, all_tracks: bool = False) -> dict:
+    """Stage 5. BPM for every record that appears in a seam, or with all_tracks for every audio file
+    in tracks/ (the track features table wants a BPM for records that never made a seam, 2026-10-07).
+    Writes tempos.csv."""
     seams_t = tables.seams(cfg.dirs["out"])
     tempos_t = tables.tempos(cfg.dirs["out"])
     done = tempos_t.keys()
     paths = _track_paths(cfg)
     wanted = set()
+    if all_tracks:
+        for p in Path(cfg.dirs["tracks"]).iterdir():
+            if p.is_file() and p.suffix != ".part":
+                paths.setdefault(p.stem, str(p))
+                wanted.add(p.stem)
     for s in seams_t.rows():
         wanted.update((s["track_a"], s["track_b"]))
     jobs = [

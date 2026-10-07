@@ -25,13 +25,14 @@ from pathlib import Path
 import signal
 import time
 
-from deeprhythm import DeepRhythmPredictor
 import essentia.standard as es
 import librosa
 from mutagen import File as MutaFile
 import numpy as np
 import pandas as pd
 import pyloudnorm as pyln
+
+from src.features.transition_labeler import normalise_key
 
 log = logging.getLogger(__name__)
 
@@ -41,9 +42,6 @@ EMBEDDINGS_PATH = Path("data/processed/embeddings.parquet")
 DISCOGS_MODEL_PATH = Path("models/essentia/discogs-effnet-bs64-1.pb")
 LIBROSA_FEATURES_PATH = Path("data/processed/librosa_features.parquet")
 LOAD_TIMEOUT_S = 30
-
-# Essentia may return flat key names on some platforms — normalise to sharps
-_FLAT_TO_SHARP = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
 
 # All valid key strings produced by Essentia KeyExtractor after normalisation
 VALID_KEYS = {
@@ -72,8 +70,7 @@ def _essentia_key(y: np.ndarray, sr: int) -> str:
     key_note, scale, _ = es.KeyExtractor(sampleRate=float(sr), profileType="edma")(
         y.astype(np.float32)
     )
-    key_note = _FLAT_TO_SHARP.get(key_note, key_note)
-    return key_note + ("m" if scale == "minor" else "")
+    return normalise_key(key_note, scale)
 
 
 # ── discogs-effnet Embedder ────────────────────────────────────────────────────
@@ -283,6 +280,8 @@ class LibrosaExtractor:
     SAMPLE_RATE = 22_050
 
     def __init__(self):
+        from deeprhythm import DeepRhythmPredictor  # heavy (torch); only the preview path needs it
+
         self._dr = DeepRhythmPredictor()
 
     def extract(self, audio_path: str) -> dict | None:
