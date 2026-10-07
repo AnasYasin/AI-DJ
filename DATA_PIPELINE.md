@@ -2,6 +2,48 @@
 
 Moved from START_HERE.md on 2026-09-27, content unchanged. What was built, what it is proved by, how to run it, where the data lands, how to add data, and the watch list for a run. The numbers and the findings behind it are in DATASET_STATE.md; the layout in DATA_ARCHITECTURE.md; the code in djdata_package with its own README.
 
+## Added 2026-09-30: the Raveform run
+
+Numbers in `DATASET_STATE.md` 2026-09-30. Same stages as the DJ run under `djdata_package/config.yaml`,
+from the repo root on the VM:
+
+```
+C=djdata_package/config.yaml
+PYTHONPATH=djdata_package:. python -m djdata.cli locate --config $C          # alignment → plays, 2 min
+PYTHONPATH=djdata_package:. python -m djdata.cli pairs --config $C
+PYTHONPATH=djdata_package:. python -m djdata.cli cut --config $C --workers 16   # adopts windows, audits
+PYTHONPATH=djdata_package:. python -m djdata.cli measure --config $C --workers 14
+PYTHONPATH=djdata_package:. python -m djdata.cli tempo --config $C --workers 16
+PYTHONPATH=djdata_package:. python -m djdata.cli label --config $C
+PYTHONPATH=djdata_package:. python -m djdata.cli export-seams --config $C
+```
+
+The run script is `data/djdata/raveform/run_full_2026-09-30.sh` on the VM (copy in
+`s3://aidj-1/djdata/logs/`): stops at the first stage with a failure, logs memory every 30 s, no S3 sync,
+leaves the VM on. `layers` and `layer-bands` do not apply, since Raveform has no full mix audio.
+
+**Watch list, added 2026-09-30.**
+
+- Test a corpus on a sample root first. `data/djdata/raveform_sample/` links `tracks/`, `windows/` and
+  `state.sqlite` to the real root and writes its own `out/` and `logs/`; no stage writes to
+  `state.sqlite` (the only connection is read-only). A 10-mix sample took 19 min end to end.
+- Adopted windows can be longer than asked. `cuts.csv` has `asked_s` and `actual_s`;
+  `seam/cut.py::file_start` reads the file from its real start. Check `cut_error_s` by container on any
+  new corpus of adopted windows before trusting measure.
+- `measured == 1` needs only one band to clear somewhere, so a misplaced seam can pass it at a
+  separation of 1.0. Filter on the per-band separations, not the flag alone.
+- S3: a new run writes tables with the old names into an `out/` that may hold an older run. Copy the old
+  tables into a dated folder first and check the count, then sync, then delete old top-level files that
+  the new run does not write (done for Raveform: `out/old_gainfit_2026-09-14/`, 1,185 files).
+- The workers' stderr log reaches about 370,000 lines on the full run; no line holds "error" or
+  "traceback".
+- A process pool that forks after essentia's TensorFlow runtime is loaded in the parent deadlocks on
+  the children's first model call, with load 0 and no error (two runs hung 15 min, 2026-10-07). Use a
+  spawn context, as `djdata/pipeline.py` and `src/features/track_features.py` do.
+- The VM's `aidj` environment had no `pyarrow`, so pandas could not write parquet; a run started while
+  pip was still installing it also failed. Check `python -c "import pyarrow"` before a parquet-writing
+  job, and never start a job during a pip install.
+
 ## Added 2026-09-28: Fred again.. in the DJ corpus, layer tables, exact-time lookup
 
 Commits 3a563ab, 2908560 and 241f24c on `origin/dev`. The numbers behind each choice are in
@@ -143,7 +185,8 @@ hold on real DJ audio. Tempo agrees with the catalog within 2 % on 40 of 48 trac
 real passes found, the sweep share, no drift, loops, are written up in `DATASET_STATE.md` in order.
 
 **Known limits.** Measure lays each record at one offset, so a looped outgoing record reads as
-`unmeasured` (6 of 70 on the sample). Tempo is off on about one record in eight. A record shorter than
+`unmeasured` (6 of 70 on the sample). Tempo is off on about one record in eight below 150 BPM and on
+most records above it (the hint, see the 2026-10-07 watch-list entry). A record shorter than
 135 s cannot be "confident". All three are in the rows, none is guessed over.
 
 **How to run it.** One config per corpus, every stage the same command, every stage resumable: kill it
@@ -217,8 +260,10 @@ the pipeline reads it from disk and the VM and S3 have copies.
   there at the end. Look at those rows first when checking a run.
 - Loops in measure. A looped outgoing record is `unmeasured` (6 of 70). A loop-tolerant measure, per
   band free matching of the record slice per step inside the window, is the next improvement.
-- Tempo. One record in eight disagrees with the catalog by more than 2 %, spoken word among them.
-  Bars on those seams are wrong; `tempos.csv` has the number per record.
+- Tempo. The hint is the weak part, not the instrument: librosa's tempo with `start_bpm=128` reads
+  drum and bass at half or two thirds, and the refinement cannot leave a 6 % band around the hint
+  (Raveform check 2026-10-07, `EMBEDDINGS.md`: 28 % right above 150 BPM, 97 % in 115 to 135). On a
+  corpus with fast genres, give `tempo.py` a better hint or check against an annotation.
 - Short records. Under 135 s a record cannot be "confident" (three 45 s sections cannot agree).
 - Presence constants. Windows of 30 s stepping 10 s, floor twice the loudest control window, first and
   last heard at the first and last second holding 3 agreeing pairs. All in `seam/locate.py`.
@@ -226,8 +271,9 @@ the pipeline reads it from disk and the VM and S3 have copies.
   6 KB/s). Move anything large through S3, and expect a stalled push to need a retry.
 - Fred on the VM needs the same links as the laptop: `data/djdata/fred/mixes_tmp/<mix_id>.m4a` to each
   proved segment and `data/djdata/fred/tracks` to `../djs/tracks`.
-- The old `scripts/diag` code is untracked and untouched; `fetch/mix.py` still imports the legacy
-  locate. Both go after the VM run has been heard.
+- The old untracked `scripts/diag` code was deleted on 2026-09-30 and archived at
+  `s3://aidj-1/archive/scripts_diag_untracked_2026-09-30.tar.gz`. `fetch/mix.py` still imports the
+  legacy locate.
 
 **What is next.** Fred's segments proved by locate on the VM, then the full run over the 281 DJ mixes
 and Raveform on the VM, then the old `scripts/diag` code goes. The section below is the state before this.

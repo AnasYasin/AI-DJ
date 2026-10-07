@@ -104,6 +104,13 @@ VM except `djs/tracks/` (5,294 files, 31 GB, kept for feature extraction), the t
 title-search mixes), the audio of the excluded mixes, `out/curves`, `out/played`, the pre-fix-up table
 backup, old `state.sqlite.bak-*` copies, the 2026-09-28 test root. Raveform's data was not touched.
 VM disk after: 61 GB free of 193 GB. To work on DJ mixes or windows again, sync them back from S3.
+**Raveform tables, 2026-09-30.** The run's tables are in `raveform/out/` on the VM, on the laptop in
+`data/djdata/raveform/out/` and at `s3://aidj-1/djdata/out/`, logs at `s3://aidj-1/djdata/logs/`. The dead
+gain-fit export moved to `out/old_gainfit_2026-09-14/` on the VM and S3 (1,185 files, 64,453,117 bytes).
+The laptop also holds the DJ profiling tables now in `data/djdata/djs/out/`; the 2026-09-25 dev-sample
+tables it held moved to `djs/out/devsample_2026-09-25/`. Test roots on the VM, links plus their own
+`out/`: `raveform_sample/` (10 mixes) and `raveform_webmfix/` (14 webm seams). No full Raveform mix audio
+exists anywhere (VM `mixes_tmp/` empty, none on S3).
 Sections 2 to 7 below predate this and describe the September state.
 
 ## 1. The id scheme

@@ -24,7 +24,221 @@ their own 1001 page links, see the DJ PROFILING note below and `DATA_ARCHITECTUR
 speed theory and the quad-fingerprint work in **THE BLOCKER** below are kept as a record of what was tested;
 the speed part is superseded, the quad fingerprint remains a valid second opinion.
 
+# How the old and the new data are used (decisions, 2026-10-07)
+
+Settled in conversation after the embedding sample numbers (`EMBEDDINGS.md`, phase 3). "Decided" means Anas said so; "proposed" means my
+recommendation, waiting on his word.
+
+**The two datasets and their roles.**
+
+```
+                        old dataset                       Raveform + DJ corpus
+tracks                  28,460, 30 s previews only        12,211, full audio on VM and S3
+plays / pairs           29,393 plays, 2,834 sets          about 20,000 plays, 1,224 mixes
+seam measurements       none                              7,519 seams: bands in/out, bass swap, overlap, loop, label, bars
+vectors                 preview mean, DeepRhythm BPM,     whole-track mean, patches kept, measured tempo,
+                        key on the preview                key on the full track
+```
+
+- The chooser (which record follows which: Model A, Model B, the GBM) trains on BOTH datasets'
+  pairs. Order and adjacency are all it needs, and the old set has five times the pairs.
+- The transition model (how to mix: Step 6) trains on the new corpora ONLY, because only they have
+  measured seams. The old dataset was never meant for it.
+- The planner's pool of candidate tracks is the old 28,460 plus the 12,211 new ones. A plan may pick
+  from either.
+
+**Mixed vectors, and the experiment that decides it (decided).** A preview vector and a whole-track
+vector come from the same model and mean the same thing at different sample lengths; the sample put
+the same track's two vectors 0.053 apart against 0.384 for a stranger. The preview's pairing signal is
+weaker (AUC 0.609 against 0.665). So Model A's head is retrained twice, same split, same settings:
+once on the new full-audio rows only, once on new plus old rows with a `source` column (`preview` or
+`full`). Both are scored on a validation set of new full-audio seams, so the test audio is identical.
+The higher AUC wins; a tie within 0.02 goes to the simpler one, new rows only. Minutes on the laptop.
+
+**Span for the chooser (proposed: whole track).** Played span and seam edge were within noise of it
+(0.657 and 0.655 against 0.665). Whole track is also the cheapest to serve, since the planner picks a
+record before any cue point exists.
+
+**Validation split (proposed).** By mix and by DJ, with the track overlap between train and validation
+reported. Whether the same records appear in the old dataset and in Raveform under different ids is
+unchecked and is checked by artist and title before the split is cut.
+
+**Planner.** Same code: beam search, vetoes, score weights. New inputs: the new table's vectors and
+features for the new tracks, and the retrained head if it wins. The planner switches encoder only when
+the new head's adjacency AUC beats 0.663 on the new split, and a render is listened to after.
+
+**Mixer.** Unchanged in this phase. It measures tempo, key, loudness and energy itself on the full file
+at render time, so the render does not depend on which dataset a track came from. The rule table
+(`measured_transition`, the genre overlap defaults) is replaced only by the Step 6 transition model,
+and only after it beats the rules in a blind listen.
+
+**Transition model, Step 6 (not built).** Inputs per seam: the two records' seam-edge patch vectors
+(last and first bars, pooled from the stored patches), their features, the DJ and genre. Targets: the
+label, the overlap in bars, the bass swap point, the band order. Training data: the 7,519 measured
+seams, with `measured == 1` and the per-band separations as the filter.
+
+**Tempo and bars.** Old rows keep DeepRhythm's BPM (`bpm_source = deeprhythm`). New rows carry the
+mixer's kick-autocorrelation tempo, checked against Raveform's annotations and corrected where the hint
+was wrong (`bpm_source = measured`; 138 Raveform records `uncertain`, null). Bars in the seam tables
+come from that tempo divided by the playback rate; the Raveform labels were recomputed on 2026-10-07
+with the corrected tempos. The DJ corpus tempos are unchecked (no annotation, no drum and bass). Every
+track on disk in both corpora has a measured BPM since 2026-10-07 (`EMBEDDINGS.md`, phase 5), except
+138 uncertain Raveform records and 8 DJ records with no periodic kick, which stay null.
+
+**Key.** essentia edma through `normalise_key()` on both datasets; full-track keys are better than
+preview keys (14/21 against 10/21) and will differ from the old table on about a third of shared
+tracks. Policy unchanged: root only, soft term in the planner, ignored by the mixer.
+
+**Pair weights (later).** A long blend is stronger evidence that two records belong together than an
+edit or a cut. Weighting pairs by the seam label is a second experiment after the two-retrain baseline.
+
+**DJ profiles, Step 8 (later).** Per DJ from the seam tables: label shares, overlap distribution, bass
+swap timing. `dj_profiler.py` and `dj_profiles.json` are still missing.
+
+**What does not change.** The md files and how they are kept (`CLAUDE.md`). `START_HERE.md` is the
+index, one md per area, this file for this area. No issue tracker and no domain docs for now; Anas may
+try the issue skills after training, for the UI and other independent features.
+
 ---
+
+# OPEN: the data layout, a proposal (2026-10-07, not decided)
+
+Most of the 25 Sep plan (`DATA_ARCHITECTURE.md` section 9) is built: one package, one folder per
+corpus, the same tables in each. What is left messy is three things.
+
+1. The old dataset sits outside that layout, in `data/processed`, `data/raw/previews` and
+   `data/interim`, with its own shapes.
+2. Nothing defines what the models consume. `train_model.py` reads `features.parquet` and the
+   tracklist directly, so every new corpus means editing training code.
+3. `data/interim` holds a hundred files, live and dead side by side.
+
+Suggestion: three layers, with one new piece of code.
+
+```
+data/corpora/<corpus>/          layer 1, raw and measured, one shape per corpus (exists for raveform, djs)
+  tracks/  windows/  embeddings/  previews/
+  out/  plays  seams  cuts  measures  tempos  labels  track_features
+data/dataset/<date>/            layer 2, what the models read, built from every corpus by one command
+  tracks.parquet    track_id, corpus, source (full | preview), embedding, bpm, key, lufs, energy, onset, ...
+  plays.parquet     mix_id, dj, genre, position, track_id, corpus        (the order data, all corpora)
+  seams.parquet     the measured seams with both tracks' edge vectors     (new corpora only)
+  splits.parquet    mix, dj, fold
+data/archive/<date>/            layer 3, superseded diagnostics, moved whole, never read by code
+```
+
+- The old dataset becomes a corpus like the others, `data/corpora/old/`, with `out/plays.csv` from the
+  tracklists and `out/track_features.parquet` from `features.parquet` marked `source = preview`. No
+  mixes, no seams. Nothing is recomputed.
+- One command, `djdata export-dataset`, joins every corpus into a dated `data/dataset/` folder.
+  Training code reads only that folder. A new corpus is a new folder in layer 1 and a rerun of the
+  export. A dataset version is frozen once a model trains on it, and mirrored to S3 by date.
+- The seam pipelines already write layer 1. The only new code is the export, about a day, plus moving
+  files.
+
+Order, as Anas asked on 2026-10-07: everything in one go after the decision. First read the three
+training scripts and the Step 6 design and write down the exact columns each model needs, so layer 2
+is defined by what consumes it. Then decide all three layers at once and write them into
+`DATA_ARCHITECTURE.md`. Then build the export, move the old dataset into the corpus layout and
+archive `data/interim`, together. Pipelines keep writing where they write now until then.
+
+---
+
+# 2026-09-30, the full Raveform run
+
+Run on the VM 2026-09-29 20:26 to 2026-09-30 09:07 UTC, code e862a82 (75d703f plus the webm start fix
+below), `djdata_package/config.yaml`, run script `~/AI-DJ/data/djdata/raveform/run_full_2026-09-30.sh`.
+Tables in `data/djdata/raveform/out/` on the VM and the laptop, and at `s3://aidj-1/djdata/out/`.
+Stages locate (the alignment stands in), pairs, cut (adopts the manifest's windows and audits them),
+measure, tempo, label, export-seams. `layers` and `layer-bands` cannot run: the full mixes were deleted
+when the windows were cut, and neither S3 nor the VM holds them (checked 2026-09-29).
+
+```
+mixes 939   records 14,570   seams 6,842   usable 5,060 (the other 1,782: no raveform window on disk)
+cut audit    start 4,890   end 4,866   both 4,745  93.8 %   (mp3 94.4, m4a 90.4, webm 89.4)
+measured     5,060, both records clear on 4,639  91.7 %   (mp3 91.9, m4a 90.1, webm 90.7)
+median separation, mid band A / B     mp3 55.5 / 48.4   m4a 53.8 / 41.8   webm 70.8 / 71.1
+labels   long_blend 2,414  tension 625  short_blend 476  edit_or_talk 404  sweep_out 346
+         unmeasured 327  sweep_in 282  cut 98  loop 66  layer 22      (after the 2026-10-07 relabel)
+tempo    6,905 records, 138 uncertain and null, 5 to 95 % 120 to 174 BPM   (after the 2026-10-07 check)
+times    locate 2 min, pairs 2 min, cut 1.2 h at 16, measure 10.9 h at 14, tempo 26 min at 16
+memory   peak 17.9 GB of 30, swap touched 255 MB
+```
+
+Every cut audit failure is a record not heard at the window's edge (on the first 854: 30 starts with A
+unheard, 38 ends with B unheard, 1 with A still there, none with B early). None is a window cut wrong.
+
+**The webm start fix.** 216 of the windows are webm. The manifest cut them with `-ss` before `-i` and
+`-c copy`, so each file starts at the keyframe before the asked start: 209 of 216 are 0.25 s or more too
+long, median 4.9 s, max 9.9 s, all of it at the front. Read from the asked start, every record sat that
+far off its 0.5 s presence anchor. On the 10-mix sample the 14 webm windows read a median mid-band
+separation of 1.3, and 13 of 14 still passed `measured`, so the wrong rows looked right.
+`seam/cut.py::file_start` now takes the excess off the start of an adopted window at least 0.25 s longer
+than asked (mp3 and m4a land within 0.12 s); the audit, measure and the ear-test clips use it. The same
+14 seams re-measured with it: median mid-band separation 121. Synthetic test in `test_raveform.py`:
+8 s of front excess, every band time lands 8.0 s later than on the clean window.
+
+**Sample first.** Before the full run the whole pipeline ran on 10 mixes (82 seams, every main genre, 14
+webm) in a separate root `data/djdata/raveform_sample/`, which found the webm fault. Measure at 16 workers
+there peaked at 17.6 GB with the CPU the limit, so the full run used 14.
+
+**Tempo check and relabel, 2026-10-07.** The run's tempos against Raveform's beat annotations; the
+method and the fix in full.
+
+**Tempo check, 2026-10-07.** `data/interim/raveform_tempo_check_2026-10-07.csv`. Annotation BPM is
+60 over the mean of the beat intervals within 25 % of their median (the files round beats to 0.01 s,
+so a single interval is only good to 2 %). All 6,899 records with a BPM have an annotation file.
+
+```
+within 2 % of the annotation      5,773   83.7 %
+half the annotation                 111    1.6 %
+two thirds of it (ratio 0.667)      329    4.8 %
+four thirds of it (ratio 1.333)      90    1.3 %
+other                               584    8.5 %
+
+by annotation band     n     within 2 %
+  115 to 125        2,176   2,113  97 %
+  125 to 135        2,702   2,610  97 %
+  135 to 150          731     657  90 %
+  150 to 200        1,204     333  28 %   (105 at half, most of the rest at two thirds)
+```
+
+So the instrument is right on house, techno and trance and wrong on most drum and bass. The cause is
+the hint: librosa's tempo with `start_bpm=128` pulls a 174 BPM record to about 116, and the refinement
+only searches within 6 % of that, so it locks on a wrong lag. The annotation is itself from a beat
+tracker, so the 40 records whose mean-interval and median-interval BPM disagree by over 2 % are not
+trusted on either side. The DJ corpus has no drum and bass, so its 2,959 rows carry the 3 to 10 % rate
+of the 115 to 150 bands, with no annotation to say which rows.
+
+**Re-measure with the annotation as hint, 2026-10-07.** The 1,132 records outside 2 % went through
+the same `_measure_tempo` with the annotation BPM as the hint (VM, 16 processes, 178 s;
+`data/interim/raveform_tempo_remeasured_2026-10-07.csv`, script `scripts/features/raveform_tempo_remeasure.py`). 994 of 1,127 measurements landed within 2 %
+of the annotation, 963 within 1 %; 5 gave no measurement; 133 still disagree with the annotation by
+more than 2 %, and on several the instrument gives the same value from both hints, so the annotation
+may be the wrong side there. Neither algorithm can settle those, so they are `uncertain`.
+
+Result table `data/djdata/raveform/out/tempos_checked.csv`, one row per record in `tempos.csv`:
+`bpm_corrected`, `bpm_source`, `bpm_first_run`, `remeasured_bpm`, `ann_bpm`.
+
+```
+measured, librosa hint        5,773
+measured, annotation hint       994
+uncertain                       138
+trusted bpm in all            6,767 of 6,905   98.0 %
+```
+
+The feature table takes `bpm_corrected`. Consequence for the seam tables: `labels.csv` has bars from
+the first-run tempo, and 1,056 of the 5,060 usable seams touch a record whose tempo changed or is
+uncertain, nearly all drum and bass. Their bar counts were wrong until the rerun below.
+
+**Label rerun, 2026-10-07.** `tempos.csv` now holds `bpm_corrected` (138 rows null); the first-run
+tables are kept as `tempos_first_run_2026-09-30.csv` and `labels_first_run_2026-09-30.csv`. The 1,056
+affected rows were dropped from `labels.csv` and `label` rerun on them (75 unmeasured, long_blend 521,
+tension 140, short_blend 103, sweep_out 63, sweep_in 61, edit_or_talk 60, cut 19, loop 12, layer 2),
+then `export-seams`. Laptop and S3 copies updated. The DJ corpus tables are unchanged; its tempos have
+no annotation to check against.
+
+**Open.** Pairs gives 5,060 usable against 5,063 seams with a window and both tracks in `state.sqlite`;
+the 3 are not traced. The ear has not heard any Raveform output of this code.
 
 # 2026-09-29, the full DJ profiling run, every DJ with Fred
 
@@ -455,9 +669,8 @@ long_blend, short_blend.
 
 ## What Raveform still needs
 
-**It has never been measured at scale.** `measure_seam` has run on 30 of 5,062. `djdata/out/` holds only
-the 1,181 rows from the dead NNLS gain fit, which failed its wrong-record control and is discarded.
-Running the full corpus needs nothing new. It is about six hours at twelve workers.
+**Measured at scale on 2026-09-30**, see the section at the top. The dead NNLS gain fit's 1,181 rows
+moved to `djdata/out/old_gainfit_2026-09-14/` (VM and S3).
 
 **The measured times have never been checked by ear.** In `ear_test/raveform_mapping/MARKS.csv` and
 `raveform_mapping_genres/MARKS.csv` the columns `your_incoming_in`, `your_outgoing_out` and
@@ -884,8 +1097,11 @@ and everything between 30 and 80 passed. On Raveform's audio the same control si
 
 # WHICH CODE TO USE (updated 2026-09-27)
 
-The package replaces the diag scripts for every job below. The scripts stay on disk, untracked, until
-the VM run has been heard, then they go.
+The package replaces the diag scripts for every job below. The 59 untracked diag scripts were deleted
+on 2026-09-30, after both VM runs; all 61 untracked ones are kept at
+`s3://aidj-1/archive/scripts_diag_untracked_2026-09-30.tar.gz`. `dj_previews_fetch.py` and
+`seam_previews_fetch.py` stay, since nothing replaces them. The 18 tracked mixer diagnostics in
+`scripts/diag/` are untouched.
 
 | job | use | replaced |
 |---|---|---|

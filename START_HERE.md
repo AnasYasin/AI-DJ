@@ -18,6 +18,7 @@ Detail never lives here.
 | every store, every CSV, how the ids join, what lives on the laptop, the VM and S3, the planned layout | **`DATA_ARCHITECTURE.md`** |
 | the djdata package: install, stages, adding a corpus, reading the tables | **`djdata_package/README.md`** |
 | Fred again, a separate job: his sources, segments, what is proved | **`FRED_AGAIN_SETS.md`** |
+| track features and embeddings for the seam corpora: the plan, the checks, the numbers as they land | **`EMBEDDINGS.md`** |
 | how to set the VM up, cookies, yt-dlp, the token server, the changing address | **`djdata_package/VM_SETUP.md`** |
 | ssh to the VM whatever its address is today | `scripts/vm/vmssh` |
 | how to run the mixer end to end, the product side | **`README.md`** |
@@ -25,14 +26,22 @@ Detail never lives here.
 
 New kinds of work, for example model fine-tuning or retraining, get their own md and a row here.
 
-## State in one paragraph (2026-09-29)
+## State in one paragraph (2026-09-30)
 
-The DJ profiling run over every DJ with Fred again.. is done (285 mixes, 3,365 seams, 2,459 cut,
-measured and labelled, layer tables for the stacking DJs; `DATASET_STATE.md` 2026-09-29 for the numbers,
-`DATA_PIPELINE.md` for how it runs). The tables are on the VM in `data/djdata/djs/out/` and on S3 at
-`s3://aidj-1/djdata_djs/out/`. Next: Raveform, starting with feature extraction. The VM now holds the DJ tracks and all of Raveform; the DJ mixes and windows are on S3 only (`DATA_ARCHITECTURE.md` 0b). The VM was left running on 2026-09-29 for that session (stop it when done; after a reboot `sudo swapon /swapfile`). Then the old
-`scripts/diag` code goes. Never call the old dataset "the catalog". Raveform's tier 1 and tier 2 are one
-dataset; the split was run order only.
+Both seam runs are done. The DJ profiling run: 285 mixes, 3,365 seams, 2,459 cut, measured and
+labelled, layer tables for the stacking DJs (`DATASET_STATE.md` 2026-09-29). The Raveform run: 5,060
+seams cut, measured, tempo'd and labelled, 4,639 with both records clear (`DATASET_STATE.md`
+2026-09-30, which also has the webm start fix it needed). `DATA_PIPELINE.md` has how each runs. The
+tables are on the laptop in `data/djdata/djs/out/` and `data/djdata/raveform/out/`, on the VM, and on
+S3 at `s3://aidj-1/djdata_djs/out/` and `s3://aidj-1/djdata/out/`. The old untracked `scripts/diag`
+code is deleted and archived on S3. Raveform's tempos were checked against its beat annotations on
+2026-10-07 and 1,056 seams relabelled (`DATASET_STATE.md`). Track features and embeddings for both seam
+corpora are extracted from the full tracks (2026-10-07, 12,211 tracks, `data/djdata/<corpus>/out/
+track_features.parquet` and `embeddings/`, laptop, VM and S3; plan, checks and numbers in
+`EMBEDDINGS.md`). How the old and the new data are used from here is the top section of
+`DATASET_STATE.md`. Next: BPM for the tracks outside any seam, then Model A's retrain, old rows in and
+out. After a VM start, `sudo swapon /swapfile`. Never call the
+old dataset "the catalog". Raveform's tier 1 and tier 2 are one dataset; the split was run order only.
 
 ## How Anas works, follow this
 
