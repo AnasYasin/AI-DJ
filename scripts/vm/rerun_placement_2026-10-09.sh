@@ -28,7 +28,11 @@ keep $OUT plays.csv presence.csv mixes.csv seams.csv cuts.csv measures.csv label
 # tempos.csv stays: the record BPMs are the locate refinement's input and did not change
 # the windows were cut around the old placement; the cut stage adopts an existing window by seam id,
 # so they are set aside too and every seam is cut again from the mix audio (a stream copy, minutes)
-[ -d data/djdata/djs/windows ] && mv -n data/djdata/djs/windows data/djdata/djs/windows_$STAMP && mkdir -p data/djdata/djs/windows
+if [ -d data/djdata/djs/windows ] && [ ! -d data/djdata/djs/windows_$STAMP ]; then
+  mv data/djdata/djs/windows data/djdata/djs/windows_$STAMP
+fi
+mkdir -p data/djdata/djs/windows
+# a second start resumes: `mv -n` above keeps the first run's dated copies, every stage skips its done rows
 run python -m djdata.cli locate       --config $C --workers 14
 run python -m djdata.cli pairs        --config $C
 run python -m djdata.cli cut          --config $C --workers 16
