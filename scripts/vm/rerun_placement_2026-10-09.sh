@@ -17,7 +17,11 @@ run() { echo "== $(date -u +%H:%M:%S) $*"; "$@"; }
 keep() {  # move the tables a stage will rewrite into the dated folder, keep what stays valid
   local out=$1; shift
   mkdir -p "$out/$STAMP"
-  for f in "$@"; do [ -e "$out/$f" ] && mv -n "$out/$f" "$out/$STAMP/$f"; done
+  # a second start keeps the first run's dated copy and leaves the live, partly filled table in place
+  # (coreutils 9 makes `mv -n` fail when it skips, which killed the script under set -e, 2026-10-09)
+  for f in "$@"; do
+    if [ -e "$out/$f" ] && [ ! -e "$out/$STAMP/$f" ]; then mv "$out/$f" "$out/$STAMP/$f"; fi
+  done
   ls -la "$out/$STAMP" | head -20
 }
 
