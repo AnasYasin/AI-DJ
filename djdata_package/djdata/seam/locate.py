@@ -93,9 +93,15 @@ NEAR_AFTER_S = 300.0
 # the record stretched both ways (resampled and key-locked) with a vote search around that speed had
 # 92 %, and 20 of the 40 matched best with pitch kept. The candidate with more votes wins, so a record
 # without a tempo, or one the tempo meter misreads, keeps the old search's answer.
+# The search cost is the key-locked stretches: on the first VM run (2026-10-09) each record took about five
+# minutes, 30 hours for the corpus. So the search uses rubberband's faster engine on at most REFINE_SEARCH_S
+# of the record, and the R3 engine only for the final whole-record stretch whose votes are compared with
+# the old search; both gave the same answers as the slow search on the 40-record test. The coarse span stays
+# ±1 %: at ±0.4 % two of the 24 off-speed records were lost, their tempo estimate sat about 1 % off.
 REFINE_COARSE_STEP, REFINE_COARSE_SPAN = 0.002, 0.01  # ±1 % in 0.2 % steps, both modes
 REFINE_FINE_STEP, REFINE_FINE_SPAN = 0.0005, 0.002  # then ±0.2 % in 0.05 % steps, the winner only
 REFINE_PAD_S = 20.0  # record cropped to its heard span plus this on each side for the speed search
+REFINE_SEARCH_S = 120.0  # the speed search runs on this much of the crop, from its middle
 REFINE_MIN_SPAN_S = 30.0  # a shorter heard span has too few bars for the tempo meter
 REFINE_MAX_RATE_OFF = (
     0.2  # a played/own tempo ratio further from 1 than this is an octave or a bad hint
@@ -170,15 +176,17 @@ def speed_and_offset(
     return best
 
 
-def keylocked(track: np.ndarray, rate: float) -> np.ndarray:
-    """The record `rate` times faster with its pitch kept, the mixer's R3 engine."""
+def keylocked(track: np.ndarray, rate: float, fast: bool = False) -> np.ndarray:
+    """The record `rate` times faster with its pitch kept: the mixer's R3 engine, or rubberband's
+    faster default engine for the search steps, where only the peak pattern matters."""
     if abs(rate - 1.0) < 1e-6:
         return track
-    return pyrubberband.time_stretch(track, SR, rate, rbargs={"-3": ""}).astype(np.float32)
+    args = {} if fast else {"-3": ""}
+    return pyrubberband.time_stretch(track, SR, rate, rbargs=args).astype(np.float32)
 
 
-def at_speed(track: np.ndarray, rate: float, mode: str) -> np.ndarray:
-    return at_mix_speed(track, rate) if mode == "resample" else keylocked(track, rate)
+def at_speed(track: np.ndarray, rate: float, mode: str, fast: bool = False) -> np.ndarray:
+    return at_mix_speed(track, rate) if mode == "resample" else keylocked(track, rate, fast)
 
 
 def played_tempo(mix_path, first_s: float, last_s: float, bpm: float) -> float | None:
@@ -223,19 +231,24 @@ def tempo_refine(
     crop = track[int(start * SR) : int(stop * SR)]
     if len(crop) < SR * REFINE_MIN_SPAN_S:
         return None
+    if (
+        len(crop) > SR * REFINE_SEARCH_S
+    ):  # the middle of the crop, where the record is surely heard
+        mid = len(crop) // 2
+        crop = crop[mid - int(SR * REFINE_SEARCH_S / 2) : mid + int(SR * REFINE_SEARCH_S / 2)]
     best = {}
     for mode in ("resample", "keylock"):
         best[mode] = (0, rate0)
         for r in np.arange(
             rate0 - REFINE_COARSE_SPAN, rate0 + REFINE_COARSE_SPAN + 1e-9, REFINE_COARSE_STEP
         ):
-            v, _ = match(fingerprint(at_speed(crop, float(r), mode)), mix_fp, span)
+            v, _ = match(fingerprint(at_speed(crop, float(r), mode, fast=True)), mix_fp, span)
             if v > best[mode][0]:
                 best[mode] = (v, float(r))
     mode = max(best, key=lambda m: best[m][0])
     votes, rate = best[mode]
     for r in np.arange(rate - REFINE_FINE_SPAN, rate + REFINE_FINE_SPAN + 1e-9, REFINE_FINE_STEP):
-        v, _ = match(fingerprint(at_speed(crop, float(r), mode)), mix_fp, span)
+        v, _ = match(fingerprint(at_speed(crop, float(r), mode, fast=True)), mix_fp, span)
         if v > votes:
             votes, rate = v, float(r)
     rate = round(rate, 5)

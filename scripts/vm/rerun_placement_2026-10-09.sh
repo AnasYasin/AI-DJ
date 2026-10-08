@@ -33,7 +33,7 @@ if [ -d data/djdata/djs/windows ] && [ ! -d data/djdata/djs/windows_$STAMP ]; th
 fi
 mkdir -p data/djdata/djs/windows
 # a second start resumes: `mv -n` above keeps the first run's dated copies, every stage skips its done rows
-run python -m djdata.cli locate       --config $C --workers 14
+run python -m djdata.cli locate       --config $C --workers 16
 run python -m djdata.cli pairs        --config $C
 run python -m djdata.cli cut          --config $C --workers 16
 run python -m djdata.cli measure      --config $C --workers 16
