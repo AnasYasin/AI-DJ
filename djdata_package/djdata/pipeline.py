@@ -5,7 +5,8 @@
     cut       one window per usable seam, stream copied, audited at both ends         -> cuts.csv
     measure   per band entry and exit, bass swap and words, presence, loop            -> measures.csv
     tempo     BPM per record from its own audio                                       -> tempos.csv
-    label     the nine transition types, in bars                                      -> labels.csv
+    label     the measured moves in bars and as fractions of the overlap               -> labels.csv
+    types     the signature the moves match, and the nearest mixer recipe              -> types.csv
     export    one flat seams table joining all of the above                           -> seams_index.csv
 
 Every stage takes the config and returns a small dict of counts that the CLI prints. A stage skips the
@@ -30,6 +31,7 @@ from .seam import locate as locate_mod
 from .seam import measure as measure_mod
 from .seam import pairs as pairs_mod
 from .seam import tempo as tempo_mod
+from .seam import types as types_mod
 from .seam.fingerprint import load as load_audio
 from .sources import raveform, tracklists
 from .store import tables
@@ -206,6 +208,8 @@ def _locate_job(job: dict) -> dict:
                 "window_votes": found.window_votes,
                 "window_floor": found.window_floor,
                 "window_control_max": found.window_control_max,
+                "mode": found.mode,
+                "played_bpm": found.played_bpm,
             }
         )
     presence_rows, seen = [], set()
@@ -265,6 +269,11 @@ def locate(cfg: Config, workers: int = 1, only: list[str] | None = None) -> dict
     mixes = corpus(cfg, only)
     pool_tracks = _control_pool(cfg, mixes)
     exclusions = _own_dj_exclusions(cfg)
+    # the record's own BPM lets the locator refine the speed from the played tempo (locate.tempo_refine);
+    # run `tempo --all-tracks` first, or the old resampling search alone decides
+    bpm = {r["track_id"]: num(r["bpm"]) for r in tables.tempos(cfg.dirs["out"]).rows()}
+    if not bpm:
+        log.warning("locate: no tempos.csv, the speed comes from the resampling search alone")
     jobs = []
     for m in mixes:
         if m["mix_id"] in done:
@@ -273,7 +282,8 @@ def locate(cfg: Config, workers: int = 1, only: list[str] | None = None) -> dict
             log.warning("locate %s: no track audio on disk, skipped", m["mix_id"])
             continue
         controls = [{**c, "is_control": 1} for c in _controls(m, pool_tracks, exclusions)]
-        jobs.append({**m, "controls": controls})
+        tracks = [{**t, "bpm": bpm.get(t["track_id"])} for t in m["tracks"]]
+        jobs.append({**m, "tracks": tracks, "controls": controls})
     log.info(
         "locate: %d mixes on disk, %d already done, %d to run at %d workers",
         len(mixes),
@@ -1231,13 +1241,14 @@ def tempo(cfg: Config, workers: int = 1, all_tracks: bool = False) -> dict:
 
 
 def label(cfg: Config) -> dict:
-    """Stage 6. The nine transition types per measured seam, in bars from the outgoing record's tempo
-    at the rate it was played (the incoming record's when the outgoing has none). Writes labels.csv."""
+    """Stage 6. The measured moves per seam, in bars from the outgoing record's tempo at the rate it
+    was played (the incoming record's when the outgoing has none), and as fractions of the overlap.
+    Writes labels.csv."""
     seams = {r["seam_id"]: r for r in tables.seams(cfg.dirs["out"]).rows()}
     bpm = {r["track_id"]: num(r["bpm"]) for r in tables.tempos(cfg.dirs["out"]).rows()}
     labels_t = tables.labels(cfg.dirs["out"])
     done = labels_t.keys()
-    counts = {"labelled": 0, "unmeasured": 0, "by_label": {}}
+    counts = {"labelled": 0, "unmeasured": 0}
     for m in tables.measures(cfg.dirs["out"]).rows():
         if m["seam_id"] in done or m["seam_id"] not in seams:
             continue
@@ -1249,9 +1260,78 @@ def label(cfg: Config) -> dict:
         got = labels_mod.label(m["seam_id"], numbers, bar_s)
         labels_t.append([got.as_row()])
         counts["labelled"] += 1
-        counts["unmeasured"] += got.label == "unmeasured"
-        counts["by_label"][got.label] = counts["by_label"].get(got.label, 0) + 1
+        counts["unmeasured"] += not got.measured
     return counts
+
+
+# ---------------------------------------------------------------- types
+
+
+def types(cfg: Config) -> dict:
+    """Stage 6b. The signature and nearest mixer recipe per seam (`seam/types.py`). Needs labels.csv;
+    track_features.parquet (record length) marks a seam whose overlap outruns its shorter record as
+    unusable; Raveform's section annotations let an end swap be named drop or rise. Rewritten every
+    time. Writes types.csv."""
+    import json
+
+    import pandas as pd
+
+    out = cfg.dirs["out"]
+    feats_path = out / "track_features.parquet"
+    feats = (
+        pd.read_parquet(feats_path, columns=["track_id", "minutes"])
+        .drop_duplicates("track_id")
+        .set_index("track_id")
+        if feats_path.exists()
+        else pd.DataFrame(columns=["minutes"])
+    )
+    drops = {}
+    structures = cfg.raveform_dir / "structures" / "segments.json"
+    if cfg.source == "raveform" and structures.exists():
+        for t in json.load(open(structures)):
+            drops[t["id"]] = [s["start"] for s in t["sections"] if s["name"] == "drop"]
+    seams = {r["seam_id"]: r for r in tables.seams(out).rows()}
+    cuts = {r["seam_id"]: r for r in tables.cuts(out).rows()}
+    measures = {r["seam_id"]: r for r in tables.measures(out).rows()}
+
+    def minutes(track):
+        return (
+            float(feats.at[track, "minutes"])
+            if track in feats.index and pd.notna(feats.at[track, "minutes"])
+            else None
+        )
+
+    rows, counts = [], {}
+    for lab in tables.labels(out).rows():
+        sid = lab["seam_id"]
+        seam, m, cut = seams.get(sid), measures.get(sid, {}), cuts.get(sid)
+        if seam is None:
+            continue
+        lengths = [minutes(seam[k]) for k in ("track_a", "track_b")]
+        shorter = min(lengths) * 60 if None not in lengths else None
+        to_drop = types_mod.swap_to_drop_bars(
+            _file_start(seam, cut) if cut else None,
+            num(seam["b_time_zero_s"]),
+            num(seam["b_rate"]),
+            num(m.get("bass_swap_s")),
+            num(lab["bar_s"]),
+            drops.get(seam["track_b"]),
+        )
+        got = types_mod.classify(
+            {k: num(v) for k, v in lab.items()}, num(m.get("overlap_s")), shorter, to_drop
+        )
+        rows.append({"seam_id": sid, **got, "swap_to_drop_bars": to_drop})
+        counts[got["signature"]] = counts.get(got["signature"], 0) + 1
+    t = tables.types(out)
+    if t.path.exists():
+        t.path.unlink()
+    t.append(rows)
+    log.info("types: %s", counts)
+    return {
+        "typed": len(rows),
+        "by_signature": counts,
+        "drop_annotated": sum(r["swap_to_drop_bars"] is not None for r in rows),
+    }
 
 
 # ---------------------------------------------------------------- export
@@ -1269,11 +1349,12 @@ def export(cfg: Config) -> dict:
         (tables.cuts(out), ""),
         (tables.measures(out), ""),
         (tables.labels(out), ""),
+        (tables.types(out), ""),
     ):
         for r in t.rows():
             joined.setdefault(r["seam_id"], {}).update({f"{prefix}{k}": v for k, v in r.items()})
     columns = []
-    for cols in (tables.SEAMS, tables.CUTS, tables.MEASURES, tables.LABELS):
+    for cols in (tables.SEAMS, tables.CUTS, tables.MEASURES, tables.LABELS, tables.TYPES):
         columns += [c for c in cols if c not in columns]
     path = out / "seams_index.csv"
     with open(path, "w", newline="") as handle:
@@ -1297,11 +1378,15 @@ def ear_test(cfg: Config, out_dir, n: int = 10, label: str | None = None, seed: 
     seams = {r["seam_id"]: r for r in tables.seams(cfg.dirs["out"]).rows()}
     cuts = {r["seam_id"]: r for r in tables.cuts(cfg.dirs["out"]).rows()}
     measures = {r["seam_id"]: r for r in tables.measures(cfg.dirs["out"]).rows()}
-    labels = {r["seam_id"]: r for r in tables.labels(cfg.dirs["out"]).rows()}
+    labels = {r["seam_id"]: r for r in tables.types(cfg.dirs["out"]).rows()}
     paths = _track_paths(cfg)
     pool = [sid for sid in measures if sid in cuts and sid in seams]
     if label is not None:
-        pool = [sid for sid in pool if labels.get(sid, {}).get("label") == label]
+        pool = [
+            sid
+            for sid in pool
+            if label in (labels.get(sid, {}).get("signature"), labels.get(sid, {}).get("type"))
+        ]
     rng = random.Random(seed)
     rng.shuffle(pool)
     rows = []
@@ -1333,7 +1418,7 @@ def ear_test(cfg: Config, out_dir, n: int = 10, label: str | None = None, seed: 
                 "in_s": m["in_s"],
                 "out_s": m["out_s"],
                 "bass_swap_s": m["bass_swap_s"],
-                "label": labels.get(sid, {}).get("label", ""),
+                "label": labels.get(sid, {}).get("signature", ""),
                 "a_confidence": seam["a_confidence"],
                 "b_confidence": seam["b_confidence"],
                 "audit_start_ok": c["audit_start_ok"],

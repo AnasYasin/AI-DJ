@@ -174,3 +174,32 @@ def test_locate_mix_end_to_end(known_mix, tmp_path):
         locate.confidence(by_id["c"].votes, got["floor"], by_id["c"].sections_agree) == "not found"
     )
     assert np.isfinite(by_id["a"].seconds)
+
+
+def test_key_locked_record_is_placed_from_its_tempo(tmp_path):
+    """A record played 3 % fast with its pitch kept: the resampling search cannot match it and reads
+    it near 1.00; the tempo refinement, with the record's own BPM, finds the speed and the mode. The
+    record carries a kick on every beat at 128 BPM so the mix has a tempo to measure."""
+    sr, bpm = fp.SR, 128.0
+    music = synth.record(150.0, seed=31)
+    n = len(music)
+    t = np.arange(n) / sr
+    kicks = np.zeros(n, dtype=np.float32)
+    for k in range(int(150.0 * bpm / 60.0)):
+        i = int(k * 60.0 / bpm * sr)
+        seg = min(int(0.08 * sr), n - i)
+        kicks[i : i + seg] += np.sin(2 * np.pi * 55.0 * t[:seg]) * np.exp(-t[:seg] * 40.0)
+    rec = 0.5 * music + 0.9 * kicks
+    rec = (0.3 * rec / np.abs(rec).max()).astype(np.float32)
+    played = locate.keylocked(rec, 1.03)
+    audio = synth.mix([(synth.record(100.0, seed=32), 0.0, 1.0)], seconds=260.0)
+    start = int(100.0 * sr)
+    audio[start : start + len(played)] += played[: len(audio) - start]
+    path = tmp_path / "mix.wav"
+    sf.write(path, audio, sr)
+    table, _ = fp.mix_fingerprint(path)
+    got = locate.locate_track("r", rec, table, mix_path=path, bpm=bpm)
+    assert got.mode == "keylock"
+    assert got.rate == pytest.approx(1.03, abs=0.0015)
+    assert got.time_zero_s == pytest.approx(100.0, abs=0.1)
+    assert got.played_bpm == pytest.approx(bpm * 1.03, rel=0.002)

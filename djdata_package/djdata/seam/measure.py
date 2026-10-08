@@ -120,6 +120,29 @@ def measure_one(job: dict) -> dict:
         }
     )
 
+    # how loud each record's own band is across the overlap, against the loud parts of the slice: a
+    # band the record does not carry here cannot be heard arriving or leaving, whatever the EQ did.
+    # On a pair cued at a sparse intro the incoming read 3 to 7 dB under and its moments came 7 to 17
+    # bars late; on a steady pair 0 to 2.5 dB under and the moments were on time (2026-10-09).
+    for name in ("A", "B"):
+        track_t, mix_t = anchors[name]
+        if b_in is not None and a_out is not None and a_out > b_in:
+            start, n_ov = track_t + (b_in - mix_t), max(int((a_out - b_in) / bands.HOP_S), 1)
+        else:
+            start, n_ov = None, 0
+        n_all = max(int(len(tracks[name]) / SR / bands.HOP_S) - 4, 1)
+        for band in bands.BANDS:
+            whole = bands.band_level_db(tracks[name], band, 0.0, n_all)
+            level = (
+                bands.band_level_db(tracks[name], band, start, n_ov) if start is not None else []
+            )
+            carried = (
+                None
+                if not len(level) or np.all(np.isnan(level))
+                else round(float(np.nanmedian(level) - np.nanpercentile(whole, 80)), 1)
+            )
+            row[f"{band}_{name.lower()}_carried_db"] = carried
+
     # bass words along the window
     times = low.t.to_numpy()
     n = len(times)

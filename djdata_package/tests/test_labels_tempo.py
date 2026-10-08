@@ -12,6 +12,9 @@ BAR = 4 * 60.0 / 128.0  # 1.875 s at 128 BPM
 
 def measures(**over):
     base = {
+        "in_s": 40.0,
+        "out_s": 100.0,
+        "bass_swap_s": 70.0,
         "overlap_s": 20 * BAR,
         "bass_cut_longest_s": 0.0,
         "bass_both_longest_s": 0.0,
@@ -27,43 +30,32 @@ def measures(**over):
     return base
 
 
-def test_long_and_short_blend_and_cut_by_overlap_bars():
-    assert labels.label("s", measures(overlap_s=20 * BAR), BAR).label == "long_blend"
-    assert labels.label("s", measures(overlap_s=5 * BAR), BAR).label == "short_blend"
-    assert labels.label("s", measures(overlap_s=0.5 * BAR), BAR).label == "cut"
-    assert labels.label("s", measures(overlap_s=-1.5 * BAR), BAR).label == "cut"
-    assert labels.label("s", measures(overlap_s=-3 * BAR), BAR).label == "edit_or_talk"
-
-
-def test_priority_order_loop_first_then_tension_sweeps_layer():
-    got = labels.label("s", measures(loop_steps=4, bass_cut_longest_s=10 * BAR), BAR)
-    assert (
-        got.label == "loop"
-        and "tension" in got.labels.split()
-        and "long_blend" in got.labels.split()
+def test_moves_in_bars_and_as_fractions_of_the_overlap():
+    got = labels.label(
+        "s", measures(in_s=40.0, out_s=100.0, bass_swap_s=70.0, overlap_s=60.0), BAR
     )
-    assert labels.label("s", measures(bass_cut_longest_s=8 * BAR), BAR).label == "tension"
-    assert labels.label("s", measures(bass_cut_longest_s=7.9 * BAR), BAR).label == "long_blend"
-    assert labels.label("s", measures(bass_both_longest_s=16 * BAR), BAR).label == "layer"
+    assert got.measured == 1 and got.overlap_bars == 32.0 and got.swap_pos == 0.5
+    assert got.b_high_pos == 0.0 and got.a_low_pos == 1.0  # bands at the entry and the exit
+    assert got.tension == 0 and got.loop == 0
 
 
-def test_sweeps_need_the_band_order_over_eight_bars():
+def test_tension_and_loop_flags_and_sweeps():
+    assert labels.label("s", measures(bass_cut_longest_s=8 * BAR), BAR).tension == 1
+    assert labels.label("s", measures(bass_cut_longest_s=7.9 * BAR), BAR).tension == 0
+    assert labels.label("s", measures(loop_steps=4), BAR).loop == 1
     out = measures(low_out_s=80.0, mid_out_s=90.0, high_out_s=80.0 + 8 * BAR)
-    got = labels.label("s", out, BAR)
-    assert got.label == "sweep_out" and got.sweep_out_bars == 8.0
+    assert labels.label("s", out, BAR).sweep_out_bars == 8.0
     wrong_order = measures(low_out_s=100.0, mid_out_s=90.0, high_out_s=120.0)
-    assert "sweep_out" not in labels.label("s", wrong_order, BAR).labels
-    short = measures(low_out_s=80.0, mid_out_s=82.0, high_out_s=84.0)
-    assert "sweep_out" not in labels.label("s", short, BAR).labels
+    assert labels.label("s", wrong_order, BAR).sweep_out_bars is None
     sweep_in = measures(high_in_s=40.0, mid_in_s=45.0, low_in_s=40.0 + 9 * BAR)
-    assert labels.label("s", sweep_in, BAR).label == "sweep_in"
-    missing = measures(high_in_s=None)
-    assert "sweep_in" not in labels.label("s", missing, BAR).labels
+    assert labels.label("s", sweep_in, BAR).sweep_in_bars == 9.0
+    assert labels.label("s", measures(high_in_s=None), BAR).sweep_in_bars is None
 
 
 def test_no_tempo_or_no_overlap_is_unmeasured_not_guessed():
-    assert labels.label("s", measures(), None).label == "unmeasured"
-    assert labels.label("s", measures(overlap_s=None), BAR).label == "unmeasured"
+    assert labels.label("s", measures(), None).measured == 0
+    assert labels.label("s", measures(overlap_s=None), BAR).measured == 0
+    assert labels.label("s", measures(overlap_s=None), BAR).swap_pos is None
 
 
 def test_bar_seconds_follows_the_playback_rate():

@@ -54,13 +54,18 @@ def test_measure_tempo_label_export(located):
     labelled = pipeline.label(located)
     assert labelled["labelled"] == 2
     got = {r["seam_id"]: r for r in tables.labels(located.dirs["out"]).rows()}
-    from djdata.seam import labels as labels_mod
-
-    assert got["m1_t1_t2"]["label"] in labels_mod.ORDER + ["unmeasured", "none"]
+    assert (
+        got["m1_t1_t2"]["measured"] == "1" and tables.num(got["m1_t1_t2"]["swap_pos"]) is not None
+    )
+    typed = pipeline.types(located)
+    assert typed["typed"] == 2
+    kinds = {r["seam_id"]: r["signature"] for r in tables.types(located.dirs["out"]).rows()}
+    assert kinds["m1_t1_t2"] in ("centre swap", "late swap", "end swap", "cut", "tension", "loop")
     exported = pipeline.export(located)
     assert exported["seams"] == 2
     index = tables.Table(located.dirs["out"] / "seams_index.csv", [], key="seam_id").rows()
     assert {r["seam_id"] for r in index} == {"m1_t1_t2", "m2_t4_t5"}
-    assert "label" in index[0] and "bass_swap_s" in index[0] and "window_file" in index[0]
+    assert "signature" in index[0] and "bass_swap_s" in index[0] and "window_file" in index[0]
+    assert "low_b_carried_db" in index[0]
     assert pipeline.measure(located, workers=1)["measured"] == 0
     assert pipeline.label(located)["labelled"] == 0

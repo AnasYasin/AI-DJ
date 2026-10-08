@@ -92,9 +92,11 @@ def first_present(curve: pd.DataFrame, name: str, floor: int) -> float | None:
 
 
 def last_present(curve: pd.DataFrame, name: str, floor: int) -> float | None:
-    """The end of the last present chunk."""
+    """The centre of the last present chunk. A chunk half covered by the record still clears the
+    floor, so its end overshoots: on seven mixer renders with the overlap end known (2026-10-09) the
+    chunk end read 4 s (2.3 bars) late on every one, the centre 1 s early."""
     idx = np.nonzero(present(curve, name, floor))[0]
-    return float(curve.t.iloc[idx[-1]]) + CHUNK_S if len(idx) else None
+    return float(curve.t.iloc[idx[-1]]) + CHUNK_S / 2 if len(idx) else None
 
 
 def here_at(curve: pd.DataFrame, name: str, floor: int, times) -> np.ndarray:

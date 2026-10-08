@@ -224,19 +224,29 @@ MEASURES += [
     "control_trusted",
     "seconds",
 ]
+for _band in ("low", "mid", "high"):
+    MEASURES += [f"{_band}_a_carried_db", f"{_band}_b_carried_db"]  # the band in the stem itself
 
 TEMPOS = ["track_id", "bpm", "seconds"]
 
 LABELS = [
     "seam_id",
-    "label",
-    "labels",
+    "measured",
     "bar_s",
     "overlap_bars",
+    "swap_pos",
+    "b_high_pos",
+    "b_mid_pos",
+    "b_low_pos",
+    "a_high_pos",
+    "a_mid_pos",
+    "a_low_pos",
     "bass_cut_bars",
     "bass_both_bars",
     "sweep_out_bars",
     "sweep_in_bars",
+    "tension",
+    "loop",
     "loop_steps",
 ]
 
@@ -259,6 +269,13 @@ def tempos(out_dir: Path) -> Table:
 
 def labels(out_dir: Path) -> Table:
     return Table(Path(out_dir) / "labels.csv", LABELS, key="seam_id")
+
+
+TYPES = ["seam_id", "signature", "type", "distance", "swap_to_drop_bars"]
+
+
+def types(out_dir: Path) -> Table:
+    return Table(Path(out_dir) / "types.csv", TYPES, key="seam_id")
 
 
 # ---------------------------------------------------------------- proofs (which file is which show)
@@ -338,6 +355,10 @@ def proof_summary(out_dir: Path) -> Table:
 # and nothing in layer_bands.
 
 PLAYS += ["search", "near_s", "window_votes", "window_floor", "window_control_max"]
+PLAYS += [
+    "mode",
+    "played_bpm",
+]  # how the record was stretched to match, and the tempo it played at
 
 PRESENCE = [
     "mix_id",

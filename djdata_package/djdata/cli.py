@@ -20,7 +20,8 @@ The profiling pipeline, one stage per subcommand, each resumable (see pipeline.p
   djdata cut        --config config_djs.yaml [--workers N]                    windows cut and audited -> out/cuts.csv
   djdata measure    --config config_djs.yaml [--workers N]                    bands, bass, presence, loop -> out/measures.csv
   djdata tempo      --config config_djs.yaml [--workers N]                    BPM per record -> out/tempos.csv
-  djdata label      --config config_djs.yaml                                  transition types in bars -> out/labels.csv
+  djdata label      --config config_djs.yaml                                  measured moves in bars   -> out/labels.csv
+  djdata types      --config config.yaml                                      DJ transition type -> out/types.csv
   djdata export-seams --config config_djs.yaml                                one flat table -> out/seams_index.csv
   djdata layers     --config config_djs.yaml                                  the layer timeline -> out/layers.csv
   djdata layer-bands --config config_djs.yaml [--workers N]                   bands of stacked records -> out/layer_bands.csv
@@ -317,6 +318,7 @@ def main(argv=None):
         ("measure", "measure"),
         ("tempo", "tempo"),
         ("label", "label"),
+        ("types", "types"),
         ("export-seams", "export"),
         ("layers", "layers"),
         ("layer-bands", "layer_bands"),

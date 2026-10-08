@@ -40,9 +40,12 @@ from dataclasses import asdict, dataclass, field
 import logging
 import time
 
+import librosa
 import numpy as np
+import pyrubberband
 
 from . import floors
+from . import tempo as tempo_mod
 from .fingerprint import (
     FRAME_S,
     SR,
@@ -83,6 +86,20 @@ EDGE_PAIRS_PER_S = (
 # 2026-09-28, 739 lookups on ten solo segments), and 40 to 60 % of his records were found instead of 1 in 5.
 NEAR_BEFORE_S = 180.0
 NEAR_AFTER_S = 300.0
+# Speed from the tempo the mix plays the record at (2026-10-08/09). The resampling search above cannot
+# see a record played with key lock (tempo changed, pitch kept), and reads those near 1.00: on 40
+# Raveform records with Raveform's placement as truth, it had 46 % of the off-speed ones within 0.1 %.
+# Measuring the played tempo over the heard span, dividing by the record's own BPM, and then matching
+# the record stretched both ways (resampled and key-locked) with a vote search around that speed had
+# 92 %, and 20 of the 40 matched best with pitch kept. The candidate with more votes wins, so a record
+# without a tempo, or one the tempo meter misreads, keeps the old search's answer.
+REFINE_COARSE_STEP, REFINE_COARSE_SPAN = 0.002, 0.01  # ±1 % in 0.2 % steps, both modes
+REFINE_FINE_STEP, REFINE_FINE_SPAN = 0.0005, 0.002  # then ±0.2 % in 0.05 % steps, the winner only
+REFINE_PAD_S = 20.0  # record cropped to its heard span plus this on each side for the speed search
+REFINE_MIN_SPAN_S = 30.0  # a shorter heard span has too few bars for the tempo meter
+REFINE_MAX_RATE_OFF = (
+    0.2  # a played/own tempo ratio further from 1 than this is an octave or a bad hint
+)
 
 
 @dataclass
@@ -113,6 +130,10 @@ class Located:
     # every 30 s window where the record beats the loudest control window of this mix:
     # (window start in mix s, votes, offset in frames); the layer timeline is built from these
     windows: list = field(default_factory=list, repr=False)
+    # how the record was stretched to the speed that matched: "resample" (pitch moved with tempo) or
+    # "keylock" (pitch kept); the tempo the mix played it at, when the refinement ran
+    mode: str = "resample"
+    played_bpm: float | None = None
 
     def as_row(self) -> dict:
         row = asdict(self)
@@ -147,6 +168,85 @@ def speed_and_offset(
             if votes > best["votes"]:
                 best = {"votes": votes, "rate": rate, "offset": offset}
     return best
+
+
+def keylocked(track: np.ndarray, rate: float) -> np.ndarray:
+    """The record `rate` times faster with its pitch kept, the mixer's R3 engine."""
+    if abs(rate - 1.0) < 1e-6:
+        return track
+    return pyrubberband.time_stretch(track, SR, rate, rbargs={"-3": ""}).astype(np.float32)
+
+
+def at_speed(track: np.ndarray, rate: float, mode: str) -> np.ndarray:
+    return at_mix_speed(track, rate) if mode == "resample" else keylocked(track, rate)
+
+
+def played_tempo(mix_path, first_s: float, last_s: float, bpm: float) -> float | None:
+    """The tempo the mix runs at between `first_s` and `last_s`, the record's own BPM as the hint."""
+    y, _ = librosa.load(
+        str(mix_path), sr=tempo_mod.mixer.SR, mono=True, offset=first_s, duration=last_s - first_s
+    )
+    return tempo_mod.mixer._measure_tempo(y, bpm)
+
+
+def tempo_refine(
+    track: np.ndarray,
+    mix_path,
+    mix_fp: dict,
+    bpm: float | None,
+    first_s: float | None,
+    last_s: float | None,
+    span: tuple | None = None,
+) -> dict | None:
+    """Speed and offset from the played tempo, refined by votes in whichever stretch mode matches.
+    Returns {"votes", "rate", "offset", "mode", "played_bpm"} with whole-record votes, comparable with
+    `speed_and_offset`, or None when there is no tempo to go on."""
+    if bpm is None or first_s is None or last_s is None or last_s - first_s < REFINE_MIN_SPAN_S:
+        return None
+    played = played_tempo(mix_path, first_s, last_s, bpm)
+    if played is None:
+        return None
+    rate0 = played / bpm
+    if abs(rate0 - 1.0) > REFINE_MAX_RATE_OFF:
+        return None
+    whole = {
+        m: match(fingerprint(at_speed(track, rate0, m)), mix_fp, span)
+        for m in ("resample", "keylock")
+    }
+    mode0 = max(whole, key=lambda m: whole[m][0])
+    if whole[mode0][0] < FINE_MIN_VOTES:
+        return None
+    # the part of the record that sounds in the heard span, in the record's own clock
+    zero = whole[mode0][1] * FRAME_S
+    start = max(0.0, (first_s - zero - REFINE_PAD_S) * rate0)
+    stop = (last_s - zero + REFINE_PAD_S) * rate0
+    crop = track[int(start * SR) : int(stop * SR)]
+    if len(crop) < SR * REFINE_MIN_SPAN_S:
+        return None
+    best = {}
+    for mode in ("resample", "keylock"):
+        best[mode] = (0, rate0)
+        for r in np.arange(
+            rate0 - REFINE_COARSE_SPAN, rate0 + REFINE_COARSE_SPAN + 1e-9, REFINE_COARSE_STEP
+        ):
+            v, _ = match(fingerprint(at_speed(crop, float(r), mode)), mix_fp, span)
+            if v > best[mode][0]:
+                best[mode] = (v, float(r))
+    mode = max(best, key=lambda m: best[m][0])
+    votes, rate = best[mode]
+    for r in np.arange(rate - REFINE_FINE_SPAN, rate + REFINE_FINE_SPAN + 1e-9, REFINE_FINE_STEP):
+        v, _ = match(fingerprint(at_speed(crop, float(r), mode)), mix_fp, span)
+        if v > votes:
+            votes, rate = v, float(r)
+    rate = round(rate, 5)
+    votes, offset = match(fingerprint(at_speed(track, rate, mode)), mix_fp, span)
+    return {
+        "votes": votes,
+        "rate": rate,
+        "offset": offset,
+        "mode": mode,
+        "played_bpm": round(float(played), 3),
+    }
 
 
 def section_offsets(
@@ -316,8 +416,12 @@ def locate_track(
     weak_level: int | None = None,
     near_s: float | None = None,
     control_coarse: list[dict] | None = None,
+    mix_path=None,
+    bpm: float | None = None,
 ) -> Located:
     """One record against one mix table. `track` is the record's audio at the fingerprint rate.
+    With `mix_path` and the record's own `bpm`, the speed is refined from the played tempo
+    (`tempo_refine`) once the record's heard span is known, and the better-voted answer stands.
     `sweep_floor` is the presence floor from this mix's controls (`sweep_floor_from`), `weak_level` the
     loudest control window (`weak_level_from`): windows above it are kept for the layer timeline.
 
@@ -346,13 +450,22 @@ def locate_track(
         if wf.clears(window_votes):
             search_fp = sub
     best = speed_and_offset(track, search_fp, coarse)
-    at_speed = at_mix_speed(track, best["rate"])
-    sections = section_offsets(at_speed, search_fp, best["offset"])
-    n_agree, offset = consensus(sections, best["offset"])
-    w = window_counts(fingerprint(at_speed), mix_fp)
+    mode, played = "resample", None
+    audio = at_mix_speed(track, best["rate"])
+    w = window_counts(fingerprint(audio), mix_fp)
     first, last, sweep_best, off_first, off_last = presence(None, mix_fp, sweep_floor, w)
+    refined = (
+        tempo_refine(track, mix_path, search_fp, bpm, first, last, span) if mix_path else None
+    )
+    if refined is not None and refined["votes"] > best["votes"]:
+        best, mode, played = refined, refined["mode"], refined["played_bpm"]
+        audio = at_speed(track, best["rate"], mode)
+        w = window_counts(fingerprint(audio), mix_fp)
+        first, last, sweep_best, off_first, off_last = presence(None, mix_fp, sweep_floor, w)
+    sections = section_offsets(audio, search_fp, best["offset"])
+    n_agree, offset = consensus(sections, best["offset"])
     time_zero = offset * FRAME_S
-    rate = round(best["rate"], 4)
+    rate = round(best["rate"], 5)
     track_len = len(track) / SR
     played_from = played_to = None
     if first is not None:
@@ -375,6 +488,8 @@ def locate_track(
         track_len_s=round(track_len, 1),
         seconds=round(time.time() - t0, 1),
         windows=windows_above(w, weak_level) if weak_level is not None else [],
+        mode=mode,
+        played_bpm=played,
         **extra,
     )
 
@@ -436,6 +551,8 @@ def locate_mix(mix_path, tracks: list[dict], controls: list[dict]) -> dict:
                 weak_level,
                 t.get("near_s"),
                 control_coarse,
+                mix_path=mix_path,
+                bpm=t.get("bpm"),
             )
         )
         if i % 10 == 0 or i == len(tracks):
