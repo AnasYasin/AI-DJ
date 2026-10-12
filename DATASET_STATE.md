@@ -24,6 +24,172 @@ their own 1001 page links, see the DJ PROFILING note below and `DATA_ARCHITECTUR
 speed theory and the quad-fingerprint work in **THE BLOCKER** below are kept as a record of what was tested;
 the speed part is superseded, the quad fingerprint remains a valid second opinion.
 
+# Cleanup (2026-10-13, Anas: "do it now")
+
+Removed from git: `scripts/diag/loudfix_render.py`, `loudfix_worst.py`, `seamfix_ab.py` (nothing referenced them) and
+`djdata/legacy/mixesdb_client.py`, `legacy/preview_fetcher.py` (nobody imported them; identical copies live in
+`src/data/`). Still in `djdata/legacy/` because live code imports them: `track_fetcher.py` (the fingerprint, the coarse
+placement, the DJ-corpus track search), `tracklists1001_client.py` (the scraper, `djdata scrape-tracklists`) and
+`locate_slice.py` (the coarse locator in `fetch/mix.py`, the DJ-corpus download path). The folder name is wrong for what
+it holds; moving the three into `fetch/` is a rename of six imports, not done. New this week and now lint-clean:
+`scripts/enrich/` (three scripts, `djdata_package/README.md`), `scripts/diag/recreate_seams_from_measures.py` (the
+left-right ear test), `report_cast_census.py` and `report_where_it_holds.py` (the cast and where-it-holds checks).
+`dj_previews_fetch.py` and `seam_previews_fetch.py` stay as the section below says. The dated VM scripts in `scripts/vm/`
+record the 2026-10-09 to 12 re-run and stay; the next run wants one script with the worker counts as arguments.
+
+# The re-run landed (2026-10-11): placement fixed on the whole DJ corpus, both corpora re-measured
+
+The VM re-run (`scripts/vm/rerun_placement_2026-10-09.sh`, then `rerun_raveform_2026-10-10.sh` and
+`after_measure_2026-10-11.sh`, started 2026-10-09, OOM-killed twice, finished 20:38 German time 2026-10-11; the memory note
+`vm-run-restart-2026-10-10` has the worker counts and the pitfalls). Tables on the laptop, the VM and S3; the old ones in
+`out/before_2026-10-09/`.
+
+**Beat-match check, whole corpus (script in the session scratchpad, same method as the 2026-10-08 section: record BPM from
+`track_features.parquet` times the placement's rate, both sides of a blend, half or double tempo folded; blends = centre,
+late or end swap with 8 or more overlap bars).**
+
+```
+                                     blends   median mismatch   within 0.5 %   within 1 %
+DJ corpus, our locator, old run        395        0.82 %            42 %         54 %
+DJ corpus, our locator, now            293        0.05 %            86 %         90 %
+Raveform, its own placement           2,588       0.05 %            91 %         97 %
+```
+
+So the DJ corpus now beat-matches as well as Raveform. 52 % of the 4,024 found records matched key-locked, 48 % resampled;
+13 % read exactly 1.00, 75 % are more than 0.5 % off speed. Speed and played BPM from the DJ corpus are usable again (the
+2026-10-08 exclusion no longer applies; the report still shows Raveform only until the notebook is rebuilt).
+
+**Counts.** DJ corpus: 3,489 seams in the index, 2,638 cut, 2,617 measured (35 windows of 25 minutes to 4 hours were set aside
+in `windows_big/`, list `out/measure_big_windows_2026-10-11.csv` with a `decision` column; the 14 under 50 minutes were
+measured at 2 workers on 2026-10-12 and are in, the 21 over 50 minutes are left out as not transitions, Anas 2026-10-12). Of the 3,489 (before the 14 came in): 1,108 typed, 728 gap, 644
+unmeasured (floors not trusted), 851 unusable (a gap of minutes between A last heard and B first heard). Raveform: 5,060
+measured, 4,076 typed, 546 gap, 337 unmeasured.
+
+**Signatures now (types.csv).** Raveform: centre swap 1,711, cut 760, tension 617, end swap 574, late swap 382, loop 32
+(provisional 2026-10-09 on the old measures: 2,001 / 600 / 625 / 436 / 457 / 37). The exit fix reads the outgoing record's exit
+earlier, so overlaps shorten and swaps sit later in them: fewer centre swaps, more cuts and end swaps. DJ corpus: tension
+421, cut 363, centre swap 146, end swap 114, late swap 33, loop 31. The DJ corpus leans on tension and cut far more than
+Raveform (per-DJ table and the check that it is not a measurement artefact: see the 2026-10-12 notes below when written).
+The types have still not been checked by ear; 12 clips are in `data/external/ear_test/types_2026-10-12/` (two per
+signature from the DJ corpus, `picks.csv` beside them) for Anas. Beside them, `recreated/` holds the same 12 seams built
+from the measurements alone in the LEFT channel against the original in the RIGHT (Anas's design, 2026-10-12;
+`scripts/diag/recreate_seams_from_measures.py`): records at their measured time zero and speed, each band faded at its
+measured entry or exit over one bar. A band the reader never heard enter is silent on the left, which is the first
+thing to listen for: B's highs read as never arriving on 5 of the 12.
+
+**OPEN, drum and bass tempos fold (found 2026-10-13 on the tempo-by-year chart).** Played tempo (record BPM from
+`track_features.parquet` times the placement rate) for Raveform's drum and bass sets reads a median 127 BPM in 2014-15
+(0 % of plays over 150), 172 in 2016-18 (70 % over 150) and 132 in 2019-20. Drum and bass does not change tempo like
+that; the 127 to 132 readings are a 3:4 fold of about 170 (the same fault as the 107-for-143 record in the 2026-10-09
+section). Which sets and whether the fold is in the record BPM or the rate is not yet separated. Until it is, drum and
+bass is left out of the tempo-by-year and tempo-peak charts, and every drum and bass bar count built on `bar_s` carries
+the same doubt.
+
+**The Raveform `dj` column held dates again after the re-run (found 2026-10-12, fixed at the root).** The 2026-10-08 fix
+rewrote `seams_index.csv` only; the export stage copies `dj` from `plays.csv`, which the September pairs stage wrote with the
+old reader, so every re-export brought the dates back. On 2026-10-12 `plays.csv` and `seams.csv` were rewritten on the VM
+with `dj_from_title` over the Raveform titles (0 % dates after), the index re-exported, synced to S3 and pulled. Any future
+Raveform re-run of the pairs stage writes names from the start.
+
+# DJ corpus playback speed fails a beat-match check (2026-10-08; fixed in code 2026-10-09, re-run pending)
+
+**What is wrong.** `a_rate` / `b_rate` in `data/djdata/djs/out/seams_index.csv` (our locator, the 7 profiling
+DJs) do not hold up. Raveform's rates (its own alignment, `matched_time_track / matched_time_mix`) do.
+
+**How it was found.** In a long blend or layer both records play at one tempo, so record BPM x speed must agree
+on both sides (half or double tempo counted as agreeing). Record BPM from `track_features.parquet`.
+
+```
+                      blends   median mismatch   within 0.5 %   within 1 %
+Raveform rates         2,307        0.07 %            87 %         94 %
+DJ corpus rates          395        0.82 %            42 %         54 %
+DJ corpus, both 1.00     122        1.62 %                         43 %
+```
+
+The 122 pairs read as untouched on both sides disagree by the same 1.6 % as the two records' own BPMs, so a
+reading of 1.00 there says nothing. Within one genre the two sources never agree on the share played untouched
+(techno within 1 %: Raveform 50 %, DJ corpus 77 %).
+
+**Likely cause, not proven.** The locator tries speeds the turntable way (`locate.py`, `at_mix_speed` resamples,
+pitch moves with tempo). A record played faster with key lock keeps its pitch, so no tried speed matches and the
+pick falls back near 1.00 on a short stretch that still matches. Unchecked DJ corpus tempos (about one in eight
+off, see the tempo section) explain part of the gap, not half the blends.
+
+**Why the tests missed it.** The locator test played a record 3 % fast by resampling, the same change the
+locator assumes, so it could not see key lock. The 2026-10-07 tempo check covered record BPM, not speed. The
+rate refinement was judged on votes from the same instrument. Nothing compared the two sides of a blend before.
+
+**What it touches.** Any speed or played-BPM number from the DJ corpus: excluded, the report uses Raveform only
+for those (Anas, 2026-10-08). Bar counts move 1 to 2 % at most. Band timings for these seams are NOT checked: a
+1.6 % speed error drifts about 1 s per minute away from the anchor, against a 0.25 s vote tolerance.
+
+**Proven and fixed, 2026-10-09 (commit be46c08).** Tested on the laptop on 40 Raveform records from 20 local
+windows, Raveform's placement as truth, 24 of them played off speed by more than 0.5 %:
+
+```
+                                   median speed err   speed within 0.1 %   off-speed within 0.1 %   time zero within 0.25 s
+current locator (resampling only)       0.055 %             60 %                  46 %                     60 %
+tempo + key lock, vote-refined          0.018 %             82 %                  92 %                     80 %
+```
+
+20 of the 40 records matched best with the pitch kept, so key lock was the cause. On 32 local DJ-corpus blends the
+beat-match mismatch went from a median 0.31 % to 0.02 % (91 % within 1 %); the two left at 25 % share a record
+whose stored BPM is a 3:4 misread (107 for about 143), a record-tempo fault. Still open: 4 of 40 land a whole
+phrase (4 or 8 bars) off because the short test window matched a repeated phrase, which the whole-mix run should
+settle but is not measured; 8 differ from Raveform by 0.10 to 0.19 %, on 5 of them the votes favour us.
+
+The method now lives in `seam/locate.py::tempo_refine`: after the resampling search, the played tempo over the
+record's heard span (mixer `_measure_tempo`, the record's own BPM from `tempos.csv` as the hint) divided by that BPM
+gives the speed; the record is matched resampled and key-locked (rubberband R3) at that speed, the speed refined by
+votes ±1 % then ±0.2 %, and the better-voted of old and new stands. `plays.csv` carries `mode` and `played_bpm`.
+Needs `tempo --all-tracks` before `locate`, and rubberband-cli + pyrubberband on the machine. The DJ corpus is being
+re-run with it on the VM (`scripts/vm/rerun_placement_2026-10-09.sh`, started 2026-10-09); every stage after locate
+runs again, the old tables are in `out/before_2026-10-09/`.
+
+The mixer was never affected: `_stretch` uses rubberband time-stretch, which keeps pitch.
+
+# The seam reader against mixer renders, and the transition signatures (2026-10-09)
+
+**Test 1, the old pair (`data/external/ear_test/transition_types/`, 2 Sep renders, same two records, 7 types).**
+Both stems found with 9,000+ and 500 votes against controls of 40, yet the reader heard the incoming record 7 to 17
+bars late (rise 13, fade 12, melt 17, drop 9, blend 7) and read the bass swap after the outgoing had gone. Cause, in
+two parts: the incoming record was cued at a sparse intro (its bands 3 to 7 dB under its own loud parts), and the
+old recipes faded it in from silence, so it was not audible to a fingerprint until late. The reader measures
+audibility, not the fader. Also found: my first stretch of record A was 0.5 % off the mixer's and the locator's
+resampling correction spoiled the high band (5 votes against a floor of 8); fixed by stretching at the right rate.
+
+**Test 2, a steady pair (`FZwpKThgSPE` 138 BPM, `Dr9pcy8bqz8` 134 BPM, every band within 2.5 dB of its loud
+parts throughout, 7 renders by the current mixer, 16-bar overlaps, slam 4).** Both stems 30,000+ votes against 45.
+Bars after the true overlap start:
+
+```
+type    swap read   swap truth   incoming late by   outgoing read late by   bass both   (incoming highs, mids, lows)
+fade        9          8              0.0               2.3                  2.8        2.8   0.6   7.9
+melt        9          8              0.0               2.3                  3.4        5.1   1.7   7.9
+wave        9          8              0.0               2.3                  2.8        2.8   0.0   7.3
+blend      12.4       12              1.4               2.3                  3.4        2.8   5.6  10.7
+rise       15.8       13.6            0.0               2.3                  4.5       10.7   0.0  14.7
+drop       15.8       16              0.0               2.3                  4.5       10.7   0.0  14.7
+slam     reads as a 9.9-bar overlap for a 4-bar cut (2.8 early in, 3.1 late out)
+```
+
+So: the bass swap reads within a bar, the incoming entry on time, the outgoing exit one 4 s chunk late on every
+render (fixed: `presence.last_present` now returns the chunk centre, which read 1 s early). Blend's three-band
+order is visible. Fade, melt and wave read the same, and rise and drop read the same: their differences are
+attenuations and the drop position, and a fingerprint only says whether a band's pattern is there, not how loud.
+A slam reads as about 7 bars because a half-covered presence chunk clears the floor. Scripts and tables: session
+scratchpad `render_types/` and `render2/` (not kept).
+
+**What follows (code, commit be46c08).** `labels.csv` holds the moves as features (bars, and each moment as a
+fraction of the overlap); `types.csv` holds a `signature` the reader can tell apart (gap, loop, tension, cut,
+centre swap, late swap, end swap; boundaries at the midpoints of the measured swap positions 0.56 / 0.78 / 0.99,
+cut at 8 bars) and the nearest of the seven recipes by distance to the templates above. Per band and record,
+`measures.csv` carries `carried_db` (how loud the stem itself is across the overlap against its loud parts), so a
+late moment on a sparse record can be seen for what it is. Raveform on the laptop's old measures, provisional:
+centre swap 2,001, tension 625, cut 600, late swap 457, end swap 436, gap 433, no swap read 144, loop 37,
+unmeasured 327 of 5,060. Splitting fade, melt and wave needs a level-based band reader (the gain decomposition
+of plan step 5); not built. The types have never been checked by ear.
+
 # How the old and the new data are used (decisions, 2026-10-07)
 
 Settled in conversation after the embedding sample numbers (`EMBEDDINGS.md`, phase 3). "Decided" means Anas said so; "proposed" means my
@@ -46,6 +212,14 @@ vectors                 preview mean, DeepRhythm BPM,     whole-track mean, patc
   measured seams. The old dataset was never meant for it.
 - The planner's pool of candidate tracks is the old 28,460 plus the 12,211 new ones. A plan may pick
   from either.
+
+**How good the old rows are (measured 2026-10-07, `EMBEDDINGS.md`, "How good are the old dataset's
+features").** On 150 old tracks fetched in full: the old BPM is within 2 % of the full-track tempo on
+81 % (47 % on drum and bass, where DeepRhythm reads the half tempo), the old key matches the full-track
+key on 69 % (root 81 %), and the old loudness, energy, onset and centroid are off by half to three
+quarters of the between-track spread (rank correlation 0.5 to 0.7). So an old row's features are a
+noisy reading of the record, usable with a `source = preview` flag, and any rule derived from
+features should be measured on the full-track rows.
 
 **Mixed vectors, and the experiment that decides it (decided).** A preview vector and a whole-track
 vector come from the same model and mean the same thing at different sample lengths; the sample put
@@ -95,11 +269,27 @@ edit or a cut. Weighting pairs by the seam label is a second experiment after th
 **DJ profiles, Step 8 (later).** Per DJ from the seam tables: label shares, overlap distribution, bass
 swap timing. `dj_profiler.py` and `dj_profiles.json` are still missing.
 
+**No medians in DJ profiling (Anas, 2026-10-12).** A profile and anything the system learns from a DJ carries the
+DJ's whole distribution, never a middle value. The case: Fred again.. slams half his changes in a few bars and layers a
+fifth of them for 64 bars or more, so his overlap median is 6 bars and describes neither; a mix in his style must do
+both. Same for every move share and every length: keep the shape (the modes, the tail), sample from it or condition
+on it, and show it in the report as a distribution, not a dot.
+
 **What does not change.** The md files and how they are kept (`CLAUDE.md`). `START_HERE.md` is the
 index, one md per area, this file for this area. No issue tracker and no domain docs for now; Anas may
 try the issue skills after training, for the UI and other independent features.
 
 ---
+
+# TO DO: a record's genre in the old dataset (2026-10-09, Anas: look at it again)
+
+A record in the old dataset gets the genre of the FIRST set it was listed in (`_load_pool` in
+`src/models/predict_model.py` does `drop_duplicates("track_id")` on the tracklist, and the report's
+`genre_of` does the same). 882 of the 29,552 listed records appear in sets of two or more genres and
+carry only one. The planner's pool, the per-genre charts and the training batches (genre-blocked)
+all use that one genre. Counted 2026-10-09 on `tracklist_clean.csv`. Options not decided: the most
+common genre across the record's sets, every genre it was played in (a record in two pools), or the
+genre from the audio. Look at it again before the pool reads both datasets.
 
 # OPEN: the data layout, a proposal (2026-10-07, not decided)
 
@@ -236,6 +426,13 @@ affected rows were dropped from `labels.csv` and `label` rerun on them (75 unmea
 tension 140, short_blend 103, sweep_out 63, sweep_in 61, edit_or_talk 60, cut 19, loop 12, layer 2),
 then `export-seams`. Laptop and S3 copies updated. The DJ corpus tables are unchanged; its tempos have
 no annotation to check against.
+
+**The dj column, fixed 2026-10-08.** `sources/raveform.py` took the text before the first " - " of the
+title, and Raveform titles start with the date, so `plays`, `seams` and `seams_index` held dates in
+`dj` and every per-DJ count was per date. `dj_from_title()` drops a leading date, month or year (X
+allowed for an unknown day) and cuts at " - " or " @ "; the three tables were rewritten from
+`mixes.jsonl` on the laptop and S3 (commits 6916147, 7fb5c19). 428 distinct DJs in the seam tables;
+by measured seams Adam Beyer 533, Claptone 268, Scuba 108, then 13 DJs at 50 or more.
 
 **Open.** Pairs gives 5,060 usable against 5,063 seams with a window and both tracks in `state.sqlite`;
 the 3 are not traced. The ear has not heard any Raveform output of this code.

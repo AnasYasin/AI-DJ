@@ -1,5 +1,20 @@
 # DATA_PIPELINE, how to run the seam pipeline and use its tables
 
+## Added 2026-10-09: tempo-refined placement, the types stage, the re-run
+
+`locate` refines each record's speed from the tempo the mix plays it at (`seam/locate.py::tempo_refine`, numbers
+in `DATASET_STATE.md` 2026-10-08/09) and needs the record BPMs: run `tempo --all-tracks` before `locate` on a new
+corpus, or it warns and the old resampling search alone decides. It needs `rubberband-cli` (apt) and
+`pyrubberband` (pip) on the machine; both were installed on the VM on 2026-10-09. `label` no longer names types;
+`types` does (`seam/types.py`), after `label`. The nine old names (long_blend, short_blend, cut, sweep_out,
+sweep_in, tension, loop, layer, edit_or_talk) are gone from every table; `ear-test --label` takes a signature or a
+recipe name. The re-run of both corpora is `scripts/vm/rerun_placement_2026-10-09.sh` (DJ corpus from locate, with
+the windows cut again; Raveform from measure); it moves the old tables to `out/before_2026-10-09/` and syncs `out/`
+to S3 at the end. The DJ mix audio and Fred's segments had been removed from the VM and were pulled back from S3
+(`djdata_djs/mixes_tmp/`, `djdata_djs/fred/`; the `usb_<segment>.m4a` links in `mixes_tmp` are recreated by hand,
+`ln -sfn ../fred/segments/<segment>.m4a`). Disk is the limit: 18 GB free at the start with the embedding copies
+deleted (they are on S3 and the laptop).
+
 Moved from START_HERE.md on 2026-09-27, content unchanged. What was built, what it is proved by, how to run it, where the data lands, how to add data, and the watch list for a run. The numbers and the findings behind it are in DATASET_STATE.md; the layout in DATA_ARCHITECTURE.md; the code in djdata_package with its own README.
 
 ## Added 2026-09-30: the Raveform run
@@ -173,7 +188,8 @@ djdata cut          one window per usable seam, ffmpeg stream copy, ten second a
 djdata measure      per band entry and exit, bass swap, bass words, presence, loop, every
                     floor from three controls on that window                                 -> out/measures.csv
 djdata tempo        BPM per record from its own audio                                        -> out/tempos.csv
-djdata label        the nine transition types, in bars                                       -> out/labels.csv
+djdata label        the measured moves in bars and as fractions of the overlap               -> out/labels.csv
+djdata types        the signature the moves match, and the nearest mixer recipe              -> out/types.csv
 djdata export-seams one flat table joining all of the above                                  -> out/seams_index.csv
 djdata ear-test     clips from the tables, window left ear, records right ear, MARKS.csv
 ```
@@ -212,7 +228,8 @@ and the rest at 16. Logs go to `<root>/logs/djdata.log`.
 row per record play: mix, DJ, order listed, first and last heard, played from and to in record time,
 time zero, rate, votes and floor, confidence. `seams.csv` is one row per consecutive pair with the
 flags and the window. `cuts.csv` the window file and the audit. `measures.csv` the numbers per seam
-with the floor beside each. `tempos.csv`, `labels.csv`. `seams_index.csv` joins them for a notebook:
+with the floor beside each. `tempos.csv`, `labels.csv` (the moves), `types.csv` (signature, nearest recipe,
+distance). `seams_index.csv` joins them for a notebook:
 
 ```python
 import pandas as pd

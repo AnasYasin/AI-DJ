@@ -26,7 +26,8 @@ djdata pairs        --config config_djs.yaml                which record follows
 djdata cut          --config config_djs.yaml --workers 16   windows stream copied and audited       -> out/cuts.csv
 djdata measure      --config config_djs.yaml --workers 16   bands, bass, presence, loop per seam    -> out/measures.csv
 djdata tempo        --config config_djs.yaml --workers 16   BPM per record from its own audio       -> out/tempos.csv
-djdata label        --config config_djs.yaml                the nine transition types, in bars      -> out/labels.csv
+djdata label        --config config_djs.yaml                the measured moves, bars and fractions  -> out/labels.csv
+djdata types        --config config_djs.yaml                signature and nearest mixer recipe      -> out/types.csv
 djdata export-seams --config config_djs.yaml                one flat table joining all of the above -> out/seams_index.csv
 ```
 
@@ -54,8 +55,9 @@ in `djdata/sources/` that answers two questions: which mixes are there, and wher
 
 `plays.csv` one row per record play (and per control record, `is_control` 1). `seams.csv` one row per
 consecutive pair, usable or not, with the reason. `cuts.csv` the window file and its audit.
-`measures.csv` the seam numbers, each beside its floor. `tempos.csv`, `labels.csv`. `seams_index.csv`
-joins seams, cuts, measures and labels on `seam_id`. Times: seconds into the mix in `plays.csv`,
+`measures.csv` the seam numbers, each beside its floor. `tempos.csv`, `labels.csv` (the moves), `types.csv`
+(signature, nearest recipe, distance). `seams_index.csv` joins seams, cuts, measures, labels and types on
+`seam_id`. `locate` needs `tempos.csv` (run `tempo --all-tracks` first) and rubberband-cli + pyrubberband. Times: seconds into the mix in `plays.csv`,
 seconds into the window elsewhere. Filter on `measured == 1` and the separations before using a number.
 
 ## Run (Raveform source, the older fetch path)
@@ -127,3 +129,11 @@ with known truth: alignment within 9 ms from a coarse guess wrong by a bar; outg
 gains within 1 dB; bass swap exact in 13 of 14 runs; -6 dB crossings within 2 beats (outgoing) and
 5 beats (incoming). Entry of a slow bed is uncertain by a bar or more, so use the -6 dB crossing.
 The high band of the quieter record is not trusted below about -10 dB.
+
+## Enrichment passes (`scripts/enrich/`, 2026-10-13)
+
+Three small scripts outside the pipeline, run on the laptop, resumable, one call a second, keys in `.env`:
+`records.py` builds the record list (old tracklists, the DJ-corpus sets that ran, Raveform); `spotify_release_years.py`
+writes `data/interim/enrich/spotify_records.csv` (release date per matched record, title and artist similarity kept);
+`lastfm_artist_listeners.py` writes `lastfm_artists.csv` (listeners and play count per first artist). The report reads
+both live. Read the service's rate limit before a run and stop on a 429 (memory note `api-rate-limits-first`).

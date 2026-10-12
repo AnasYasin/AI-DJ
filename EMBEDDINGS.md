@@ -146,6 +146,38 @@ Full run about 16 h in one process, 4 to 6 h at 4 to 8 processes. The GPU is not
 request (8 vCPUs G, id 9869c3de, 2026-10-07) can stay pending or be withdrawn. The 20 readings were
 sane: keys plausible, LUFS -7.7 to -17.2, raw onset 1.1 to 2.5.
 
+## How good are the old dataset's features (Anas's test, 2026-10-07)
+
+200 old-dataset tracks, stratified over the six genres, fetched in full by the production fetcher and
+verified by fingerprint against their own preview: 150 found (41 had candidates that all failed the
+fingerprint or the length gate, 9 had no candidate). `data/interim/old_sample_full/` holds the audio
+(867 MB, kept), `track_features.parquet` and `embeddings/` from `track_features.py`, the fetch report,
+`old_sample_compare.csv` and `compare_summary.txt`; script `scripts/features/old_sample_compare.py`.
+Each old row (DeepRhythm BPM, edma key and the librosa features, all on the 30 s preview) against the
+new method on the same record's full track.
+
+```
+BPM, old against the mixer's tempo on the full track, n = 150
+  within 2 %  81.3 %      melodic house 93, tech house 88, trance 87, techno 86, afro house 73, drum and bass 47
+  drum and bass: the old value sits at 84 to 87 (half of about 174) while the new value sits at 107 to
+  139, the two-thirds lag the librosa hint produces above 150 BPM; neither side is right there, and
+  without an annotation the full-track reference cannot be fixed for these tracks
+key, old against full track: same key 69.3 %, same root 81.3 %
+continuous features, median |old - new| against the spread (std) of the full-track values
+  loudness_lufs      1.13 dB   spread 2.40    ratio 0.47   rank correlation 0.62
+  energy_mean        0.052     spread 0.067   ratio 0.77   0.57
+  onset_strength     0.234     spread 0.333   ratio 0.70   0.62
+  spectral_centroid  605 Hz    spread 368     ratio 1.64   0.69
+  mfcc_0 to 12       rank correlation 0.43 to 0.68
+```
+
+What it says. A preview value is a noisy reading of the whole-track value: off by half to three
+quarters of the spread between tracks, rank correlation 0.5 to 0.7. The old BPM is right on about
+seven of eight tracks outside drum and bass, where DeepRhythm reads the half tempo (a fold, 84 to 87
+for 174, fixable by doubling values under 100 in that genre). The old key agrees with the full-track
+key on two of three tracks, the root on four of five. Twenty-five percent of old tracks could not be
+fetched and verified at all, which is the cost of ever replacing the previews with full audio.
+
 ## Phase 5. The full run
 
 **Started 2026-10-07 01:06 UTC** on the CPU VM, `~/AI-DJ/run_track_features_2026-10-07.sh` in tmux

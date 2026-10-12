@@ -18,7 +18,9 @@ import sqlite3
 
 from .tracklists import audio_file
 
-_DATE = re.compile(r"^\d{4}(-[\dX]{2}(-[\dX]{2})?)?$")  # a date, a month or a year; X for an unknown day
+_DATE = re.compile(
+    r"^\d{4}(-[\dX]{2}(-[\dX]{2})?)?$"
+)  # a date, a month or a year; X for an unknown day
 
 
 def dj_from_title(title: str) -> str:

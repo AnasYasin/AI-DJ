@@ -1,0 +1,50 @@
+{
+ "data/processed/tracklist_clean.csv": {
+  "rows": 47390,
+  "md5": "8082bce7a9"
+ },
+ "data/djdata/raveform/out/seams_index.csv": {
+  "rows": 6842,
+  "md5": "2cc4492011"
+ },
+ "data/djdata/djs/out/seams_index.csv": {
+  "rows": 3489,
+  "md5": "da346b273d"
+ },
+ "data/djdata/djs/out/mixes.csv": {
+  "rows": 286,
+  "md5": "3e04132f1a"
+ },
+ "data/djdata/raveform/out/track_features.parquet": {
+  "rows": 6917,
+  "md5": "0692a55c08"
+ },
+ "data/djdata/djs/out/track_features.parquet": {
+  "rows": 5294,
+  "md5": "c4ed7de821"
+ },
+ "data/interim/tracklist.csv": {
+  "rows": 131869,
+  "md5": "f2e7522858"
+ },
+ "data/djdata/raveform/out/plays.csv": {
+  "rows": 14570,
+  "md5": "a26f1a2bb4"
+ },
+ "data/djdata/djs/out/plays.csv": {
+  "rows": 6542,
+  "md5": "5b947b400b"
+ },
+ "data/interim/enrich/spotify_records.csv": {
+  "rows": 498,
+  "md5": "fd36856c09"
+ },
+ "data/interim/enrich/lastfm_artists.csv": {
+  "rows": 3761,
+  "md5": "943a4ea8b6"
+ },
+ "data/interim/card_music.parquet": {
+  "rows": 223,
+  "md5": "bb1ea02b86"
+ }
+}

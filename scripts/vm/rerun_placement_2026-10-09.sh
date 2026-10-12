@@ -37,24 +37,18 @@ if [ -d data/djdata/djs/windows ] && [ ! -d data/djdata/djs/windows_$STAMP ]; th
 fi
 mkdir -p data/djdata/djs/windows
 # a second start resumes: `mv -n` above keeps the first run's dated copies, every stage skips its done rows
-run python -m djdata.cli locate       --config $C --workers 16
+run python -m djdata.cli locate       --config $C --workers 8   # 16 was OOM-killed 2026-10-09, workers reach 3.2 GB
 run python -m djdata.cli pairs        --config $C
 run python -m djdata.cli cut          --config $C --workers 16
-run python -m djdata.cli measure      --config $C --workers 16
+run python -m djdata.cli measure      --config $C --workers 10   # 16 swapped at 2.1 GB per worker, 2026-10-11
 run python -m djdata.cli label        --config $C
 run python -m djdata.cli types        --config $C
 run python -m djdata.cli export-seams --config $C
 run python -m djdata.cli layers       --config $C
 run python -m djdata.cli layer-bands  --config $C --workers 16
 
-# ---- Raveform: measure and after -------------------------------------------------------------------
-C=djdata_package/config.yaml
-OUT=data/djdata/raveform/out
-keep $OUT measures.csv labels.csv types.csv seams_index.csv
-run python -m djdata.cli measure      --config $C --workers 16
-run python -m djdata.cli label        --config $C
-run python -m djdata.cli types        --config $C
-run python -m djdata.cli export-seams --config $C
+# ---- Raveform: its own script, after the DJ corpus (2026-10-10, VM copy edited the same way) ----
+run bash scripts/vm/rerun_raveform_2026-10-10.sh
 
 # ---- to S3, dated copies beside the live tables ---------------------------------------------------
 run aws s3 sync data/djdata/djs/out/      s3://aidj-1/djdata_djs/out/
