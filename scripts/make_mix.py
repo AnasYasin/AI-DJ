@@ -37,6 +37,8 @@ def make_mix(
     max_rounds: int = 4,
     min_energy_pct: float | None = None,
     compat_weight: float = 0.0,
+    audio: str | None = None,
+    dj: str | None = None,
 ) -> dict:
     out_path = Path(out_path)
     work_dir = Path(work_dir) / out_path.stem
@@ -64,6 +66,9 @@ def make_mix(
                 cand["track_id"],
                 tracks_dir,
                 previews.get(cand["track_id"]),
+                source=cand.get("source"),
+                source_ref=cand.get("source_ref"),
+                audio=cand.get("audio"),
             )
             if res["status"] in ("ok", "cached"):
                 next_link = cand.pop("next_link", None)
@@ -75,7 +80,14 @@ def make_mix(
         return False
 
     plan = plan_mix(
-        genre, bpm, n_tracks, curve, min_energy_pct=min_energy_pct, compat_weight=compat_weight
+        genre,
+        bpm,
+        n_tracks,
+        curve,
+        min_energy_pct=min_energy_pct,
+        compat_weight=compat_weight,
+        audio=audio,
+        dj=dj,
     )
     write_plan(plan)
     for attempt in range(1, max_rounds + 1):
@@ -113,6 +125,8 @@ def make_mix(
             exclude_ids=excluded,
             min_energy_pct=min_energy_pct,
             compat_weight=compat_weight,
+            audio=audio,
+            dj=dj,
         )
         write_plan(plan)
     else:
@@ -180,6 +194,10 @@ if __name__ == "__main__":
     p.add_argument(
         "--compat-weight", type=float, default=0.0, help="raise to plan for long overlaps"
     )
+    p.add_argument(
+        "--audio", choices=["full"], default=None, help="only records whose full audio is held"
+    )
+    p.add_argument("--dj", default=None, help="only records this DJ has played")
     args = p.parse_args()
 
     rep = make_mix(
@@ -192,6 +210,8 @@ if __name__ == "__main__":
         args.work_dir,
         min_energy_pct=args.min_energy_pct,
         compat_weight=args.compat_weight,
+        audio=args.audio,
+        dj=args.dj,
     )
     print(
         f"\n{rep['out']}  {rep['duration_s'] / 60:.1f} min @ {rep['target_bpm']:.0f} bpm"

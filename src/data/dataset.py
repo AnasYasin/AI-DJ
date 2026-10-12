@@ -12,11 +12,18 @@ is a rerun of the export, never an edit here.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import pandas as pd
 
 DATASET_DIR = Path("data/dataset")
 VAL_FOLD = 0
+
+
+def dj_key(name: str) -> str:
+    """One DJ, one key: letters and digits only, & and + spelled as the 1001 slugs spell them
+    (Aly & Fila -> alyandfila). The `dj_key` column of plays is this."""
+    return re.sub(r"[^a-z0-9]", "", str(name).lower().replace("&", "and").replace("+", "plus"))
 
 
 def latest(root: Path = DATASET_DIR) -> Path:

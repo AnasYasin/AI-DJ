@@ -43,6 +43,8 @@ SOURCES = {
         "plays": Path("data/processed/tracklist_clean.csv"),
         "raw": Path("data/interim/tracklist.csv"),  # the overlay rows live only here
         "features": Path("data/processed/features.parquet"),
+        # old records fetched in full by the mixer's fetcher and registered (src/data/register_track.py)
+        "full": Path("data/djdata/old/out/track_features.parquet"),
     },
     "raveform": {
         "root": Path("data/djdata/raveform"),
@@ -107,9 +109,7 @@ def split_title(text: str) -> tuple[str, str]:
     return (artist.strip(), title.strip()) if sep else ("", t.strip())
 
 
-def dj_key(name: str) -> str:
-    """One DJ, one key: letters only, & and + spelled as the 1001 slugs spell them."""
-    return re.sub(r"[^a-z0-9]", "", str(name).lower().replace("&", "and").replace("+", "plus"))
+from src.data.dataset import dj_key  # noqa: E402  one definition, the loader's
 
 
 def fold_of(dj: str) -> int:
@@ -183,6 +183,23 @@ def old_tables(paths: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame, p
     tracks["bpm_source"] = "deeprhythm"
     tracks["minutes"] = np.nan
     tracks["n_vectors"] = np.nan
+    full = p.get("full")
+    if (
+        full is not None and Path(full).exists()
+    ):  # registered full-audio rows replace the preview rows
+        fr = pd.read_parquet(full).drop_duplicates("track_id", keep="last")
+        fr = fr[fr["track_id"].isin(tracks["track_id"])]
+        keep = tracks[~tracks["track_id"].isin(fr["track_id"])]
+        fr = fr.copy()
+        fr["artist"] = fr["track_id"].map(meta["artist_name"])
+        fr["title"] = fr["track_id"].map(meta["track_name"])
+        fr["genre"] = fr["track_id"].map(meta["genre"])
+        fr["source"], fr["audio"], fr["source_ref"] = "old", "full", fr["track_id"]
+        if "bpm" not in fr.columns or fr["bpm"].isna().all():
+            fr["bpm"] = fr["track_id"].map(tracks.set_index("track_id")["bpm"])
+            fr["bpm_source"] = "deeprhythm"
+        tracks = pd.concat([keep, fr], ignore_index=True)
+        log.info("old source: %d records carry registered full-track features", len(fr))
 
     seams = consecutive_pairs(plays, "old")
     raw = pd.read_csv(

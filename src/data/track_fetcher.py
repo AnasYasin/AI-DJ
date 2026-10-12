@@ -26,6 +26,15 @@ Two gates, because either one alone lets rubbish through:
             14,466 matching hashes at one offset and wrong pairs score at
             most 21.
 
+Where the audio comes from, in order (2026-10-13):
+  held      a record with `audio = full` has its file under data/djdata/<source>/tracks/ on this
+            laptop or on S3; it is copied, nothing is searched or verified
+  link      a Raveform record names its YouTube video (`source_ref`): downloaded by id, no search,
+            no fingerprint, because the id is the recording
+  search    everything else, as above
+A record fetched by link or by search is then registered as held full audio
+(`src.data.register_track`), so no later mix looks for it again.
+
 Run:
   python -m src.models.predict_model --genre techno --bpm 128 138 --n 8 --json plan.json
   python -m src.data.track_fetcher --plan plan.json --out data/external/run1
@@ -49,6 +58,11 @@ from scipy.ndimage import maximum_filter
 log = logging.getLogger(__name__)
 
 MANIFEST_PATH = Path("data/raw/preview_manifest.csv")
+HELD = {  # source -> (local tracks folder, S3 prefix)
+    "raveform": (Path("data/djdata/raveform/tracks"), "s3://aidj-1/djdata/tracks/"),
+    "djs": (Path("data/djdata/djs/tracks"), "s3://aidj-1/djdata_djs/tracks/"),
+    "old": (Path("data/djdata/old/tracks"), "s3://aidj-1/djdata_old/tracks/"),
+}
 
 # ── Gates ──────────────────────────────────────────────────────────────────────
 
@@ -223,6 +237,45 @@ def _decoded_seconds(path: Path) -> float:
 # ── Per-track fetch ────────────────────────────────────────────────────────────
 
 
+def _held_file(source: str | None, source_ref: str | None) -> Path | None:
+    """The record's file as the source holds it: on this laptop, else pulled from S3."""
+    if source not in HELD or not source_ref:
+        return None
+    folder, prefix = HELD[source]
+    local = [p for p in folder.glob(f"{source_ref}.*")] if folder.exists() else []
+    if local:
+        return local[0]
+    try:
+        listing = subprocess.run(
+            ["aws", "s3", "ls", f"{prefix}{source_ref}."],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        names = [line.split()[-1] for line in listing.stdout.splitlines() if line.strip()]
+    except Exception as e:  # no aws, no network: the search path still works
+        log.warning("S3 listing failed for %s: %s", source_ref, e)
+        return None
+    if not names:
+        return None
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / names[0]
+    got = subprocess.run(
+        ["aws", "s3", "cp", f"{prefix}{names[0]}", str(dest)], capture_output=True
+    )
+    return dest if got.returncode == 0 and dest.exists() else None
+
+
+def _register(path: Path, track_id: str) -> None:
+    """Fetched by link or search: keep it as held full audio so no later mix looks for it."""
+    try:
+        from src.data.register_track import register
+
+        register(path, track_id)
+    except Exception as e:  # registration never fails a fetch
+        log.warning("could not register %s as full audio: %s", track_id, e)
+
+
 def fetch_track(
     artist: str,
     title: str,
@@ -230,12 +283,47 @@ def fetch_track(
     out_dir: Path,
     preview_path: str | Path | None = None,
     max_tries: int = 3,
+    source: str | None = None,
+    source_ref: str | None = None,
+    audio: str | None = None,
 ) -> dict:
     """Find, download and verify one track. Returns a result record."""
     out_dir = Path(out_dir)
     existing = list(out_dir.glob(f"{track_id}.*"))
     if existing:
         return {"track_id": track_id, "status": "cached", "path": str(existing[0])}
+
+    if audio == "full":
+        held = _held_file(source, source_ref)
+        if held is not None:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            dest = out_dir / f"{track_id}{held.suffix}"
+            shutil.copy2(held, dest)
+            log.info("  %s: held full audio (%s) → %s", title[:40], source, dest.name)
+            return {"track_id": track_id, "status": "ok", "path": str(dest), "source": str(held)}
+        log.warning(
+            "  %s: marked full but no file for %s/%s, falling through",
+            title[:40],
+            source,
+            source_ref,
+        )
+
+    if source == "raveform" and source_ref:  # the id is the recording: no search, no fingerprint
+        url = f"https://www.youtube.com/watch?v={source_ref}"
+        path = _download(url, out_dir / track_id)
+        if path is not None:
+            seconds = _decoded_seconds(path)
+            log.info("  %s: by link, %.0fs → %s", title[:40], seconds, path.name)
+            _register(path, track_id)
+            return {
+                "track_id": track_id,
+                "status": "ok",
+                "path": str(path),
+                "seconds": round(seconds, 1),
+                "verify_votes": -1,
+                "source": url,
+            }
+        log.warning("  %s: link %s failed, falling back to search", title[:40], url)
 
     query = f"{artist} {title}"
     ranked = _rank(query, _search(query))
@@ -275,6 +363,7 @@ def fetch_track(
             votes, offset = -1, float("nan")  # no preview on disk: duration gate only
 
         log.info("  %s: %.0fs, %d votes → %s", title[:40], seconds, votes, path.name)
+        _register(path, track_id)
         return {
             "track_id": track_id,
             "status": "ok",
@@ -307,7 +396,14 @@ def fetch_plan(plan_path: str | Path, out_dir: str | Path) -> dict:
         log.info("[%d/%d] %s – %s", t["n"], len(plan["tracks"]), t["artist"], t["title"])
         results.append(
             fetch_track(
-                t["artist"], t["title"], t["track_id"], out_dir, previews.get(t["track_id"])
+                t["artist"],
+                t["title"],
+                t["track_id"],
+                out_dir,
+                previews.get(t["track_id"]),
+                source=t.get("source"),
+                source_ref=t.get("source_ref"),
+                audio=t.get("audio"),
             )
         )
     ok = [r for r in results if r["status"] in ("ok", "cached")]

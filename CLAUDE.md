@@ -128,8 +128,11 @@ Duplicating them is how the scales drifted apart.
 | 6 | blend | default |
 
 ## Planner (`plan_mix`)
-Pool = genre + BPM range, minus `is_unidentified()` (238 "ID"/"Unknown" tracks), minus
-`exclude_ids`, optionally above `min_energy_pct`. Then beam search, width 8:
+Pool = the dataset's tracks (`load_tracks()`, 37,612 rows, three sources) filtered to genre + BPM range,
+minus `is_unidentified()` ("ID"/"Unknown"), minus `exclude_ids`; `audio="full"` keeps only records whose
+full audio is held (12,153), `dj=` only records that DJ has played (`dj_key`, the first profile piece);
+`min_energy_pct` is a percentile of THIS pool, after the filters (techno 134-142 at p65: 1,506 → 527).
+Plan entries carry `source`, `source_ref`, `audio` for the fetcher. Then beam search, width 8:
 
 - **Hard veto**: \|log bpm ratio\| ≤ 0.05 · unused · artist unused. No key veto: a clash (Camelot > 2) is
   allowed on at most half the joins and never two in a row (`clash_allowed` in `key_rules.py`)
@@ -148,11 +151,22 @@ BPM is not a lever: techno energy medians sit at 0.32 across every band from 128
 Plan JSON carries `target_energy` (absolute, display only) and **`energy_target01`** (raw 0-1 curve
 value — this is the one the mixer needs; passing the other silently flattens the curve).
 
-## Fetcher (`fetch_plan`) — three gates
-1. **duration** 240–900 s on search metadata, re-checked on the decoded file (metadata lies)
+## Fetcher (`fetch_plan`) — held, link, search
+Per record, in order: (1) **held** — `audio = full`: the file under `data/djdata/<source>/tracks/<source_ref>.*`
+on the laptop, else pulled from S3 (`HELD` in `track_fetcher.py`), copied, nothing searched or verified;
+(2) **link** — a Raveform record is downloaded by its YouTube id (`source_ref`), no search, no fingerprint,
+the id is the recording; (3) **search** by name with three gates:
+1. **duration** 240–900 s on search metadata, re-checked on the decoded file (metadata lies). Goes once the
+   play length is predicted per record (Anas, 2026-10-13): a short record is a normal choice in drum and bass.
 2. **title** rejects radio edit / snippet / sped up / live set / …
 3. **identity** constellation fingerprint vs the track's own 30 s preview. Right recording scores
    457–14,466 votes, wrong ≤ 21; threshold 50. Chroma and mel correlation both failed here.
+
+A record fetched by link or search is **registered** (`src/data/register_track.py`): file to
+`data/djdata/old/tracks/`, full-track features + effnet mean + measured BPM appended to
+`data/djdata/old/out/track_features.parquet`, embedding to `old/embeddings/`; the next `djdata export-dataset`
+marks it `audio = full`, so no later mix looks for it (15 s per record). Not yet exercised live: the S3 pull
+and a link download (both need a real `make_mix` run).
 
 Failing all candidates → **slot repair** (2026-09-08, Anas's design): the verified tracks stay, `repair_candidates`
 in `predict_model.py` ranks replacements for the empty slot against BOTH neighbours (BPM ≤5%, Camelot ≤2, no

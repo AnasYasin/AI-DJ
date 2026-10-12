@@ -33,7 +33,7 @@ for a 2 am peak" becomes the fields below. Never built.
 
 ### What is there now
 
-Eight flags on the command line.
+Ten flags on the command line.
 
 | flag | example | what it means |
 |---|---|---|
@@ -42,7 +42,9 @@ Eight flags on the command line.
 | `--curve` | peak | the energy shape of the set, a formula over the slot position 0 to 1: build rises straight, peak rises to 0.85 of the set and falls, wave is a sine, chill stays at 0.15 to 0.25, arc rises and falls. Its value at a slot is the slot's energy target, 0 to 1. |
 | `--n` | 6 | records in the set |
 | `--minutes` | 15 | the last record plays on until the mix reaches this length, never past its own final bar |
-| `--min-energy-pct` | 65 | drop the quietest 65 % of records before planning. The code applies the percentile over the whole catalog, the docstring says the pool; which is meant is open (2026-10-09). |
+| `--min-energy-pct` | 65 | drop the quietest 65 % of the pool, a percentile taken after the genre and BPM filters (since 2026-10-13; before that it was taken over the whole table). |
+| `--audio` | full | only records whose full audio is held (12,153 of 37,612); the fetcher then copies the file and searches nothing. Default any. |
+| `--dj` | Solomun | only records that DJ has played, from the plays table (Solomun 2,245 with features). The first piece of a DJ profile. Default none. |
 | `--compat-weight` | 5 | how much the planner prefers pairs the mixer can overlap for long. Default 0, a leftover; 5 is right until Step 2 sets it per slot. |
 | `--out` | mix.flac | flac or wav lossless, mp3 at 320k |
 
@@ -179,23 +181,32 @@ Nothing. The plan had previews only; full audio came in with the mixer.
 
 ### What is there now
 
-`src/data/track_fetcher.py`. For each planned record, yt-dlp searches YouTube and downloads the best audio with no
-re-encode, native Opus at 130 to 145 kbps or AAC 128k. Three gates:
+`src/data/track_fetcher.py`. A plan entry says where its record comes from (`source`, `source_ref`, `audio`), and the
+fetcher tries, in order: the held file on this laptop or on S3 for a record with `audio = full` (copied, nothing
+searched or verified); the known YouTube link for a Raveform record (downloaded by id, no search, no fingerprint, the
+id is the recording); and last a YouTube search by name, yt-dlp, best audio with no re-encode, native Opus at 130 to
+145 kbps or AAC 128k, through three gates:
 
 1. Duration 240 to 900 seconds on the search metadata, and again on the decoded file, because metadata lies.
 2. Title words rejected: radio edit, snippet, sped up, live set and the like.
 3. Identity: a constellation fingerprint of the download against the record's own 30-second preview. The right recording
    scores 457 to 14,466 votes, a wrong one 21 or fewer; the threshold is 50. Chroma and mel correlation both failed here.
 
+A record fetched by link or by search is then registered as held full audio (`src/data/register_track.py`): the file
+goes under `data/djdata/old/tracks/`, its full-track features, effnet mean and measured BPM are appended to the old
+source's `track_features.parquet`, and the next export marks it `audio = full`, so no later mix looks for it again.
+About 15 s per record.
+
 If every candidate for a slot fails, slot repair (`repair_candidates`, Anas's design, 8 September) ranks replacements
-that fit both neighbours, BPM within 5 %, Camelot within 2, no repeated record or artist, scored by Model B, the GBM,
-energy fit and compatibility, fetches up to five, and only if none verifies replans the whole set. In a 20-record pool
-almost nothing fits between two neighbours; the catalog pools give five candidates easily. yt-dlp must stay current or
-every download is an HTTP 403.
+that fit both neighbours, BPM within 5 %, no repeated record or artist, scored by Model B, the GBM, energy fit and
+compatibility, from the same pool as the plan (its `audio` and `dj`), fetches up to five, and only if none verifies
+replans the whole set. yt-dlp must stay current or every download is an HTTP 403.
 
 ### Planned next
 
-Nothing. The YouTube source is the ceiling on quality and nothing in the code lowers it.
+The 240 s duration gate goes once the play length is predicted per record, because a 3.5-minute record is a normal
+choice in drum and bass. The rest of the old records get fetched and registered the same way once the models are judged
+on the new data (Anas, 2026-10-13). The YouTube source is the ceiling on quality and nothing in the code lowers it.
 
 ## 5. Analysis at render
 

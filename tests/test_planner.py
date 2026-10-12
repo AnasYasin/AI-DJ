@@ -130,7 +130,7 @@ def test_make_mix_repairs_the_slot_and_keeps_the_verified_tracks(monkeypatch, tm
             },
         ]
 
-    def fake_fetch_track(artist, title, tid, out_dir, preview=None):
+    def fake_fetch_track(artist, title, tid, out_dir, preview=None, **source):
         return {"track_id": tid, "status": "ok" if tid == "good" else "no_verified_candidate"}
 
     rendered = {}
@@ -154,7 +154,8 @@ def test_make_mix_repairs_the_slot_and_keeps_the_verified_tracks(monkeypatch, tm
 
 
 @pytest.mark.skipif(
-    not Path("data/processed/features.parquet").exists(), reason="needs the catalog"
+    not (Path("data/dataset").exists() and Path("models/contrastive_encoder.pt").exists()),
+    reason="needs the dataset and the saved encoder",
 )
 def test_repair_candidates_fit_both_neighbours():
     """Real techno pool: the candidates for a middle slot pass the hard rules

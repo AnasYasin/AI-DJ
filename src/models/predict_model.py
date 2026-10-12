@@ -26,7 +26,7 @@ import re
 import numpy as np
 import torch
 
-from src.data.dataset import load_tracks
+from src.data.dataset import dj_key, load_plays, load_tracks
 from src.data.preprocess_tracklist import is_unidentified
 from src.features.compatibility import compatibility
 from src.models.edge_scorer import EdgeScorer, TrackArrays, camelot_distance, pair_features
@@ -125,10 +125,25 @@ def _load_pool(
     track_ids: list[str] | None,
     exclude_ids: set[str] | None,
     min_energy_pct: float | None,
+    audio: str | None = None,
+    dj: str | None = None,
 ) -> dict:
-    """Candidate pool + per-track artist sets, shared by plan_mix and repair_candidates."""
+    """Candidate pool + per-track artist sets, shared by plan_mix and repair_candidates.
+
+    `audio="full"` keeps only records whose full audio is held (no search, no wrong recording at
+    fetch). `dj` keeps only records that DJ has played, the first piece of a profile. The energy
+    floor is a percentile of the pool after the genre and BPM filters, so "drop the quietest 65 %"
+    means the quietest of this pool.
+    """
     f = load_tracks().dropna(subset=["bpm"]).reset_index(drop=True)
-    meta = f.set_index("track_id")[["genre", "artist", "title"]]
+    if audio is not None:
+        f = f[f["audio"] == audio]
+    if dj is not None:
+        plays = load_plays(columns=["dj_key", "track_id"])
+        mine = set(plays.loc[plays["dj_key"] == dj_key(dj), "track_id"])
+        f = f[f["track_id"].isin(mine)]
+        log.info("dj %s: %d records with features", dj, len(f))
+    meta = f.set_index("track_id")[["genre", "artist", "title", "source", "source_ref", "audio"]]
     # "Massano – ID" is a placeholder for an unreleased track. It has no
     # searchable name, so it can never be fetched or played, and it must not
     # reach a plan.
@@ -137,14 +152,6 @@ def _load_pool(
     f = f[f["track_id"].map(named).fillna(False)]
     if n_before != len(f):
         log.info("dropped %d unidentified (ID/Unknown) tracks from the pool", n_before - len(f))
-
-    if min_energy_pct is not None:
-        floor = float(np.percentile(f["energy_mean"], min_energy_pct))
-        n_before = len(f)
-        f = f[f["energy_mean"] >= floor]
-        log.info(
-            "energy floor p%.0f = %.3f: %d → %d tracks", min_energy_pct, floor, n_before, len(f)
-        )
 
     if exclude_ids:
         n_before = len(f)
@@ -158,6 +165,13 @@ def _load_pool(
         f = f[(f["bpm"] >= bpm_range[0]) & (f["bpm"] <= bpm_range[1])]
         if len(f) < n_tracks * 5:
             raise ValueError(f"only {len(f)} candidates for {genre} {bpm_range} — widen the range")
+    if min_energy_pct is not None and len(f):
+        floor = float(np.percentile(f["energy_mean"], min_energy_pct))
+        n_before = len(f)
+        f = f[f["energy_mean"] >= floor]
+        log.info(
+            "energy floor p%.0f = %.3f: %d → %d tracks", min_energy_pct, floor, n_before, len(f)
+        )
     if len(f) < n_tracks:
         raise ValueError(f"pool has only {len(f)} tracks")
     A = TrackArrays(f)
@@ -190,9 +204,14 @@ def plan_mix(
     exclude_ids: set[str] | None = None,
     min_energy_pct: float | None = None,
     compat_weight: float = W_COMPAT_DEFAULT,
+    audio: str | None = None,
+    dj: str | None = None,
 ) -> dict:
     """
     Plan a set.
+
+    `audio="full"` plans only from records whose full audio is held; `dj` only from records that
+    DJ has played (see `_load_pool`).
 
     `exclude_ids` drops tracks a previous attempt could not fetch, so the caller
     can replan around them instead of rendering a short set.
@@ -206,7 +225,9 @@ def plan_mix(
     overlap length by that same measure, so a set planned without it will be
     rendered with short transitions however smooth the ordering looks.
     """
-    pool = _load_pool(genre, bpm_range, n_tracks, track_ids, exclude_ids, min_energy_pct)
+    pool = _load_pool(
+        genre, bpm_range, n_tracks, track_ids, exclude_ids, min_energy_pct, audio, dj
+    )
     meta, A, artist_sets, artist_tracks = (
         pool["meta"],
         pool["A"],
@@ -280,6 +301,8 @@ def plan_mix(
     out = {
         "genre": genre,
         "curve": curve,
+        "audio": audio,
+        "dj": dj,
         "score": round(score, 2),
         "n_clashes": int(is_clash(_join_distances(A, tracks)).sum()),
         "tracks": [],
@@ -292,6 +315,9 @@ def plan_mix(
             "track_id": tid,
             "artist": m["artist"],
             "title": m["title"],
+            "source": m["source"],
+            "source_ref": m["source_ref"],
+            "audio": m["audio"],
             "bpm": round(float(A.bpm[ti]), 1),
             "key": str(A.df["key"].iloc[ti]),
             "energy": round(float(A.energy[ti]), 3),
@@ -341,6 +367,9 @@ def _plan_entry(A: TrackArrays, meta, ti: int, n: int, target_energy: float, e01
         "track_id": tid,
         "artist": m["artist"],
         "title": m["title"],
+        "source": m["source"],
+        "source_ref": m["source_ref"],
+        "audio": m["audio"],
         "bpm": round(float(A.bpm[ti]), 1),
         "key": str(A.df["key"].iloc[ti]),
         "energy": round(float(A.energy[ti]), 3),
@@ -375,6 +404,7 @@ def repair_candidates(
 ) -> list[dict]:
     """
     Replacements for one slot of a plan, best first, fitted to the slot's
+    verified neighbours, from the same pool the plan came from (its `audio` and `dj`).
     verified neighbours. Every other track in the plan stays where it is.
 
     A candidate must pass the hard rules against BOTH neighbours (BPM within
@@ -388,7 +418,14 @@ def repair_candidates(
     tracks = plan["tracks"]
     others = [t for i, t in enumerate(tracks) if i != slot]
     pool = _load_pool(
-        plan["genre"], bpm_range, len(tracks), track_ids, exclude_ids, min_energy_pct
+        plan["genre"],
+        bpm_range,
+        len(tracks),
+        track_ids,
+        exclude_ids,
+        min_energy_pct,
+        plan.get("audio"),
+        plan.get("dj"),
     )
     A, meta, artist_tracks = pool["A"], pool["meta"], pool["artist_tracks"]
 
@@ -473,6 +510,10 @@ if __name__ == "__main__":
         default=W_COMPAT_DEFAULT,
         help="weight on pair compatibility — raise it to plan for long overlaps",
     )
+    p.add_argument(
+        "--audio", choices=["full"], default=None, help="only records whose full audio is held"
+    )
+    p.add_argument("--dj", default=None, help="only records this DJ has played")
     p.add_argument("--json", default=None, help="write full plan to this path")
     args = p.parse_args()
 
@@ -484,6 +525,8 @@ if __name__ == "__main__":
         args.seed_track,
         min_energy_pct=args.min_energy_pct,
         compat_weight=args.compat_weight,
+        audio=args.audio,
+        dj=args.dj,
     )
     print(f"\n{plan['genre']} | curve={plan['curve']} | beam score {plan['score']}")
     for t in plan["tracks"]:
