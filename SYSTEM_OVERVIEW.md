@@ -46,7 +46,7 @@ Eight flags on the command line.
 | `--compat-weight` | 5 | how much the planner prefers pairs the mixer can overlap for long. Default 0, a leftover; 5 is right until Step 2 sets it per slot. |
 | `--out` | mix.flac | flac or wav lossless, mp3 at 320k |
 
-Why the energy floor matters. The curve is relative: "top of the pool" is the pool's own 95th percentile, so a peak curve
+Why the energy floor matters. The curve is relative: "top of the pool" is the pool's own 85th percentile and "bottom" its 15th, so a peak curve
 over a quiet pool gives a quiet set. The floor is the one lever that makes a set loud in absolute terms. BPM is not one;
 techno energy medians sit at 0.32 in every band from 128 to 150.
 
@@ -69,13 +69,16 @@ through the beam. Everything after the parser stays deterministic.
 A catalog of every record listed in the scraped 1001tracklists sets, known only through 30-second iTunes previews, with
 discogs-effnet embeddings and librosa features measured on the preview. discogs-effnet was frozen as the embedding after
 a 200-record signal-ratio test against MERT (1.04 times worse), MuQ (1.175) and CLAP. DeepRhythm for BPM, essentia edma
-for key. ChromaDB was built from it, but is not read at inference.
+for key.
 
 ### What is there now
 
-`data/processed/features.parquet`, 28,460 records. Per record: a 1,280-dimensional discogs-effnet embedding, BPM, key
-normalised to sharps, energy, loudness in LUFS, onset strength (stored raw, compared normalised, see `CLAUDE.md`), 13
-MFCCs. All measured on the preview. The pool for the example, counted on the live table:
+`data/dataset/<date>/tracks.parquet`, 37,612 records from the three sources (`DATA_ARCHITECTURE.md`): 25,459 old
+records measured on the 30 s preview (`audio = preview`) and 12,153 Raveform and DJ-data records measured on the full
+track (`audio = full`; a record in both keeps the full row). Per record: a 1,280-dimensional discogs-effnet embedding, BPM
+with its source, key normalised to sharps, energy, loudness in LUFS, onset strength (stored raw, compared normalised, see
+`CLAUDE.md`), 13 MFCCs, play and DJ counts, release year and artist listeners where the enrichment passes found them. The
+pool for the example, counted on the old rows before the new ones joined (1,506 techno records in range after):
 
 | filter | records |
 |---|---|
@@ -89,13 +92,12 @@ Beside the catalog, since October: 12,211 records with full audio from the two s
 track with one vector per second kept as patches, tempo measured by the mixer's own kick autocorrelation and checked
 against Raveform's beat annotations, key on the full track (`EMBEDDINGS.md`). On 150 old records fetched in full, the
 preview BPM was within 2 % on 81 %, the key right on 69 %, loudness and energy off by half the spread between records.
-These rows are not yet in the pool.
+These rows are in the pool since 2026-10-13.
 
 ### Planned next
 
-The pool reads both tables, old rows marked `source = preview`, and any threshold derived from features is measured on
-full-track rows. That is the open data layout decision in `DATASET_STATE.md`: one dated dataset folder that every model
-reads, the old catalog as one corpus beside Raveform and the DJ corpus, built by one export command.
+Any threshold derived from features is measured on full-track rows. The old record's genre is still the first set it
+was listed in (882 records sit in sets of two genres), and the Raveform tag mapping has not been checked on a sample.
 
 ## 3. The planner, which record comes next
 
@@ -108,12 +110,13 @@ with energy fit and hard vetoes on BPM, key and repeats.
 
 ### What is there now
 
-**Model A, the pair embedding** (`src/models/train_model.py`). An MLP, 1,287 to 256 to 128, output on the unit sphere.
-Input is the 1,280 embedding plus seven scalars: BPM over 200, the key as sine and cosine on the Camelot circle plus its
-mode, energy, onset over 5, loudness. Loss NT-Xent at temperature 0.07. A positive pair is two records played one after
-the other in a real set; negatives are the rest of a batch of 128, all one genre, plus semi-hard negatives mined from
-ChromaDB every 5 epochs. 50 epochs. Inference must z-score the input with `models/encoder_norm.npz`. Validation
-adjacency AUC 0.663; BPM alone gives 0.624, the raw embedding 0.622.
+**Model A, the pair embedding** (`src/models/train_model.py`). Two branches, the 1,280 effnet numbers to 256 and the
+seven scalars to 64, fused to 128 on the unit sphere. The scalars are BPM over 200, the key as sine and cosine on the
+Camelot circle plus its mode, energy, onset over 5, loudness. Loss NT-Xent at temperature 0.07. A positive pair is two
+records played one after the other in a real set; negatives are the rest of a batch of 128, all one genre, plus semi-hard
+negatives found by cosine within the genre every 5 epochs. 50 epochs. `project_tracks()` z-scores the input with
+`models/encoder_norm.npz` and projects every track at load time; the vectors are never stored. Validation adjacency AUC
+0.663; BPM alone gives 0.624, the raw embedding 0.622.
 
 **Model B, the sequence model** (`src/models/train_sequence.py`). A causal transformer, 3 layers, 4 heads, width 192,
 feed-forward 384, dropout 0.2, 947k parameters. Each record in the set so far is a token: its Model A vector plus four
@@ -129,24 +132,26 @@ negatives random same-genre pairs. Validation AUC 0.69.
 
 **The search** (`plan_mix` in `src/models/predict_model.py`). Beam search, width 8. Seeds are the 8 pool records nearest
 the first slot's energy target; no model in the opening record. At each slot every pool record is a candidate. Hard
-vetoes first: absolute log BPM ratio over 0.05, Camelot distance over 2, record already used, artist already used, where
-artists are split on &, x, vs, feat and pres so a collaboration blocks the solo artist. Then the score:
+vetoes first: absolute log BPM ratio over 0.05, record already used, artist already used, where
+artists are split on &, x, vs, feat and pres so a collaboration blocks the solo artist. Key is not vetoed. A clash, Camelot distance over 2, is allowed on at
+most half the joins and never two in a row (`clash_allowed` in `src/models/key_rules.py`). Then the score:
 
 ```
 1.0 x z-score of (Model B output . candidate's Model A vector)
 + 1.0 x GBM probability
 + 0.7 x energy fit, 1 - |candidate energy - slot target|, scaled
 + compat_weight x pair compatibility (the mixer's own measure, section 6)
-+ key term, -0.2 per Camelot step, soft
++ key term, +0.2 per Camelot step beyond 2 (KEY_WEIGHT -0.2, negated), so clashes are pushed up to the cap
 ```
 
 The weights 1.0, 1.0, 0.7 were set once and never tuned. The beam dedupes on the set of records, so two orders of the
 same six collide and ordering is never compared. The plan is a JSON with six records, each with its slot's
 `energy_target01` (0 to 1, the one the mixer needs) and `target_energy` (absolute, display only).
 
-**Training data.** 2,834 sets, 29,393 plays, scraped from 1001tracklists. 15 % of sets per genre held out, frozen in
-`data/processed/split_mixes.csv`. The hold-out leaks, because the same records appear on both sides, and the +17 % and
-the 0.663 are measured on it.
+**Training data.** The saved models were trained on 2,834 sets, 29,393 plays, scraped from 1001tracklists, with 15 % of
+sets per genre held out in a split that leaked, because the same records appeared on both sides; the +17 % and the 0.663
+are measured on it. Since 2026-10-13 the training scripts read `data/dataset/<date>/` (every source's plays, 65,513 of
+them, folds by DJ with fold 0 held out); no model has been retrained on it yet.
 
 **Changed since the start.** The key veto came off in September and a soft term remains, after Anas could not hear a
 plus or minus one semitone shift; root readings are right about three in four, mode is unreliable in every detector. On

@@ -7,11 +7,11 @@ predicts the Model-A embedding of the track the DJ actually played next
 a learned prefix token.
 
 Token = Model-A projection (128) + [position fraction, bpm_norm, Δbpm, Δenergy].
-Targets = frozen Model-A projections (embedding_proj in features.parquet).
+Targets = frozen Model-A projections, computed from the saved encoder (`project_tracks`).
 
-Eval: held-out mixes (split_mixes.csv), recall@k of the true next track among
-all embedded tracks of the same genre, vs. the context-free Model-A baseline
-(query = last track's embedding).
+Data: data/dataset/<date>/ (src.data.dataset). Eval: the validation fold's mixes, recall@k of
+the true next track among all embedded tracks of the same genre, vs. the context-free Model-A
+baseline (query = last track's embedding).
 
 Run:
   conda activate aidj
@@ -23,16 +23,14 @@ import logging
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from src.data.dataset import VAL_FOLD, load_plays, load_tracks
+
 log = logging.getLogger(__name__)
 
-FEATURES_PATH = Path("data/processed/features.parquet")
-TRACKLIST_PATH = Path("data/processed/tracklist_clean.csv")
-SPLIT_PATH = Path("data/processed/split_mixes.csv")
 MODELS_DIR = Path("models")
 SEQ_MODEL_PATH = MODELS_DIR / "sequence_model.pt"
 
@@ -59,23 +57,22 @@ TOKEN_EXTRA = 4  # pos_frac, bpm_norm, d_bpm, d_energy
 # ── Data ───────────────────────────────────────────────────────────────────────
 
 
-def load_sequences():
-    """Per-mix track sequences with Model-A embeddings and scalar deltas."""
-    f = pd.read_parquet(FEATURES_PATH).drop_duplicates("track_id").set_index("track_id")
-    if "embedding_proj" not in f.columns:
-        raise RuntimeError("features.parquet has no embedding_proj — train Model A first")
-    proj = {t: np.asarray(v, dtype=np.float32) for t, v in f["embedding_proj"].items()}
+def load_sequences(sources: list[str] | None = None, date: str | None = None):
+    """Per-mix track sequences with Model-A embeddings and scalar deltas, from the dataset."""
+    from src.models.train_model import project_tracks
+
+    f = load_tracks(date=date, sources=sources).dropna(subset=["bpm"]).reset_index(drop=True)
+    vectors = project_tracks(f)
+    proj = dict(zip(f["track_id"], vectors))
+    f = f.set_index("track_id")
     bpm = f["bpm"].to_dict()
     energy = f["energy_mean"].to_dict()
 
-    tc = pd.read_csv(TRACKLIST_PATH).sort_values(["mix_id", "starting_time"])
-    split = pd.read_csv(SPLIT_PATH).set_index("mix_id")["split"]
+    tc = load_plays(date=date, sources=sources).sort_values(["mix_id", "position"])
 
     seqs = {"train": [], "val": []}
-    for mix_id, grp in tc.groupby("mix_id"):
-        which = split.get(mix_id)
-        if which not in ("train", "val"):
-            continue
+    for _mix_id, grp in tc.groupby("mix_id", sort=False):
+        which = "val" if grp["fold"].iloc[0] == VAL_FOLD else "train"
         tids = [t for t in dict.fromkeys(grp["track_id"]) if t in proj]
         if len(tids) < HPARAMS["min_len"]:
             continue
@@ -278,8 +275,8 @@ def train():
 
     seqs, proj, bpm, energy, genres = load_sequences()
     genre_tracks = defaultdict(list)
-    tc = pd.read_csv(TRACKLIST_PATH)
-    for t, g in tc.drop_duplicates("track_id")[["track_id", "genre"]].itertuples(index=False):
+    tc = load_tracks(columns=["track_id", "genre"])
+    for t, g in tc.itertuples(index=False):
         if t in proj:
             genre_tracks[g].append(t)
 

@@ -29,6 +29,7 @@ djdata tempo        --config config_djs.yaml --workers 16   BPM per record from 
 djdata label        --config config_djs.yaml                the measured moves, bars and fractions  -> out/labels.csv
 djdata types        --config config_djs.yaml                signature and nearest mixer recipe      -> out/types.csv
 djdata export-seams --config config_djs.yaml                one flat table joining all of the above -> out/seams_index.csv
+djdata export-dataset --date 2026-10-14                     every source joined for the models      -> data/dataset/<date>/
 ```
 
 The tables are the dataset. `state.sqlite` is a resume log nobody reads. Every number sits next to

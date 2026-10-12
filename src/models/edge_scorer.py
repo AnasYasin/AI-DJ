@@ -6,8 +6,9 @@ Gradient-boosted trees on pair features:
   raw-embedding cosine, Model-A projection cosine.
 
 Trained on consecutive pairs (positives) vs random same-genre pairs
-(negatives) from TRAIN mixes only (split_mixes.csv). Val AUC ≈ 0.69 —
-the strongest pairwise signal we have (scalars alone 0.66, encoder 0.66).
+(negatives) from the dataset's training folds (data/dataset/<date>/, fold 0
+held out). On the old split: val AUC ≈ 0.69, the strongest pairwise signal we
+had (scalars alone 0.66, encoder 0.66).
 
 Train + persist:  python -m src.models.edge_scorer
 Use:              scorer = EdgeScorer.load(); scorer.score(feats)
@@ -21,13 +22,11 @@ import pickle
 import numpy as np
 import pandas as pd
 
-from src.models.train_model import _CAMELOT
+from src.data.dataset import VAL_FOLD, load_plays, load_tracks
+from src.models.train_model import _CAMELOT, project_tracks
 
 log = logging.getLogger(__name__)
 
-FEATURES_PATH = Path("data/processed/features.parquet")
-TRACKLIST_PATH = Path("data/processed/tracklist_clean.csv")
-SPLIT_PATH = Path("data/processed/split_mixes.csv")
 MODEL_PATH = Path("models/edge_gbm.pkl")
 
 FEATURE_NAMES = ["bpm_lr", "cam_dist", "d_energy", "d_loud", "d_onset", "cos_raw", "cos_proj"]
@@ -48,9 +47,10 @@ def camelot_distance(pa, ma, pb, mb) -> np.ndarray:
 
 
 class TrackArrays:
-    """Column arrays for a track pool — shared by trainer and planner."""
+    """Column arrays for a track pool — shared by trainer and planner. `proj` is the Model A
+    projection (N, 128); computed from the saved encoder when not given."""
 
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame, proj: np.ndarray | None = None):
         self.df = df.reset_index(drop=True)
         self.tid = self.df["track_id"].to_numpy()
         self.idx = {t: i for i, t in enumerate(self.tid)}
@@ -61,7 +61,9 @@ class TrackArrays:
         self.cam_pos, self.cam_mode = camelot_arrays(self.df["key"])
         raw = np.stack([np.asarray(e, dtype=np.float32) for e in self.df["embedding"]])
         self.raw = raw / (np.linalg.norm(raw, axis=1, keepdims=True) + 1e-8)
-        proj = np.stack([np.asarray(e, dtype=np.float32) for e in self.df["embedding_proj"]])
+        if proj is None:
+            proj = project_tracks(self.df)
+        proj = np.asarray(proj, dtype=np.float32)
         self.proj = proj / (np.linalg.norm(proj, axis=1, keepdims=True) + 1e-8)
 
 
@@ -98,24 +100,21 @@ def train() -> None:
     from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.metrics import roc_auc_score
 
-    f = pd.read_parquet(FEATURES_PATH).drop_duplicates("track_id")
+    f = load_tracks().dropna(subset=["bpm"]).reset_index(drop=True)
     A = TrackArrays(f)
-    tc = pd.read_csv(TRACKLIST_PATH).sort_values(["mix_id", "starting_time"])
-    split = pd.read_csv(SPLIT_PATH).set_index("mix_id")["split"]
-    artist = tc.drop_duplicates("track_id").set_index("track_id")["artist_name"].to_dict()
+    tc = load_plays().sort_values(["mix_id", "position"])
+    artist = dict(zip(f["track_id"], f["artist"]))
 
     rng = np.random.default_rng(42)
     X, y = {"train": [], "val": []}, {"train": [], "val": []}
     pool_by = {"train": defaultdict(list), "val": defaultdict(list)}
-    for mid, grp in tc.groupby("mix_id"):
-        s = split.get(mid)
-        if s in ("train", "val"):
-            g = grp["genre"].iloc[0]
-            pool_by[s][g] += [t for t in grp.track_id if t in A.idx]
-    for mid, grp in tc.groupby("mix_id"):
-        s = split.get(mid)
-        if s not in ("train", "val"):
-            continue
+    side = {m: ("val" if fo == VAL_FOLD else "train") for m, fo in zip(tc["mix_id"], tc["fold"])}
+    for mid, grp in tc.groupby("mix_id", sort=False):
+        s = side[mid]
+        g = grp["genre"].iloc[0]
+        pool_by[s][g] += [t for t in grp.track_id if t in A.idx]
+    for mid, grp in tc.groupby("mix_id", sort=False):
+        s = side[mid]
         g = grp["genre"].iloc[0]
         pool = pool_by[s][g]
         tt = [t for t in grp.track_id if t in A.idx]

@@ -1,7 +1,7 @@
 """
 Phase 4 — Heuristic transition labeller.
 
-Reads mix CSVs + features.parquet, computes per-pair audio deltas, applies
+Reads mix CSVs + the dataset's tracks, computes per-pair audio deltas, applies
 rule-based heuristics to assign one of 6 transition types, and writes
 data/processed/transition_labels.csv.
 
@@ -43,7 +43,6 @@ log = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
-FEATURES_PATH = Path("data/processed/features.parquet")
 LABELS_PATH = Path("data/processed/transition_labels.csv")
 TRACKLIST_PATH = Path("data/interim/tracklist.csv")
 MIX_METADATA_PATH = Path("data/processed/mix_metadata.csv")
@@ -351,7 +350,7 @@ def label_transitions(
     exceeds TIME_GAP_MAX_MIN, are skipped.
 
     Args:
-        features:          DataFrame from features.parquet.
+        features:          the dataset's tracks frame.
                            Must contain: track_id, bpm, key, loudness_lufs,
                                          energy_mean, onset_strength.
         mix_csvs:          List of CSV paths, each with columns
@@ -478,22 +477,20 @@ def label_transitions(
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    if not FEATURES_PATH.exists():
-        log.error("features.parquet not found at %s — run Phase 2 first.", FEATURES_PATH)
-        return
-
     if not TRACKLIST_PATH.exists():
         log.error("tracklist.csv not found at %s — run scraper first.", TRACKLIST_PATH)
         return
 
-    features = pd.read_parquet(FEATURES_PATH)
-    log.info("Loading features: %d tracks from %s", len(features), FEATURES_PATH)
+    from src.data.dataset import load_tracks
+
+    features = load_tracks()
+    log.info("Loading features: %d tracks from the dataset", len(features))
     log.info("Processing %s", TRACKLIST_PATH)
 
     labels = label_transitions(features, [TRACKLIST_PATH], MIX_METADATA_PATH)
 
     if labels.empty:
-        log.warning("No transition pairs produced — check features.parquet coverage.")
+        log.warning("No transition pairs produced — check the dataset coverage.")
         return
 
     LABELS_PATH.parent.mkdir(parents=True, exist_ok=True)

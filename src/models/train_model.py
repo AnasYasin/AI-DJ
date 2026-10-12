@@ -8,10 +8,11 @@ Input:   1280-dim discogs-effnet embedding + 7 normalised librosa features:
 Loss:    NT-Xent (temperature-scaled cross-entropy)
 Signal:  consecutive tracks in a DJ mix = positive pairs
 Negatives: in-batch (genre-blocked batches, known positives masked)
-           + semi-hard negatives mined from ChromaDB (genre-filtered)
-Split:   mix-level, from data/processed/split_mixes.csv (15% val per genre)
-Output:  128-dim "mixability" embedding on the unit hypersphere
-Saved:   models/contrastive_encoder.pt
+           + semi-hard negatives mined by cosine within the genre (numpy, no index)
+Data:    data/dataset/<date>/ (src.data.dataset): every source's pairs; fold 0 is validation
+Output:  128-dim "mixability" embedding on the unit hypersphere, computed at load time by
+         `project_tracks` (never stored in a table, so a retrain cannot leave a stale column)
+Saved:   models/contrastive_encoder.pt + encoder_norm.npz
 
 Logs to MLflow (experiment registry) AND W&B (live dashboard, disabled if not
 logged in).
@@ -25,7 +26,6 @@ import logging
 from pathlib import Path
 import time
 
-import chromadb
 import mlflow
 import mlflow.pytorch
 import numpy as np
@@ -36,23 +36,16 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Sampler
 import wandb
 
+from src.data.dataset import VAL_FOLD, load_plays, load_tracks
 from src.features.transition_labeler import normalise_onset
-from src.features.vector_store import (
-    CHROMA_PATH,
-    COLLECTION_NAME,
-    get_client,
-    get_collection,
-)
 
 log = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
-FEATURES_PATH = Path("data/processed/features.parquet")
-TRACKLIST_PATH = Path("data/processed/tracklist_clean.csv")
-SPLIT_PATH = Path("data/processed/split_mixes.csv")
 MODELS_DIR = Path("models")
 ENCODER_PATH = MODELS_DIR / "contrastive_encoder.pt"
+NORM_PATH = MODELS_DIR / "encoder_norm.npz"
 
 # ── Hyperparameters ────────────────────────────────────────────────────────────
 
@@ -158,30 +151,20 @@ def _prepare_encoder_inputs(features: pd.DataFrame) -> tuple[np.ndarray, dict[st
 
 
 def build_consecutive_pairs(
-    tracklist_csv: str | Path,
+    plays: pd.DataFrame,
     features: pd.DataFrame,
-    split_csv: str | Path = SPLIT_PATH,
 ) -> tuple[list[tuple], list[tuple]]:
     """
-    Build (track_id_A, track_id_B, genre) triples from consecutive tracks in each mix.
-
-    Split is read from split_mixes.csv (mix-level, stratified per genre) so
-    train/val is stable across runs and no mix leaks across the boundary.
+    (track_id_A, track_id_B, genre) triples from consecutive plays in each mix, from the dataset's
+    plays table. A mix's `fold` decides the side: VAL_FOLD is validation, the rest train. Folds are
+    by DJ, so no mix and no DJ leaks across the boundary.
     """
-    df = pd.read_csv(tracklist_csv)
-    split = pd.read_csv(split_csv).set_index("mix_id")["split"]
     feat_ids = set(features["track_id"])
 
     pairs = {"train": [], "val": []}
-    for mix_id, group in df.groupby("mix_id"):
-        which = split.get(mix_id)
-        if which not in ("train", "val"):
-            continue
-        if "play_type" in group.columns:
-            group = group[group["play_type"] == "sequential"]
-        if not group["starting_time"].isna().any():
-            group = group.sort_values("starting_time")
-
+    for _mix_id, group in plays.groupby("mix_id", sort=False):
+        which = "val" if group["fold"].iloc[0] == VAL_FOLD else "train"
+        group = group.sort_values("position")
         genre = group["genre"].iloc[0]
         tids = group["track_id"].tolist()
         pairs[which] += [
@@ -214,8 +197,9 @@ class ContrastiveDataset(Dataset):
     """
     Returns (anchor_emb, positive_emb, hard_neg_embs, tid_a, tid_b).
 
-    Hard negatives are pre-mined from ChromaDB (genre-filtered, semi-hard
-    distance band) every `hard_neg_refresh_epochs` epochs.
+    Hard negatives are mined by cosine over the raw effnet vectors of the same genre (semi-hard
+    distance band) every `hard_neg_refresh_epochs` epochs. 40k vectors fit in memory, so a matrix
+    product per genre replaces the index that used to do this.
     """
 
     def __init__(
@@ -225,33 +209,26 @@ class ContrastiveDataset(Dataset):
         tid_to_idx: dict[str, int],
         genre_of: dict[str, str],
         positive_index: dict[str, set],
-        collection: chromadb.Collection,
         hparams: dict,
         query_matrix: np.ndarray | None = None,
     ):
         self.pairs = pairs
         self.input_matrix = input_matrix
-        # raw effnet vectors for ChromaDB queries (index stores raw embeddings;
-        # input_matrix may be z-scored and would mismatch)
+        # raw effnet vectors for the search (input_matrix may be z-scored)
         self.query_matrix = query_matrix if query_matrix is not None else input_matrix[:, :1280]
         self.tid_to_idx = tid_to_idx
         self.genre_of = genre_of
         self.pos_index = positive_index
-        self.collection = collection
         self.n_hard = hparams["hard_neg_per_anchor"]
         self.min_dist = hparams["hard_neg_min_dist"]
         self.max_dist = hparams["hard_neg_max_dist"]
         self.hard_neg_cache: dict[str, np.ndarray] = {}
 
-    _MINE_BATCH = 256  # anchors per ChromaDB query call
+    _MINE_BATCH = 256  # anchors per matrix product
     _FETCH_N = 48  # over-fetch: exclusions + distance-band filtering eat candidates
 
     def mine_hard_negatives(self) -> None:
-        """
-        Query ChromaDB for genre-filtered semi-hard negatives, batched per genre.
-        One query call per _MINE_BATCH anchors — per-anchor calls took ~85ms each
-        (~45min for 31k anchors on chromadb 0.5.3); batching brings it to ~1min.
-        """
+        """Semi-hard negatives per anchor from the same genre, by cosine distance on the raw vectors."""
         by_genre: dict[str, list[str]] = defaultdict(list)
         for a, _, g in self.pairs:
             if a in self.tid_to_idx:
@@ -261,26 +238,34 @@ class ContrastiveDataset(Dataset):
         t0 = time.time()
         found = 0
         enc_dim = self.input_matrix.shape[1]
+        idx_to_tid = {i: t for t, i in self.tid_to_idx.items()}
+        unit = self.query_matrix / (
+            np.linalg.norm(self.query_matrix, axis=1, keepdims=True) + 1e-8
+        )
+        genre_rows = defaultdict(list)
+        for tid, i in self.tid_to_idx.items():
+            genre_rows[self.genre_of.get(tid)].append(i)
 
         for genre, anchors in by_genre.items():
             anchors = list(dict.fromkeys(anchors))
+            rows = np.array(genre_rows.get(genre, []), dtype=int)
+            if len(rows) == 0:
+                continue
+            pool = unit[rows]
             for start in range(0, len(anchors), self._MINE_BATCH):
                 chunk = anchors[start : start + self._MINE_BATCH]
-                embs = [self.query_matrix[self.tid_to_idx[t]].tolist() for t in chunk]
-                results = self.collection.query(
-                    query_embeddings=embs,
-                    n_results=min(self._FETCH_N, self.collection.count()),
-                    where={"genre": {"$eq": genre}},
-                    include=["distances"],
-                )
-                for tid, ids, dists in zip(chunk, results["ids"], results["distances"]):
+                q = unit[[self.tid_to_idx[t] for t in chunk]]
+                dist = 1.0 - q @ pool.T  # (chunk, pool) cosine distance
+                k = min(self._FETCH_N, dist.shape[1])
+                nearest = np.argpartition(dist, k - 1, axis=1)[:, :k]
+                for r, tid in enumerate(chunk):
+                    order = nearest[r][np.argsort(dist[r, nearest[r]])]
                     exclude = {tid} | self.pos_index.get(tid, set())
                     neg_ids = [
-                        i
-                        for i, d in zip(ids, dists)
-                        if i not in exclude
-                        and self.min_dist <= d <= self.max_dist
-                        and i in self.tid_to_idx
+                        idx_to_tid[rows[j]]
+                        for j in order
+                        if idx_to_tid[rows[j]] not in exclude
+                        and self.min_dist <= dist[r, j] <= self.max_dist
                     ][: self.n_hard]
                     if not neg_ids:
                         continue
@@ -649,12 +634,32 @@ def train_contrastive(
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 
+def project_tracks(tracks: pd.DataFrame, device: str = "cpu") -> np.ndarray:
+    """Model A vectors (N, 128) for a tracks frame, from the saved encoder and its z-score stats."""
+    matrix, _ = _prepare_encoder_inputs(tracks)
+    norm = np.load(NORM_PATH)
+    matrix = (matrix - norm["mu"]) / norm["sd"]
+    encoder = ContrastiveEncoder(input_dim=matrix.shape[1])
+    encoder.load_state_dict(torch.load(ENCODER_PATH, weights_only=True, map_location=device))
+    encoder.eval()
+    with torch.no_grad():
+        out = [
+            encoder(torch.from_numpy(matrix[i : i + 4096])).numpy()
+            for i in range(0, len(matrix), 4096)
+        ]
+    return np.concatenate(out).astype(np.float32)
+
+
 def train(
-    tracklist_csv: str | Path = TRACKLIST_PATH,
     hparams: dict | None = None,
+    sources: list[str] | None = None,
+    date: str | None = None,
 ) -> None:
     """
     Full training pipeline: contrastive encoder.
+
+    sources: which dataset sources to train on (None = all); the old data's preview rows are left
+    out with sources=["raveform", "djs"], which is the retrain experiment of 2026-10-07.
 
     mlflow: logs to ./mlruns/ — view with `mlflow ui --port 5000`
     wandb:  logs to wandb.ai — run `wandb login` once; falls back to disabled.
@@ -666,13 +671,16 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
 
-    features = pd.read_parquet(FEATURES_PATH).drop_duplicates("track_id").reset_index(drop=True)
+    features = (
+        load_tracks(date=date, sources=sources).dropna(subset=["bpm"]).reset_index(drop=True)
+    )
+    plays = load_plays(date=date, sources=sources)
     log.info("Features loaded: %d tracks, %d columns", len(features), len(features.columns))
 
     log.info("Preparing encoder inputs (once)...")
     input_matrix, tid_to_idx = _prepare_encoder_inputs(features)
 
-    # ChromaDB stores raw effnet vectors — mining queries must stay in that space
+    # the hard-negative search runs on the raw effnet vectors, not the z-scored inputs
     raw_effnet = input_matrix[:, :1280].copy()
 
     # z-score all input dims — otherwise the 1280 effnet dims (varied scale)
@@ -681,29 +689,13 @@ def train(
     norm_sd = input_matrix.std(axis=0) + 1e-6
     input_matrix = (input_matrix - norm_mu) / norm_sd
     MODELS_DIR.mkdir(exist_ok=True)
-    np.savez(MODELS_DIR / "encoder_norm.npz", mu=norm_mu, sd=norm_sd)
-    log.info("Input z-scoring applied; stats saved to %s", MODELS_DIR / "encoder_norm.npz")
+    np.savez(NORM_PATH, mu=norm_mu, sd=norm_sd)
+    log.info("Input z-scoring applied; stats saved to %s", NORM_PATH)
 
-    train_pairs, val_pairs = build_consecutive_pairs(tracklist_csv, features)
+    train_pairs, val_pairs = build_consecutive_pairs(plays, features)
     positive_index = build_positive_index(train_pairs + val_pairs)
 
-    genre_of = (
-        pd.read_csv(tracklist_csv, usecols=["track_id", "genre"])
-        .drop_duplicates("track_id")
-        .set_index("track_id")["genre"]
-        .to_dict()
-    )
-
-    client = get_client(CHROMA_PATH)
-    collection = get_collection(client)
-    n_indexed = collection.count()
-    log.info("ChromaDB collection '%s': %d tracks", COLLECTION_NAME, n_indexed)
-    if n_indexed < len(features) * 0.9:
-        raise RuntimeError(
-            f"ChromaDB has {n_indexed} tracks but features has {len(features)} — "
-            "rebuild the index first: rm -rf data/processed/chromadb && "
-            "python src/features/vector_store.py"
-        )
+    genre_of = dict(zip(features["track_id"], features["genre"]))
 
     mlflow.set_experiment("ai-dj-training")
     try:
@@ -735,7 +727,6 @@ def train(
             tid_to_idx=tid_to_idx,
             genre_of=genre_of,
             positive_index=positive_index,
-            collection=collection,
             hparams=hparams,
             query_matrix=raw_effnet,
         )
@@ -745,20 +736,9 @@ def train(
             encoder, criterion, train_ds, val_pairs, input_matrix, tid_to_idx, device, hparams
         )
 
-        # Project all embeddings and persist to features.parquet.
-        # Use the BEST checkpoint, not the final epoch — long runs overfit
-        # (150-epoch run: final model val AUC 0.655 vs best-epoch 0.667).
-        log.info("Projecting all embeddings with best checkpoint...")
-        encoder.load_state_dict(torch.load(ENCODER_PATH, weights_only=True))
-        encoder.eval()
-        all_raw = torch.from_numpy(input_matrix).to(device)
-        with torch.no_grad():
-            all_proj = encoder(all_raw).cpu().numpy()  # (N, 128)
-
-        features = features.assign(embedding_proj=[row.tolist() for row in all_proj])
-        features.to_parquet(FEATURES_PATH, index=False)
-        log.info("Projected embeddings written to %s", FEATURES_PATH)
-
+        # The BEST checkpoint is the saved one, not the final epoch: long runs overfit
+        # (150-epoch run: final model val AUC 0.655 vs best-epoch 0.667). Projections are
+        # computed from it at load time by `project_tracks`, never written to a table.
         mlflow.log_artifact(str(ENCODER_PATH))
 
     wandb.finish()

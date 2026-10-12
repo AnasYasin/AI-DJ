@@ -217,6 +217,14 @@ def cmd_usb002_tracklist(args):
     print(json.dumps({"lists": len({r["mix_id"] for r in rows}), "records": len(rows)}))
 
 
+def cmd_export_dataset(args):
+    from pathlib import Path
+
+    from . import dataset
+
+    print(json.dumps(dataset.export(args.date, Path(args.out)), indent=1))
+
+
 def cmd_stage(args):
     from . import pipeline
 
@@ -333,6 +341,10 @@ def main(argv=None):
                 help="every audio file in tracks/, not only records that sit in a seam",
             )
         sp.set_defaults(fn=cmd_stage, stage=stage)
+    sp = sub.add_parser("export-dataset", help="join every source into data/dataset/<date>/")
+    sp.add_argument("--date", required=True)
+    sp.add_argument("--out", default="data/dataset")
+    sp.set_defaults(fn=cmd_export_dataset)
     sp = sub.add_parser("ear-test")
     sp.add_argument("--config", required=True)
     sp.add_argument("--out", required=True)

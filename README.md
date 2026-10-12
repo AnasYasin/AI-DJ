@@ -103,7 +103,7 @@ python -m src.models.edge_scorer      # GBM
 
 - **Embeddings**: discogs-effnet (frozen) + librosa/DeepRhythm features
 - **Models**: PyTorch (contrastive MLP, causal transformer), scikit-learn (GBM)
-- **Vector store**: ChromaDB (HNSW)
+- **Data**: one dated dataset folder of four parquet files, built from the three sources by `djdata export-dataset` (`DATA_ARCHITECTURE.md`)
 - **Tracking**: MLflow + W&B
 - **Audio**: librosa, essentia, scipy (EQ), ffmpeg
 - **Orchestration**: Airflow

@@ -211,7 +211,8 @@ vectors                 preview mean, DeepRhythm BPM,     whole-track mean, patc
 - The transition model (how to mix: Step 6) trains on the new corpora ONLY, because only they have
   measured seams. The old dataset was never meant for it.
 - The planner's pool of candidate tracks is the old 28,460 plus the 12,211 new ones. A plan may pick
-  from either.
+  from either. Built 2026-10-13: the pool reads `data/dataset/<date>/tracks.parquet`
+  (`DATA_ARCHITECTURE.md`).
 
 **How good the old rows are (measured 2026-10-07, `EMBEDDINGS.md`, "How good are the old dataset's
 features").** On 150 old tracks fetched in full: the old BPM is within 2 % of the full-track tempo on
@@ -233,12 +234,15 @@ The higher AUC wins; a tie within 0.02 goes to the simpler one, new rows only. M
 (0.657 and 0.655 against 0.665). Whole track is also the cheapest to serve, since the planner picks a
 record before any cue point exists.
 
-**Validation split (proposed).** By mix and by DJ, with the track overlap between train and validation
-reported. Whether the same records appear in the old dataset and in Raveform under different ids is
-unchecked and is checked by artist and title before the split is cut.
+**Validation split.** By DJ (`fold` on every play and seam, md5 of the DJ key mod 5, fold 0 held out), so
+every mix of a DJ and every mix two sources share sit on one side. The export's README prints the track
+overlap between folds (7 % of tracks on 2026-10-14). The seven DJ-data DJs all hashed into folds 1 to
+4, so fold 0 holds old and Raveform mixes only; a balanced assignment is open. Records shared between
+the old data and Raveform are one id by the title hash (683 of 732 letters-only matches, the 49 others
+differ by punctuation and share `record_key`).
 
-**Planner.** Same code: beam search, vetoes, score weights. New inputs: the new table's vectors and
-features for the new tracks, and the retrained head if it wins. The planner switches encoder only when
+**Planner.** Same code: beam search, vetoes, score weights. Reads the dataset's tracks (both tables,
+full-audio rows winning), and the retrained head if it wins. The planner switches encoder only when
 the new head's adjacency AUC beats 0.663 on the new split, and a render is listened to after.
 
 **Mixer.** Unchanged in this phase. It measures tempo, key, loudness and energy itself on the full file
@@ -290,48 +294,6 @@ carry only one. The planner's pool, the per-genre charts and the training batche
 all use that one genre. Counted 2026-10-09 on `tracklist_clean.csv`. Options not decided: the most
 common genre across the record's sets, every genre it was played in (a record in two pools), or the
 genre from the audio. Look at it again before the pool reads both datasets.
-
-# OPEN: the data layout, a proposal (2026-10-07, not decided)
-
-Most of the 25 Sep plan (`DATA_ARCHITECTURE.md` section 9) is built: one package, one folder per
-corpus, the same tables in each. What is left messy is three things.
-
-1. The old dataset sits outside that layout, in `data/processed`, `data/raw/previews` and
-   `data/interim`, with its own shapes.
-2. Nothing defines what the models consume. `train_model.py` reads `features.parquet` and the
-   tracklist directly, so every new corpus means editing training code.
-3. `data/interim` holds a hundred files, live and dead side by side.
-
-Suggestion: three layers, with one new piece of code.
-
-```
-data/corpora/<corpus>/          layer 1, raw and measured, one shape per corpus (exists for raveform, djs)
-  tracks/  windows/  embeddings/  previews/
-  out/  plays  seams  cuts  measures  tempos  labels  track_features
-data/dataset/<date>/            layer 2, what the models read, built from every corpus by one command
-  tracks.parquet    track_id, corpus, source (full | preview), embedding, bpm, key, lufs, energy, onset, ...
-  plays.parquet     mix_id, dj, genre, position, track_id, corpus        (the order data, all corpora)
-  seams.parquet     the measured seams with both tracks' edge vectors     (new corpora only)
-  splits.parquet    mix, dj, fold
-data/archive/<date>/            layer 3, superseded diagnostics, moved whole, never read by code
-```
-
-- The old dataset becomes a corpus like the others, `data/corpora/old/`, with `out/plays.csv` from the
-  tracklists and `out/track_features.parquet` from `features.parquet` marked `source = preview`. No
-  mixes, no seams. Nothing is recomputed.
-- One command, `djdata export-dataset`, joins every corpus into a dated `data/dataset/` folder.
-  Training code reads only that folder. A new corpus is a new folder in layer 1 and a rerun of the
-  export. A dataset version is frozen once a model trains on it, and mirrored to S3 by date.
-- The seam pipelines already write layer 1. The only new code is the export, about a day, plus moving
-  files.
-
-Order, as Anas asked on 2026-10-07: everything in one go after the decision. First read the three
-training scripts and the Step 6 design and write down the exact columns each model needs, so layer 2
-is defined by what consumes it. Then decide all three layers at once and write them into
-`DATA_ARCHITECTURE.md`. Then build the export, move the old dataset into the corpus layout and
-archive `data/interim`, together. Pipelines keep writing where they write now until then.
-
----
 
 # 2026-09-30, the full Raveform run
 

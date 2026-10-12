@@ -2,7 +2,7 @@
 Phase 8 — mix planner: intent → ordered tracklist.
 
 Pipeline per step of the beam search:
-  1. Candidate pool: genre + BPM-range filter over features.parquet.
+  1. Candidate pool: genre + BPM-range filter over the dataset's tracks (data/dataset/<date>/).
   2. Hard rules mask: |log BPM ratio| ≤ 0.05 vs current track, Camelot
      distance ≤ 2, track not already used.
   3. Score = w_ctx·z(Model-B context similarity)
@@ -24,9 +24,9 @@ from pathlib import Path
 import re
 
 import numpy as np
-import pandas as pd
 import torch
 
+from src.data.dataset import load_tracks
 from src.data.preprocess_tracklist import is_unidentified
 from src.features.compatibility import compatibility
 from src.models.edge_scorer import EdgeScorer, TrackArrays, camelot_distance, pair_features
@@ -35,8 +35,6 @@ from src.models.train_sequence import TOKEN_EXTRA, SequenceModel
 
 log = logging.getLogger(__name__)
 
-FEATURES_PATH = Path("data/processed/features.parquet")
-TRACKLIST_PATH = Path("data/processed/tracklist_clean.csv")
 SEQ_MODEL_PATH = Path("models/sequence_model.pt")
 
 BEAM_WIDTH = 8
@@ -129,16 +127,12 @@ def _load_pool(
     min_energy_pct: float | None,
 ) -> dict:
     """Candidate pool + per-track artist sets, shared by plan_mix and repair_candidates."""
-    f = pd.read_parquet(FEATURES_PATH).drop_duplicates("track_id")
-    meta = (
-        pd.read_csv(TRACKLIST_PATH, usecols=["track_id", "genre", "artist_name", "track_name"])
-        .drop_duplicates("track_id")
-        .set_index("track_id")
-    )
+    f = load_tracks().dropna(subset=["bpm"]).reset_index(drop=True)
+    meta = f.set_index("track_id")[["genre", "artist", "title"]]
     # "Massano – ID" is a placeholder for an unreleased track. It has no
     # searchable name, so it can never be fetched or played, and it must not
     # reach a plan.
-    named = ~meta.apply(lambda r: is_unidentified(r["artist_name"], r["track_name"]), axis=1)
+    named = ~meta.apply(lambda r: is_unidentified(r["artist"], r["title"]), axis=1)
     n_before = len(f)
     f = f[f["track_id"].map(named).fillna(False)]
     if n_before != len(f):
@@ -171,7 +165,7 @@ def _load_pool(
     # One track per artist, counting every artist on a collaboration. Comparing
     # the credit string as a whole let "Reinier Zonneveld & Miro" and "Reinier
     # Zonneveld" both into the same three-track set.
-    artist_sets = [split_artists(a) for a in A.df["track_id"].map(meta["artist_name"]).fillna("")]
+    artist_sets = [split_artists(a) for a in A.df["track_id"].map(meta["artist"]).fillna("")]
     artist_tracks: dict[str, list[int]] = {}
     for i, names in enumerate(artist_sets):
         for name in names:
@@ -296,8 +290,8 @@ def plan_mix(
         entry = {
             "n": i + 1,
             "track_id": tid,
-            "artist": m["artist_name"],
-            "title": m["track_name"],
+            "artist": m["artist"],
+            "title": m["title"],
             "bpm": round(float(A.bpm[ti]), 1),
             "key": str(A.df["key"].iloc[ti]),
             "energy": round(float(A.energy[ti]), 3),
@@ -345,8 +339,8 @@ def _plan_entry(A: TrackArrays, meta, ti: int, n: int, target_energy: float, e01
     return {
         "n": n,
         "track_id": tid,
-        "artist": m["artist_name"],
-        "title": m["track_name"],
+        "artist": m["artist"],
+        "title": m["title"],
         "bpm": round(float(A.bpm[ti]), 1),
         "key": str(A.df["key"].iloc[ti]),
         "energy": round(float(A.energy[ti]), 3),

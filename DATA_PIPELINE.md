@@ -192,7 +192,11 @@ djdata label        the measured moves in bars and as fractions of the overlap  
 djdata types        the signature the moves match, and the nearest mixer recipe              -> out/types.csv
 djdata export-seams one flat table joining all of the above                                  -> out/seams_index.csv
 djdata ear-test     clips from the tables, window left ear, records right ear, MARKS.csv
+djdata export-dataset --date <date>   every source joined into what the models read          -> data/dataset/<date>/
 ```
+
+`export-dataset` is not per source: it reads every source's `out/` (and the old data's `data/processed` tables) and
+writes the four parquet files the models and the planner read (`DATA_ARCHITECTURE.md`).
 
 **What is proved.** 88 tests on synthetic audio with a known answer (`djdata_package/tests`, run by
 `make ci`). Three passes on a five mix development sample on the laptop, numbers in `DATASET_STATE.md`.
