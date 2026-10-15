@@ -1,0 +1,20 @@
+seams 5122 train 4061 validation 1061 | classes: {'centre swap': 1858, 'cut': 1123, 'tension': 1038, 'end swap': 688, 'late swap': 415}
+majority (centre swap) accuracy on validation: 0.407
+mixer rules mapped to signatures, accuracy on validation: 0.252  (rule class shares: {'late swap': 0.51, 'centre swap': 0.41, 'end swap': 0.04, 'cut': 0.04})
+
+signature from the two records (validation = unseen DJs):
+  pair features + genre        logistic  acc 0.413  macro-F1 0.234  log-loss 1.484
+  pair features + genre        GBM       acc 0.369  macro-F1 0.231  log-loss 1.582
+  pair features + effnet A,B   logistic  acc 0.274  macro-F1 0.218  log-loss 5.263
+  pair features + effnet A,B   GBM       acc 0.389  macro-F1 0.239  log-loss 1.714
+
+within-DJ split (seams of the same DJs on both sides): majority 0.362, per-DJ majority 0.514
+  pair features + genre        logistic  acc 0.436  macro-F1 0.267
+  pair features + genre        GBM       acc 0.407  macro-F1 0.287
+  pair features + DJ one-hot   logistic  acc 0.507  macro-F1 0.390
+  pair features + DJ one-hot   GBM       acc 0.468  macro-F1 0.343
+
+overlap bars (non-cut seams, n=3968): median 29
+  pair features + genre        GBM R² on within-DJ held-out: 0.147
+  pair features + DJ one-hot   GBM R² on within-DJ held-out: 0.233
+  pair features + genre        GBM R² on unseen DJs: -0.041

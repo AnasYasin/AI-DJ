@@ -1,0 +1,86 @@
+823 seams, 42 situation features; classes {'centre swap': 294, 'cut': 200, 'tension': 142, 'end swap': 124, 'late swap': 63}
+
+transition type share by level at the cue points (rows = situation):
+signature        centre swap   cut  end swap  late swap  tension    n
+A_exit  B_entry                                                      
+A loud  B loud          0.36  0.24      0.15       0.07     0.17  617
+        B quiet         0.35  0.27      0.11       0.10     0.17  105
+A quiet B loud          0.31  0.25      0.18       0.10     0.17   84
+        B quiet         0.35  0.24      0.12       0.06     0.24   17
+
+by A building, falling or flat into the cue, and B's entry level:
+signature           centre swap   cut  end swap  late swap  tension    n
+A_build    B_entry                                                      
+A building B loud          0.29  0.22      0.22       0.09     0.18  104
+           B quiet         0.39  0.25      0.07       0.07     0.21   28
+A falling  B loud          0.36  0.25      0.10       0.10     0.19   89
+           B quiet         0.12  0.38      0.19       0.06     0.25   16
+A flat     B loud          0.37  0.24      0.15       0.07     0.17  508
+           B quiet         0.38  0.24      0.12       0.10     0.15   78
+
+by A's mids and repetitiveness at the cue:
+signature                 centre swap   cut  end swap  late swap  tension    n
+A_mids      A_repeat                                                          
+A mids down A repetitive         0.43  0.00      0.14       0.14     0.29    7
+            A varying            0.56  0.16      0.16       0.04     0.08   25
+A mids in   A repetitive         0.40  0.25      0.09       0.07     0.19  176
+            A varying            0.33  0.25      0.17       0.08     0.17  615
+
+by bass at the cue points:
+signature            centre swap   cut  end swap  late swap  tension    n
+A_bass    B_bass                                                         
+A bass    B bass            0.36  0.24      0.16       0.07     0.17  632
+          B no bass         0.36  0.25      0.14       0.09     0.16   96
+A no bass B bass            0.33  0.25      0.12       0.09     0.21   81
+          B no bass         0.36  0.14      0.14       0.07     0.29   14
+
+SIGNAL CHECK
+1. spread of the situation at the cue (dB relative to the record's own median; p10 / p50 / p90):
+   out_rms_db_8         -3.8 /    0.2 /    1.2   share quiet (< -3 dB): 0.12
+   out_low_db_8         -7.0 /    0.2 /    1.6   share quiet (< -3 dB): 0.17
+   out_mid_db_8         -2.5 /   -0.5 /    0.9   share quiet (< -3 dB): 0.07
+   out_high_db_8        -5.7 /   -0.6 /    2.6   share quiet (< -3 dB): 0.23
+   out_rms_db_build     -2.8 /    0.0 /    4.1   share quiet (< -3 dB): 0.09
+   out_repeat           -0.3 /    0.2 /    1.0   share quiet (< -3 dB): 0.00
+   in_rms_db_8          -4.6 /    0.0 /    1.0   share quiet (< -3 dB): 0.15
+   in_low_db_8          -8.1 /    0.1 /    1.3   share quiet (< -3 dB): 0.20
+   in_bars_to_body       0.0 /    0.1 /    4.3   share quiet (< -3 dB): 0.00
+2. does the type depend on the situation cell (chi-square; a shuffled copy shows chance):
+   all seams                    n   823  cells 13  Cramér's V 0.11  p 0.8715   (types shuffled: V 0.12  p 0.36)
+   within Adam Beyer            n   284  cells 12  Cramér's V 0.18  p 0.7209   (types shuffled: V 0.18  p 0.79)
+   within Amelielens            n   238  cells 11  Cramér's V 0.19  p 0.6891   (types shuffled: V 0.22  p 0.26)
+3. per-cell confidence (n, top type, its share, lead over the second):
+                                  cell   n         top  share  lead
+        A loud, B loud, A bass, B bass 605 centre swap   0.37  0.13
+    A loud, B quiet, A bass, B no bass  87 centre swap   0.37  0.10
+    A quiet, B loud, A no bass, B bass  72 centre swap   0.35  0.10
+       A loud, B quiet, A bass, B bass  15         cut   0.33  0.07
+       A quiet, B loud, A bass, B bass  11    end swap   0.36  0.09
+A quiet, B quiet, A no bass, B no bass  11 centre swap   0.36  0.18
+     A loud, B loud, A bass, B no bass   7 centre swap   0.29  0.00
+     A loud, B loud, A no bass, B bass   5     tension   0.40  0.20
+   A quiet, B quiet, A no bass, B bass   4     tension   0.50  0.25
+ A loud, B quiet, A no bass, B no bass   3     tension   0.67  0.33
+    A quiet, B loud, A bass, B no bass   1    end swap   1.00  1.00
+   A quiet, B quiet, A bass, B no bass   1 centre swap   1.00  1.00
+      A quiet, B quiet, A bass, B bass   1         cut   1.00  1.00
+   overall shares: {'centre swap': 0.36, 'cut': 0.24, 'tension': 0.17, 'end swap': 0.15, 'late swap': 0.08}
+
+median situation per transition type:
+             out_rms_db_8  out_low_db_8  out_mid_db_8  out_high_db_8  out_rms_db_build  out_repeat  out_mids  out_pos  in_rms_db_8  in_low_db_8  in_mid_db_8  in_rms_db_build  in_repeat  in_pos  in_bars_to_body
+signature                                                                                                                                                                                                        
+centre swap          0.31          0.25         -0.71          -0.65              0.01        0.16     -0.24     0.90        -0.00         0.03        -1.06            -0.08       0.14    0.12             0.13
+cut                  0.10          0.03         -0.41          -0.83             -0.01        0.28      0.37     0.92         0.05        -0.02        -0.71             0.05       0.09    0.10             0.13
+end swap             0.03         -0.03         -0.62          -0.71              0.09        0.11      0.37     0.91        -0.03         0.12        -0.72             0.10       0.14    0.11             0.13
+late swap            0.28          0.27         -0.22           0.22             -0.09        0.12     -0.17     0.91        -0.05        -0.00        -1.16            -0.02       0.08    0.12             0.13
+tension              0.16          0.11         -0.49          -0.06              0.01        0.15     -0.20     0.86         0.06         0.22        -1.02             0.02       0.23    0.12             0.13
+
+unseen DJs (120 seams): majority (centre swap) 0.425
+  situation            logistic  acc 0.333  macro-F1 0.169  log-loss 1.697  top-3 hit 0.683
+  situation            GBM       acc 0.383  macro-F1 0.201  log-loss 2.063  top-3 hit 0.733
+  situation + genre    logistic  acc 0.333  macro-F1 0.169  log-loss 1.697  top-3 hit 0.683
+  situation + genre    GBM       acc 0.383  macro-F1 0.201  log-loss 2.063  top-3 hit 0.733
+
+within DJs (177 seams): per-DJ majority 0.531
+  situation + DJ             GBM       acc 0.407  macro-F1 0.280
+  genre + DJ (no situation)  GBM       acc 0.475  macro-F1 0.235

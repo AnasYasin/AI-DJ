@@ -1,4 +1,4 @@
-# AI-DJ, how the system works today (written 2026-10-13, before any of the next changes)
+# AI-DJ, how the system works today (written 2026-10-13, planner section rewritten 2026-10-15)
 
 This page is the system as it runs now. Every stage has the same three parts, in this order: what was planned at the
 start of the project, what is there right now, and what is planned next. Where a stage is a rule, it says rule; where it
@@ -112,66 +112,52 @@ with energy fit and hard vetoes on BPM, key and repeats.
 
 ### What is there now
 
-**Model A, the pair embedding** (`src/models/train_model.py`). Two branches, the 1,280 effnet numbers to 256 and the
-seven scalars to 64, fused to 128 on the unit sphere. The scalars are BPM over 200, the key as sine and cosine on the
-Camelot circle plus its mode, energy, onset over 5, loudness. Loss NT-Xent at temperature 0.07. A positive pair is two
-records played one after the other in a real set; negatives are the rest of a batch of 128, all one genre, plus semi-hard
-negatives found by cosine within the genre every 5 epochs. 50 epochs. `project_tracks()` z-scores the input with
-`models/encoder_norm.npz` and projects every track at load time; the vectors are never stored. Validation adjacency AUC
-0.663; BPM alone gives 0.624, the raw embedding 0.622.
+**The pair model** (`src/models/pair_model.py`, `models/pair_model.pt`, trained 2026-10-14). One model replaces Model A,
+Model B and the GBM edge scorer, which were deleted on 2026-10-14 with the key rules (their description is in
+`docs/notes-archive/system_overview_planner_2026-10-13.md`). It scores how well candidate record B follows record A,
+given the set so far.
 
-**Model B, the sequence model** (`src/models/train_sequence.py`). A causal transformer, 3 layers, 4 heads, width 192,
-feed-forward 384, dropout 0.2, 947k parameters. Each record in the set so far is a token: its Model A vector plus four
-numbers, position in the set, BPM, change in BPM, change in energy. A learned genre token is prefixed. At every position
-the model outputs a 128 vector trained with InfoNCE to match the Model A vector of the record the DJ actually played
-next, against the batch plus 256 random records of the same genre. Windows of up to 24 records, batches of 16 sets. Plus
-17 % MRR over the context-free baseline, which is the last record's own vector.
+- Record encoder, one per record: fully connected 1,305 to 512, batch normalisation, ReLU, dropout 0.5, fully connected
+  512 to 128. The input is the effnet embedding (1,280, unit length, times 8), eight z-scored scalars (BPM, energy mean,
+  loudness, onset, spectral centroid, energy spread, release year, log listeners), 13 z-scored MFCCs and the key as
+  Camelot sine, cosine, mode and an unknown flag.
+- Context vector: the mean of the encoded records of the set so far, the last 16.
+- Pair head: fully connected 799 to 256, ReLU, dropout 0.5, fully connected 256 to 1, over A, B, their product, their
+  absolute difference, 31 z-scored gap features, the context vector and its product with B.
+- Training: softmax ranking loss over the record the DJ played next and 16 random feasible candidates (same genre, BPM
+  within 5 %), AdamW, up to 20 epochs with early stopping on 41 development DJs, 5 seeds averaged. Data is every
+  source's plays from `data/dataset/2026-10-14/`, split by whole DJ.
+- On 58 validation DJs never seen in training, 6,305 pairs, 100 feasible candidates each: AUC 0.876, the true next record
+  in the top 10 for 0.649 of pairs, median rank 5. The raw effnet cosine gives 0.310 in the top 10, the old Model A
+  retrained 0.285, a GBM on rich pair features 0.572. Every model tried is in `PAIRING_EXPERIMENTS.md`.
+- The model is only valid inside the feasible set it was trained on. Given candidates of any BPM it puts far-BPM records
+  first (4.6 % of its top 10 within 5 % BPM, against 46.8 % of the candidates), so the BPM veto is part of the model.
 
-**The GBM, the edge scorer** (`src/models/edge_scorer.py`). sklearn HistGradientBoosting, 300 iterations, learning rate
-0.08, on seven pair features: absolute log BPM ratio, Camelot distance, absolute differences in energy, loudness and
-onset, the raw embedding dot product, the Model A dot product. Positives are consecutive pairs in training sets,
-negatives random same-genre pairs. Validation AUC 0.69.
-
-**The search** (`plan_mix` in `src/models/predict_model.py`). Beam search, width 8. Seeds are the 8 pool records nearest
-the first slot's energy target; no model in the opening record. At each slot every pool record is a candidate. Hard
-vetoes first: absolute log BPM ratio over 0.05, record already used, artist already used, where
-artists are split on &, x, vs, feat and pres so a collaboration blocks the solo artist. Key is not vetoed. A clash, Camelot distance over 2, is allowed on at
-most half the joins and never two in a row (`clash_allowed` in `src/models/key_rules.py`). Then the score:
+**The search** (`plan_mix` in `src/models/predict_model.py`). Beam search, width 8. Seeds are the 8 records nearest the
+first slot's energy target among the slower half of the pool by BPM, because 71 % of real sets open in their slower BPM
+half. No model chooses the opening record. Hard vetoes: absolute log BPM ratio over 0.05, record already used, artist
+already used. There is no key rule. Real sets clash on 58 % of joins and put two clashes in a row in 84 to 90 % of
+mixes, and the pair model sees the Camelot distance itself. The score:
 
 ```
-1.0 x z-score of (Model B output . candidate's Model A vector)
-+ 1.0 x GBM probability
-+ 0.7 x energy fit, 1 - |candidate energy - slot target|, scaled
-+ compat_weight x pair compatibility (the mixer's own measure, section 6)
-+ key term, +0.2 per Camelot step beyond 2 (KEY_WEIGHT -0.2, negated), so clashes are pushed up to the cap
+1.0 x z-score of the pair model logit, standardised within the candidate set
++ 0.7 x energy fit to the slot's target
++ compat_weight x pair compatibility (the mixer's own measure, section 6; 0 by default)
 ```
 
-The weights 1.0, 1.0, 0.7 were set once and never tuned. The beam dedupes on the set of records, so two orders of the
-same six collide and ordering is never compared. The plan is a JSON with six records, each with its slot's
-`energy_target01` (0 to 1, the one the mixer needs) and `target_energy` (absolute, display only).
+The weights 1.0 and 0.7 were never tuned. The beam dedupes on (set of records, last record). Slot repair after a failed
+fetch uses the same score, and at the first slot asks the model how well the second record follows the candidate.
 
-**Training data.** The saved models were trained on 2,834 sets, 29,393 plays, scraped from 1001tracklists, with 15 % of
-sets per genre held out in a split that leaked, because the same records appeared on both sides; the +17 % and the 0.663
-are measured on it. Since 2026-10-13 the training scripts read `data/dataset/<date>/` (every source's plays, 65,513 of
-them, folds by DJ with fold 0 held out); no model has been retrained on it yet.
-
-**Changed since the start.** The key veto came off in September and a soft term remains, after Anas could not hear a
-plus or minus one semitone shift; root readings are right about three in four, mode is unreliable in every detector. On
-7 October it was decided that the chooser trains on both datasets' pairs, since it only needs order and the old set has
-five times the pairs.
+**Heard on 2026-10-15.** Seven chill sets of six records from held audio, one per genre
+(`data/external/ear_test/sets_2026-10-15/`). Anas: track selection is fine. Every set starts too low on energy. The
+chill curve opens at about the pool's 20th energy percentile and stays there; real sets open at the 38th to 53rd
+percentile and sit at the 50th to 56th. The transitions and cue points need work (section 6).
 
 ### Planned next
 
-Step 4: a split by set, by DJ and by record, with the regression-set records excluded. Every number beside three
-baselines, random, popularity, BPM plus key. Metrics: next-record hit at k and MRR for Model B, pair AUC for the GBM and
-Model A, and the share of planned pairs that are adjacent in real sets against chance. Then Model A retrained twice on
-that split, once on the full-audio rows only, once on full plus preview rows with a source column, both scored on the
-same held-out full-audio seams; the higher AUC wins, a tie within 0.02 goes to the simpler. The planner switches encoder
-only if adjacency AUC beats 0.663 and a render is listened to.
-
-Step 8, later: per-DJ profiles (pool and own-music share, tempo, curve shapes, play length per role, move frequencies)
-as planner priors a prompt can name. `dj_profiler.py` and `dj_profiles.json` do not exist yet. Profiles carry the DJ's
-whole distribution, never a median (Anas, 2026-10-12).
+The chill curve's range moved up toward where real sets open, waiting on Anas's numbers. A club or radio setting on the
+request, measured on the mix titles (`TODO.md` item 2). Per-DJ profiles as planner input, after the transition tables
+exist (`TODO.md` item 4). Profiles carry the DJ's whole distribution, never a median (Anas, 2026-10-12).
 
 ## 4. The fetcher
 
@@ -287,6 +273,13 @@ mixer recipe with a distance; fade, melt and wave, and rise and drop, are told a
 signatures have not been checked by ear; 24 clips wait for that.
 
 ### Planned next
+
+**Measured 2026-10-15, before building it** (`TRANSITION_EXPERIMENTS.md`). From the two records' whole-track features
+the transition type is not predictable on unseen DJs: 0.41 accuracy, the same as always guessing the most common type,
+and the mixer's rules match the DJ's real choice on 0.25 of seams. With the DJ known, the DJ's own most common type
+gives 0.51. The state of both records at the cue points (band levels, build-up, repetition, mids) adds nothing in
+techno and a weak signal in house. So the first version is a per-DJ and per-genre table of type shares and recipe
+distributions, with the mixer's rules as the veto. The step as written before that measurement:
 
 Step 6, the transition model. Input per seam: the two records' edge patch vectors pooled over the last bars of the
 outgoing and the first bars of the incoming, their features, DJ and genre. Output: the signature, the overlap in bars,

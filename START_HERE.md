@@ -12,6 +12,7 @@ Detail never lives here.
 | you want | read |
 |---|---|
 | the whole plan, its ten steps, and Anas's decisions in date order | **`PLAN.md`** (Anas writes it; a dated status paragraph is the most anyone else adds) |
+| what is agreed to build next, in order, with the numbers behind each item; how is decided when it starts | **`TODO.md`** |
 | the mixer, the planner, the fetcher, the models, their gotchas, and how sessions work in this repo | **`CLAUDE.md`** (read at the start of every session) |
 | the whole system as it runs today, stage by stage: planned at the start, what is there, planned next | **`SYSTEM_OVERVIEW.md`** (written 2026-10-13, before the next changes) |
 | how to run the seam pipeline, its stages, tables, configs, how to add data, the watch list for a run | **`DATA_PIPELINE.md`** |
@@ -21,6 +22,8 @@ Detail never lives here.
 | Fred again, a separate job: his sources, segments, what is proved | **`FRED_AGAIN_SETS.md`** |
 | track features and embeddings for the seam corpora: the plan, the checks, the numbers as they land | **`EMBEDDINGS.md`** |
 | the DJ data report notebook: what was decided, the chapters, the style, how to build it | **`DJ_DATA_REPORT.md`** |
+| every pairing model tried (which record follows which), what it saw, its numbers on the validation DJs | **`PAIRING_EXPERIMENTS.md`** |
+| what decides the transition type: the tests on the measured seams, the ear test of 2026-10-15, club against radio | **`TRANSITION_EXPERIMENTS.md`** |
 | how to set the VM up, cookies, yt-dlp, the token server, the changing address | **`djdata_package/VM_SETUP.md`** |
 | ssh to the VM whatever its address is today | `scripts/vm/vmssh` |
 | how to run the mixer end to end, the product side | **`README.md`** |
