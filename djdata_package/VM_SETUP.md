@@ -51,7 +51,7 @@ chmod 600 ~/AI-DJ/yt-cookies.txt
 ```
 
 and in `djdata_package/config.yaml` set `download.cookies_file: /home/ubuntu/AI-DJ/yt-cookies.txt`.
-Leave `youtube_player_client` at `default,web_embedded`; the default client fails with cookies
+Leave `youtube_player_client` at `default,web_embedded`; the default client alone fails with cookies
 ("The page needs to be reloaded", yt-dlp issue 17389). Never log in to that Google account elsewhere
 while the run uses the file.
 
@@ -105,7 +105,7 @@ The probe is the one check that can fail for reasons outside the code. Report it
 ## 7. One-mix smoke test
 
 ```
-sed 's#^root: data/djdata#root: data/djdata_smoke#' djdata_package/config.yaml > /tmp/smoke.yaml
+sed 's#^root: data/djdata/raveform#root: data/djdata_smoke#' djdata_package/config.yaml > /tmp/smoke.yaml
 djdata manifest --config /tmp/smoke.yaml
 python - <<'EOF'
 import sqlite3
@@ -131,7 +131,7 @@ Send Anas one message with: the probe summary line, the smoke-test counts and th
 ```
 tmux new -s djdata
 cd ~/AI-DJ && conda activate aidj
-djdata run --config djdata_package/config.yaml 2>&1 | tee -a data/djdata/logs/console.log
+djdata run --config djdata_package/config.yaml 2>&1 | tee -a data/djdata/raveform/logs/console.log
 ```
 
 Detach with Ctrl-b d. Progress prints every minute; `djdata status --config djdata_package/config.yaml`
@@ -143,3 +143,79 @@ works from any other shell. A killed run resumes with the same command.
   seam still needs. After moving them to S3, record it: `djdata archived --config ... <files>`.
 - `djdata export --config djdata_package/config.yaml` can run at any time; it reads finished seams only.
 - Tier 2 is a config change (`run_tiers: [tier1, tier2]`) and the same run command.
+
+## 8. YouTube blocks (learned 2026-09-13)
+
+From a datacenter IP, YouTube blocked every player request with HTTP 403 after about 110 track
+downloads in 11 minutes (4 workers, peak 29 per minute). The block outlived an hour on that IP; the
+same account kept working from a home connection. The runner now handles this:
+
+- Track downloads are paced: one start per `download.min_interval_s` across all workers (20 s).
+- A 403/429/"Sign in" failure puts the item back to pending and pauses all track downloads. A probe
+  request runs every `download.block_wait_s`; downloads resume when it succeeds. Mix downloads
+  from SoundCloud/Mixcloud and seam analysis keep running. The log line is `YouTube block #n`.
+- `data/djdata/raveform/logs/gate.json` holds the download state (`open` or `blocked`, since when, block count);
+  `djdata status` prints it under `downloads`. From the laptop:
+  `ssh aidj cat AI-DJ/data/djdata/raveform/logs/gate.json`.
+- A gate that stays `blocked` almost always means the cookie session is dead (probe gets 403 while
+  the account page redirects to sign-in). Export fresh cookies and replace the file; the next probe
+  reopens the gate. Only when the account page returns 200 and the probe still fails is the IP the
+  problem; then the address must change.
+- A blocked address does not recover on its own (measured 2026-09-13: 85 min, five probes, no lift),
+  and pacing does not avoid the block. Two addresses each served about 100 track downloads and were
+  then refused, one at 10 downloads/min and one at 3, so the limit is a count per address.
+- `download.rotate_ip_on_block: true` makes a blocked gate take a new Elastic IP and probe again:
+  about 10 s, no reboot, so the run keeps its state and tmux survives. Your ssh session to the old
+  address drops, so reconnect on the new one:
+  `aws ec2 describe-instances --profile talhanonstatic --region us-east-1 --instance-ids
+  i-023e6cd5518feff75 --query 'Reservations[].Instances[].PublicIpAddress' --output text`.
+  Needs `pip install boto3` and an instance role. Role `aidj-eip` is attached to the VM and allows
+  only DescribeAddresses, AllocateAddress, AssociateAddress and ReleaseAddress.
+  A dead cookie session looks identical to a blocked address from the probe, so after
+  `download.max_failed_rotations` new addresses in a row fail to help (3), rotation switches off for
+  the rest of the run and the gate only waits. There is no total cap: one would only stall a run whose
+  rotations are working, and the region's Elastic IP quota (5) bounds what can be held at once.
+  `logs/gate.json` carries `rotations`, `failed_rotations` and `rotating`.
+- Reading a failure. `djdata status` prints `failures`: `tracks_failed` (permanent, e.g. "Video
+  unavailable", "duration outside", "Requested format is not available" for one video),
+  `tracks_waiting` (pending with an error: refused by YouTube while everyone was refused, retried
+  when the gate reopens), `mixes_failed`, `seams_failed` ("track: ..." or "mix: ..."). A refusal
+  that the probe does not share is treated as that item's own failure, so one age-restricted or
+  region-locked video cannot pause the run.
+- Tracks that failed before this existed are re-queued with
+  `djdata retry --config djdata_package/config.yaml --match "HTTP Error 403"` (also for
+  `"Requested format is not available"` and `"Netscape"`), then restart `djdata run`.
+- Downloads that carry cookies are serialised by one lock, so the account has exactly one cookie
+  rotation chain. Every authenticated request rotates the cookies on YouTube's side; a client that then
+  presents the old values is treated as a stolen session and the account is logged out everywhere
+  (HTTP 403 on every player request, from any IP; yt-dlp warns "cookies are no longer valid ...
+  rotated"). Two sessions died this way on 2026-09-13/14: five parallel writers, then two "login
+  checks" run on copies of the file.
+- Therefore, after the export, NOTHING touches the cookie file except `djdata run` on the VM. No
+  copies, no `yt-dlp --cookies` test, no `curl -b` check, no second machine, and the account is never
+  opened in a browser again. The only allowed checks are passive: the header's second line must be
+  the extension's (`# https://curl.haxx.se/rfc/cookie_spec.html`; a file that says "generated by
+  yt-dlp" has been used already), and `grep -c LOGIN_INFO` must print 1.
+- Whether the session is alive is answered by the run itself: `logs/gate.json` stays `open` and
+  `djdata status` shows tracks turning ready. If the gate closes within the first minutes, the session
+  is dead: export again (new incognito login, robots.txt only, export, close the window) and replace
+  the file; the next probe reopens the gate.
+
+## YouTube from the VM, since 2026-09-24
+
+Two things must hold or every long upload returns HTTP 403 on the only format offered:
+
+1. The PO-token server must be running: `tmux new -d -s pot "cd ~/bgutil-ytdlp-pot-provider/server/node_modules && PATH=$HOME/.deno/bin:$PATH deno run --allow-env --allow-net --allow-ffi=. --allow-read=. ../src/main.ts"`.
+   The plugin `bgutil-ytdlp-pot-provider` is installed in the aidj env; `yt-dlp -v` must list `bgutil:http-2.0.0`.
+2. The address must not be one YouTube has tied to the SABR-only experiment, and an address is good for about
+   130 downloads before YouTube refuses it outright. The run's gate rotates the Elastic IP by itself on a block.
+   To test by hand: `yt-dlp -F` on a long upload; only format 18 showing means rotate (`djdata.rotate.rotate()`).
+
+## The address changes. Use `scripts/vm/vmssh`
+
+Every rotation gives the instance a new public IP and releases the old one, so a fixed `HostName` in
+`~/.ssh/config` goes stale mid-run. `scripts/vm/vmssh` looks the current IP up through `aws ec2 describe-instances`,
+rewrites the `aidj` entry, and then runs ssh with whatever arguments it was given. Use it in place of `ssh aidj`
+for anything that might run across a rotation. `scripts/vm/stop_run.sh`, `start_run.sh` and `watch_djrun3.sh` are
+the pieces used to run the fetch unattended (the watcher judges idle by the last "track done" event, not by
+the log file's age, which the run's progress line keeps fresh).

@@ -8,8 +8,12 @@ sys.path.insert(0, ".")
 from src.audio.audio_mixer import SR, _prepare_track, measure_seam_offset  # noqa: E402
 
 target = 128.5
-A = _prepare_track("data/external/transition_tests/tracks/4f33cf8656f2.webm", target, 32, 64)
-B = _prepare_track("data/external/transition_tests/tracks/967eeec2621a.webm", target, 32, 64)
+A = _prepare_track(
+    "data/external/ear_test/transition_types/tracks/4f33cf8656f2.webm", target, 32, 64
+)
+B = _prepare_track(
+    "data/external/ear_test/transition_types/tracks/967eeec2621a.webm", target, 32, 64
+)
 bar = 4 * 60 / target
 n_bars = 64
 a0 = int(A["bars"][A["cue_out_bar"]] * SR)

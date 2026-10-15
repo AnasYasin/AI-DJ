@@ -1,0 +1,69 @@
+chapter,item,finding,number,unit,filter,n,date
+1,1,"459 DJs, 3,892 mixes, 6,731 transitions measured on the audio",6731.0,transitions,"usable, measured",3892,2026-10-12
+1,2,"1,701 radio or podcast sets and 1,713 club or festival sets; 478 could not be placed from the title",478.0,mixes of unknown setting,all mixes,3892,2026-10-12
+1,3,"Adam Beyer has the most sets in the data, 226; half of the 459 DJs have only one",226.0,mixes,all mixes,459,2026-10-12
+1,4,100% of mixes fall in the seven genres; the rest is 'other' and is not charted,0.0,% of mixes in 'other',all mixes,3892,2026-10-12
+2,1,91% of tracks are played by one DJ only; 1 track is played by ten or more,91.5,% one DJ,all tracks,45422,2026-10-12
+2,2,Adam Beyer and Carl Cox share 98 tracks,98.0,tracks,DJs with 25+ sets,35,2026-10-12
+2,2,Amelie Lens and Charlotte de Witte share 89 tracks,89.0,tracks,DJs with 25+ sets,35,2026-10-12
+2,2,Aly & Fila and Paul van Dyk share 89 tracks,89.0,tracks,DJs with 25+ sets,35,2026-10-12
+2,2,Adam Beyer and Charlotte de Witte share 83 tracks,83.0,tracks,DJs with 25+ sets,35,2026-10-12
+2,3,"techno: the most played track is Age Of Love - The Age Of Love (Charlotte de Witte & Enrico Sangiuliano Remix), in 41 of 587 sets, by 1 DJs",41.0,sets,techno,587,2026-10-12
+2,3,"tech house: the most played track is FISHER - Losing It, in 50 of 840 sets, by 2 DJs",50.0,sets,tech house,840,2026-10-12
+2,3,"house: the most played track is Fred again.. - ft. BIA - ICEY.., in 5 of 210 sets, by 1 DJs",5.0,sets,house,210,2026-10-12
+2,3,"trance: the most played track is John O'Callaghan - One Special Particle, in 32 of 649 sets, by 2 DJs",32.0,sets,trance,649,2026-10-12
+2,3,"drum and bass: the most played track is Pendulum - Witchcraft, in 25 of 651 sets, by 1 DJs",25.0,sets,drum and bass,651,2026-10-12
+2,3,"melodic house: the most played track is Fred again.. & Swedish House Mafia - ft. Future - Turn On The Lights Again.. (Anyma Remix), in 43 of 525 sets, by 3 DJs",43.0,sets,melodic house,525,2026-10-12
+2,3,"afro house: the most played track is Shimza & AR/CO & Kasango - Fire Fire, in 21 of 414 sets, by 2 DJs",21.0,sets,afro house,414,2026-10-12
+3,3,"in club sets 43% of plays repeat a track the DJ played before, on radio 18%",42.5,"% repeats, club",DJs with 25+ sets,49567,2026-10-12
+3,2,"techno: 23% of repeated tracks are still played a year after their first set, 12% after two",22.7,% over 12 months,tracks in 2+ dated sets,1528,2026-10-12
+3,2,"tech house: 28% of repeated tracks are still played a year after their first set, 18% after two",28.3,% over 12 months,tracks in 2+ dated sets,1920,2026-10-12
+3,2,"house: 22% of repeated tracks are still played a year after their first set, 17% after two",22.1,% over 12 months,tracks in 2+ dated sets,226,2026-10-12
+3,2,"trance: 21% of repeated tracks are still played a year after their first set, 14% after two",20.9,% over 12 months,tracks in 2+ dated sets,1891,2026-10-12
+3,2,"drum and bass: 33% of repeated tracks are still played a year after their first set, 21% after two",33.1,% over 12 months,tracks in 2+ dated sets,1503,2026-10-12
+3,2,"melodic house: 29% of repeated tracks are still played a year after their first set, 16% after two",29.3,% over 12 months,tracks in 2+ dated sets,1101,2026-10-12
+3,2,"afro house: 29% of repeated tracks are still played a year after their first set, 18% after two",29.5,% over 12 months,tracks in 2+ dated sets,912,2026-10-12
+4,7,"techno: played tempo 126 BPM in 2016, 145 in 2026",19.0,BPM change,"measured plays, years with 30+",1446,2026-10-12
+4,7,"tech house: played tempo 121 BPM in 2012, 130 in 2025",8.9,BPM change,"measured plays, years with 30+",3998,2026-10-12
+4,7,"house: played tempo 122 BPM in 2015, 126 in 2026",3.6,BPM change,"measured plays, years with 30+",1541,2026-10-12
+4,7,"trance: played tempo 133 BPM in 2014, 136 in 2017",2.8,BPM change,"measured plays, years with 30+",1284,2026-10-12
+3,4,Ben Böhmer: 69% of the tracks in their sets are their own,68.5,% own,DJs with 25+ sets,42,2026-10-12
+3,4,Chase & Status: 57% of the tracks in their sets are their own,57.3,% own,DJs with 25+ sets,43,2026-10-12
+3,4,RÜFÜS DU SOL: 53% of the tracks in their sets are their own,53.4,% own,DJs with 25+ sets,59,2026-10-12
+3,4,Anyma: 47% of the tracks in their sets are their own,47.4,% own,DJs with 25+ sets,52,2026-10-12
+3,4,Pendulum: 46% of the tracks in their sets are their own,46.2,% own,DJs with 25+ sets,58,2026-10-12
+5,9,"Amelie Lens: 41% of plays are artists under 10 thousand listeners, 1% over a million",40.8,% small artists,plays with a known artist,2383,2026-10-12
+5,9,"Charlotte de Witte: 32% of plays are artists under 10 thousand listeners, 1% over a million",31.6,% small artists,plays with a known artist,2592,2026-10-12
+5,9,"Solomun: 24% of plays are artists under 10 thousand listeners, 7% over a million",24.2,% small artists,plays with a known artist,2184,2026-10-12
+5,9,"Black Coffee: 11% of plays are artists under 10 thousand listeners, 14% over a million",10.9,% small artists,plays with a known artist,303,2026-10-12
+5,9,"Claptone: 8% of plays are artists under 10 thousand listeners, 4% over a million",8.2,% small artists,plays with a known artist,280,2026-10-12
+5,9,"Adam Beyer: 15% of plays are artists under 10 thousand listeners, 4% over a million",15.5,% small artists,plays with a known artist,3795,2026-10-12
+5,9,"Armin van Buuren: 3% of plays are artists under 10 thousand listeners, 52% over a million",2.6,% small artists,plays with a known artist,544,2026-10-12
+5,9,"DJ Tennis: 16% of plays are artists under 10 thousand listeners, 9% over a million",15.6,% small artists,plays with a known artist,623,2026-10-12
+5,9,"Fred again..: 1% of plays are artists under 10 thousand listeners, 87% over a million",0.6,% small artists,plays with a known artist,156,2026-10-12
+5,12,"Amelie Lens: the track most played is Amelie Lens - Feel It, in 23 of 149 sets",23.0,sets,Amelie Lens,149,2026-10-12
+5,12,"Charlotte de Witte: the track most played is Age Of Love - The Age Of Love (Charlotte de Witte & Enrico Sangiuliano Remix), in 41 of 167 sets",41.0,sets,Charlotte de Witte,167,2026-10-12
+5,12,"Solomun: the track most played is Foals - Late Night (Solomun Remix), in 18 of 136 sets",18.0,sets,Solomun,136,2026-10-12
+5,12,"Black Coffee: the track most played is &ME & Black Coffee - The Rapture Pt.III, in 12 of 78 sets",12.0,sets,Black Coffee,78,2026-10-12
+5,12,"Claptone: the track most played is Senzala - Sunset, in 2 of 55 sets",2.0,sets,Claptone,55,2026-10-12
+5,12,"Adam Beyer: the track most played is Sharam - PATT (Party All The Time) (Adam Beyer & Layton Giordani & Green Velvet Remix), in 15 of 226 sets",15.0,sets,Adam Beyer,226,2026-10-12
+5,12,"Armin van Buuren: the track most played is Armin van Buuren & Richard Durand & Dicosis - Always You (ASOT 2026 ELEVATION Anthem), in 13 of 67 sets",13.0,sets,Armin van Buuren,67,2026-10-12
+5,12,"DJ Tennis: the track most played is DJ Tennis - Atlanta, in 5 of 46 sets",5.0,sets,DJ Tennis,46,2026-10-12
+5,12,"Fred again..: the track most played is Fred again.. - ft. BIA - ICEY.., in 5 of 12 sets",5.0,sets,Fred again..,12,2026-10-12
+2,1,"Amelie Lens: slam in 48% of transitions, +26 points over all DJs",48.1,% slam,"typed, placement checked, cast, nearest recipe",241,2026-10-12
+2,1,"Charlotte de Witte: melt in 31% of transitions, +16 points over all DJs",31.0,% melt,"typed, placement checked, cast, nearest recipe",42,2026-10-12
+2,1,"Solomun: tension in 63% of transitions, +43 points over all DJs",63.3,% tension,"typed, placement checked, cast, nearest recipe",447,2026-10-12
+2,1,"Black Coffee: tension in 58% of transitions, +38 points over all DJs",58.3,% tension,"typed, placement checked, cast, nearest recipe",103,2026-10-12
+2,1,"Claptone: rise in 25% of transitions, +13 points over all DJs",24.6,% rise,"typed, placement checked, cast, nearest recipe",260,2026-10-12
+2,1,"Adam Beyer: tension in 37% of transitions, +17 points over all DJs",36.9,% tension,"typed, placement checked, cast, nearest recipe",498,2026-10-12
+2,1,"Armin van Buuren: slam in 35% of transitions, +14 points over all DJs",35.2,% slam,"typed, placement checked, cast, nearest recipe",71,2026-10-12
+2,1,"DJ Tennis: tension in 35% of transitions, +15 points over all DJs",35.0,% tension,"typed, placement checked, cast, nearest recipe",100,2026-10-12
+2,1,"Fred again..: slam in 36% of transitions, +15 points over all DJs",36.4,% slam,"typed, placement checked, cast, nearest recipe",33,2026-10-12
+2,3,"techno: 58% of transitions overlap 32 bars or more, 11% 64 or more",58.3,% over 32 bars,"overlapping transitions, measured",631,2026-10-12
+2,3,"tech house: 44% of transitions overlap 32 bars or more, 9% 64 or more",43.5,% over 32 bars,"overlapping transitions, measured",1639,2026-10-12
+2,3,"house: 37% of transitions overlap 32 bars or more, 3% 64 or more",36.9,% over 32 bars,"overlapping transitions, measured",626,2026-10-12
+2,3,"trance: 12% of transitions overlap 32 bars or more, 0% 64 or more",12.4,% over 32 bars,"overlapping transitions, measured",372,2026-10-12
+2,3,"drum and bass: 60% of transitions overlap 32 bars or more, 18% 64 or more",60.2,% over 32 bars,"overlapping transitions, measured",603,2026-10-12
+2,3,"melodic house: 15% of transitions overlap 32 bars or more, 3% 64 or more",15.3,% over 32 bars,"overlapping transitions, measured",72,2026-10-12
+2,3,"afro house: 8% of transitions overlap 32 bars or more, 1% 64 or more",7.5,% over 32 bars,"overlapping transitions, measured",80,2026-10-12
+2,4,the longest blend in the data is 216 bars by Black Coffee,216.0,bars,"blends, measured",4023,2026-10-12

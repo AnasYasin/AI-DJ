@@ -1,10 +1,16 @@
-"""The resumable runner: one mix worker, N track workers, M seam analysis processes.
+"""The resumable runner: mix workers, N track workers, M seam analysis processes, one download gate.
 
 The mix worker waits while `max_pending_mixes` downloaded mixes still have unanalysed seams, so the
 disk never fills with windows nobody is ready to use. Track workers take tracks in the order their
 mixes landed. Seam workers take any seam whose window and both tracks exist, so analysis starts as
 soon as the first mix's first pair of tracks is on disk. Every claim is an atomic sqlite update,
-so a killed run resumes by restarting the command.
+so a killed run resumes by restarting the command. Track downloads are paced through the Gate; a
+YouTube block (fetch.yt.Blocked) puts the item back to pending and closes the gate until a probe
+succeeds, so a block costs time, never a track.
+
+`workers.seams: 0` is download-only: no analysis pool, the mix worker does not wait for analysis,
+and the run ends when every window and track of the run tiers is on disk (or failed). Seams stay
+`ready` and a later run with seam workers analyses them.
 """
 
 from concurrent.futures import ProcessPoolExecutor
@@ -18,6 +24,9 @@ import time
 from .config import Config
 from .fetch import mix as fetch_mix
 from .fetch import track as fetch_track
+from .fetch.yt import Blocked, probe
+from .gate import Gate
+from .rotate import rotate as rotate_ip
 from .seam.analyse import analyse
 from .seam.coarse import fingerprint_anchors
 from .state import State
@@ -26,14 +35,24 @@ log = logging.getLogger("djdata.run")
 POLL_S = 3.0
 
 
-def _mix_worker(cfg: Config, state: State, stop: threading.Event):
+def _mix_worker(cfg: Config, state: State, stop: threading.Event, gate: Gate):
     name = threading.current_thread().name
     tiers = cfg.run_tiers
+    download_only = cfg.workers["seams"] == 0
+    # `download.fetch_only` stops after the audio is on disk: no locate, no windows. Use it while the
+    # window method is still being settled, so a method that later changes has not already cut hundreds
+    # of windows the wrong way. The mix is kept, so locate and cutting run later without re-downloading
+    # (Anas, 2026-09-20).
+    fetch_only = bool(cfg.download.get("fetch_only"))
+    # 1001tracklists: the tracks must be on disk before a mix can be cut, because the window position is
+    # found by fingerprinting them inside the mix. Raveform carries the alignment, so it cuts first.
+    tracks_first = cfg.source == "tracklists"
     while not stop.is_set():
-        if state.pending_unanalysed_mixes(tiers) >= cfg.workers["max_pending_mixes"]:
+        if not download_only and state.pending_unanalysed_mixes(tiers) >= cfg.workers["max_pending_mixes"]:
             time.sleep(POLL_S)
             continue
-        mix = state.claim_mix(tiers, name)
+        mix = (state.claim_mix_with_tracks_settled(tiers, name) if tracks_first
+               else state.claim_mix(tiers, name))
         if mix is None:
             time.sleep(POLL_S)
             continue
@@ -41,9 +60,25 @@ def _mix_worker(cfg: Config, state: State, stop: threading.Event):
         try:
             if not mix["url"]:
                 raise RuntimeError("no audio url (run media-links first)")
+            if fetch_only:
+                full = fetch_mix.download_full(cfg, mix["url"], cfg.dirs["mixes_tmp"] / mix["mix_id"])
+                state.set_mix(mix["mix_id"], "downloaded", path=str(full))
+                size_mb = full.stat().st_size / 1e6 if full.exists() else 0.0
+                log.info("mix fetched %s: %.0f MB in %.1fs, no windows cut",
+                         mix["mix_id"], size_mb, time.time() - t0)
+                continue
             n = fetch_mix.process_mix(cfg, state, mix)
             state.set_mix(mix["mix_id"], "windows_ready")
             log.info("mix done %s: %d windows in %.1fs", mix["mix_id"], n, time.time() - t0)
+        except Blocked as e:
+            if gate.blocked(str(e)):
+                state.set_mix(mix["mix_id"], "pending", error=str(e)[:500])
+                gate.wait_open()
+            else:
+                state.set_mix(mix["mix_id"], "failed", error=str(e)[:500])
+                for s in state.seams_of_mix(mix["mix_id"]):
+                    state.set_seam(s["seam_id"], "failed", error=f"mix: {str(e)[:200]}")
+                log.error("mix FAILED %s: refused while the probe passed: %s", mix["mix_id"], e)
         except Exception as e:  # one bad mix must not stop the run; its seams are marked with the reason
             state.set_mix(mix["mix_id"], "failed", error=str(e)[:500])
             for s in state.seams_of_mix(mix["mix_id"]):
@@ -51,19 +86,33 @@ def _mix_worker(cfg: Config, state: State, stop: threading.Event):
             log.error("mix FAILED %s after %.1fs: %s", mix["mix_id"], time.time() - t0, e)
 
 
-def _track_worker(cfg: Config, state: State, stop: threading.Event):
+def _track_worker(cfg: Config, state: State, stop: threading.Event, gate: Gate):
     name = threading.current_thread().name
     tiers = cfg.run_tiers
     while not stop.is_set():
-        track = state.claim_track(tiers, name)
+        gate.wait_open()
+        if cfg.download.get("fetch_all_pending"):
+            track = state.claim_any_pending_track(name)
+        else:
+            track = (state.claim_track_before_mixes(tiers, name) if cfg.source == "tracklists"
+                     else state.claim_track(tiers, name))
         if track is None:
             time.sleep(POLL_S)
             continue
+        gate.pace()
         t0 = time.time()
         try:
-            path, dur = fetch_track.fetch(cfg, track)
-            state.set_track(track["track_id"], "ready", path=str(path), duration=dur)
+            path, dur, url = fetch_track.fetch(cfg, track)
+            state.set_track(track["track_id"], "ready", path=str(path), duration=dur, url=url)
             log.info("track done %s (%.0fs audio) in %.1fs", track["track_id"], dur, time.time() - t0)
+        except Blocked as e:
+            if gate.blocked(str(e)):
+                state.set_track(track["track_id"], "pending", error=str(e)[:500])
+                log.warning("track %s blocked, back to pending: %s", track["track_id"], e)
+            else:
+                state.set_track(track["track_id"], "failed", error=str(e)[:500])
+                log.error("track FAILED %s: refused while the probe passed: %s", track["track_id"], e)
+                _fail_seams_of_track(state, track["track_id"], str(e))
         except Exception as e:
             state.set_track(track["track_id"], "failed", error=str(e)[:500])
             log.error("track FAILED %s after %.1fs: %s", track["track_id"], time.time() - t0, e)
@@ -137,26 +186,40 @@ def run(cfg: Config) -> dict:
     tiers = cfg.run_tiers
     log.info("run start: tiers %s, workers %s, counts %s", tiers, cfg.workers, state.counts(tiers))
     stop = threading.Event()
-    threads = [threading.Thread(target=_mix_worker, args=(cfg, state, stop), name=f"mix-{i}", daemon=True)
+    rotating = cfg.download.get("rotate_ip_on_block")
+    gate = Gate(cfg.download["min_interval_s"], cfg.download["block_wait_s"],
+                lambda: probe(cfg, cfg.dirs["tracks"]), stop, status_path=cfg.dirs["logs"] / "gate.json",
+                rotate=rotate_ip if rotating else None,
+                max_failed_rotations=cfg.download.get("max_failed_rotations", 3))
+    threads = [threading.Thread(target=_mix_worker, args=(cfg, state, stop, gate), name=f"mix-{i}", daemon=True)
                for i in range(cfg.workers["mix"])]
-    threads += [threading.Thread(target=_track_worker, args=(cfg, state, stop), name=f"track-{i}", daemon=True)
+    threads += [threading.Thread(target=_track_worker, args=(cfg, state, stop, gate), name=f"track-{i}", daemon=True)
                 for i in range(cfg.workers["tracks"])]
-    sched = threading.Thread(target=_seam_scheduler, args=(cfg, state, stop), name="seam-sched", daemon=True)
+    download_only = cfg.workers["seams"] == 0
+    sched = None if download_only else threading.Thread(target=_seam_scheduler, args=(cfg, state, stop), name="seam-sched", daemon=True)
     for t in threads:
         t.start()
-    sched.start()
+    if sched:
+        sched.start()
+    work_left = state.download_work_left if download_only else state.work_left
     last = 0.0
     try:
-        while state.work_left(tiers):
+        while work_left(tiers):
             time.sleep(POLL_S)
             if time.time() - last > 60:
-                log.info("progress %s", state.counts(tiers))
+                counts = state.counts(tiers)
+                log.info("PROGRESS tracks %s | mixes %s | seams %s | blocks %d rotations %d",
+                         counts["tracks"], counts["mixes"], counts["seams"], gate.blocks, gate.rotations)
                 last = time.time()
     except KeyboardInterrupt:
         log.warning("interrupted; claimed items are released on the next start")
     finally:
         stop.set()
-        sched.join(timeout=600)
+        if sched:
+            sched.join(timeout=600)
     counts = state.counts(tiers)
+    counts["youtube_blocks"] = gate.blocks
+    counts["ip_rotations"] = gate.rotations
+    counts["failed_rotations"] = gate.failed_rotations
     log.info("run end: %s", counts)
     return counts

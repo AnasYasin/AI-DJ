@@ -1,0 +1,25 @@
+set,model,pairs,AUC,hit@10,MRR,median rank
+all validation pairs,random,6297,0.503,0.107,0.055,49
+all validation pairs,bpm closeness,6297,0.446,0.222,0.184,45
+all validation pairs,key closeness,6297,0.545,0.211,0.141,39
+all validation pairs,popularity,6297,0.243,0.124,0.061,82
+all validation pairs,compat formula,6297,0.543,0.166,0.082,43
+all validation pairs,raw effnet cosine,6297,0.614,0.31,0.151,24
+all validation pairs,Model A cosine (saved encoder),6297,0.611,0.285,0.145,26
+all validation pairs,"crate context (mean of set so far, raw cosine)",6297,0.655,0.343,0.164,20
+all validation pairs,"GBM, 6 pair features (old GBM minus Model A)",6297,0.795,0.521,0.379,9
+all validation pairs,"GBM, rich pair features",6297,0.818,0.572,0.417,7
+all validation pairs,"two-tower MLP (ReLU), raw effnet + scalars",6297,0.64,0.27,0.131,26
+all validation pairs,Model B (context transformer),6297,,0.181,0.083,52
+measured sources only,random,2594,0.509,0.099,0.05,51
+measured sources only,bpm closeness,2594,0.521,0.168,0.095,41
+measured sources only,key closeness,2594,0.544,0.216,0.137,38
+measured sources only,popularity,2594,0.226,0.14,0.058,84
+measured sources only,compat formula,2594,0.601,0.199,0.094,35
+measured sources only,raw effnet cosine,2594,0.678,0.39,0.186,16
+measured sources only,Model A cosine (saved encoder),2594,0.689,0.375,0.188,17
+measured sources only,"crate context (mean of set so far, raw cosine)",2594,0.7,0.396,0.176,15
+measured sources only,"GBM, 6 pair features (old GBM minus Model A)",2594,0.801,0.505,0.321,10
+measured sources only,"GBM, rich pair features",2594,0.837,0.567,0.356,8
+measured sources only,"two-tower MLP (ReLU), raw effnet + scalars",2594,0.69,0.307,0.147,21
+measured sources only,Model B (context transformer),2594,,0.214,0.094,43

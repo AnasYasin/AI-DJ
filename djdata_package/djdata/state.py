@@ -11,7 +11,9 @@ the move so nothing looks for the file again.
 """
 
 import json
+import logging
 from pathlib import Path
+import re
 import sqlite3
 import threading
 import time
@@ -30,6 +32,8 @@ CREATE TABLE IF NOT EXISTS seams (
 CREATE INDEX IF NOT EXISTS seams_mix ON seams(mix_id);
 CREATE INDEX IF NOT EXISTS seams_status ON seams(status);
 """
+
+log = logging.getLogger("djdata.state")
 
 
 class State:
@@ -95,6 +99,67 @@ class State:
         c.execute("COMMIT")
         return dict(row) if row else None
 
+    def claim_track_before_mixes(self, tiers: list, worker: str):
+        """Tracks-first order (the 1001tracklists source): a track is claimable as soon as a seam of the
+        run tiers needs it, whether or not its mix has been downloaded. That source cannot cut a window
+        until the tracks exist, because the window position is found by fingerprinting them in the mix."""
+        c = self._conn()
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute(
+            "SELECT t.* FROM tracks t WHERE t.status='pending' AND EXISTS ("
+            "  SELECT 1 FROM seams s WHERE (s.a=t.track_id OR s.b=t.track_id) AND s.tier IN (%s)"
+            "  AND s.status NOT IN ('done','failed')) ORDER BY t.updated LIMIT 1"
+            % ",".join("?" * len(tiers)), tiers).fetchone()
+        if row:
+            c.execute("UPDATE tracks SET status='downloading', worker=?, updated=? WHERE track_id=?",
+                      (worker, time.time(), row["track_id"]))
+        c.execute("COMMIT")
+        return dict(row) if row else None
+
+    def claim_any_pending_track(self, worker: str):
+        """Fetch-only mode with `download.fetch_all_pending`: every pending track is claimable, whatever its
+        seams say. Added 2026-09-24 when 250 tracks sat pending forever: 112 behind seams marked failed by
+        an earlier run, 121 in deferred untimed mixes, 17 with no seam yet."""
+        c = self._conn()
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT * FROM tracks WHERE status='pending' ORDER BY updated LIMIT 1").fetchone()
+        if row:
+            c.execute("UPDATE tracks SET status='downloading', worker=?, updated=? WHERE track_id=?",
+                      (worker, time.time(), row["track_id"]))
+        c.execute("COMMIT")
+        return dict(row) if row else None
+
+    def claim_mix_with_tracks_settled(self, tiers: list, worker: str):
+        """Tracks-first order: a mix is claimable once none of its tracks is still queued, so the locate
+        stage sees every track the DJ played that we were able to fetch.
+
+        A mix with no audio url yet is left alone rather than failed. For the 1001tracklists source the url
+        is found by searching, and the ones that could not be resolved from names are meant to be settled
+        later, against the tracks this run is fetching; failing them here would take their seams down with
+        them (Anas, 2026-09-19)."""
+        c = self._conn()
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute(
+            "SELECT m.* FROM mixes m WHERE m.status='pending' AND m.url IS NOT NULL"
+            " AND EXISTS (SELECT 1 FROM seams s WHERE s.mix_id=m.mix_id AND s.tier IN ({q}))"
+            " AND NOT EXISTS ("
+            "   SELECT 1 FROM seams s JOIN tracks t ON (t.track_id=s.a OR t.track_id=s.b)"
+            "   WHERE s.mix_id=m.mix_id AND s.tier IN ({q}) AND t.status IN ('pending','downloading'))"
+            " ORDER BY m.updated LIMIT 1".format(q=",".join("?" * len(tiers))), tiers + tiers).fetchone()
+        if row:
+            c.execute("UPDATE mixes SET status='downloading', worker=?, updated=? WHERE mix_id=?",
+                      (worker, time.time(), row["mix_id"]))
+        c.execute("COMMIT")
+        return dict(row) if row else None
+
+    def track(self, track_id: str):
+        row = self._conn().execute("SELECT * FROM tracks WHERE track_id=?", (track_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_seam_coarse(self, seam_id: str, coarse: dict):
+        self._conn().execute("UPDATE seams SET coarse=?, updated=? WHERE seam_id=?",
+                             (json.dumps(coarse), time.time(), seam_id))
+
     def claim_seam(self, tiers: list, worker: str):
         """Next seam whose window is cut and both tracks are on disk."""
         c = self._conn()
@@ -115,15 +180,27 @@ class State:
         self._conn().execute("UPDATE mixes SET status=?, path=COALESCE(?,path), error=?, updated=? WHERE mix_id=?",
                              (status, path, error, time.time(), mix_id))
 
-    def set_track(self, track_id, status, path=None, error=None, duration=None):
+    def set_track(self, track_id, status, path=None, error=None, duration=None, url=None):
         self._conn().execute(
-            "UPDATE tracks SET status=?, path=COALESCE(?,path), error=?, duration=COALESCE(?,duration), updated=? WHERE track_id=?",
-            (status, path, error, duration, time.time(), track_id))
+            "UPDATE tracks SET status=?, path=COALESCE(?,path), error=?, duration=COALESCE(?,duration),"
+            " url=COALESCE(?,url), updated=? WHERE track_id=?",
+            (status, path, error, duration, url, time.time(), track_id))
 
     def set_seam(self, seam_id, status, window_path=None, error=None):
         self._conn().execute(
             "UPDATE seams SET status=?, window_path=COALESCE(?,window_path), error=?, updated=? WHERE seam_id=?",
             (status, window_path, error, time.time(), seam_id))
+
+
+    def _requeue_mixes_owing_windows(self):
+        """A seam can be pending with no window when it was failed at the moment its mix was cut: the
+        mix worker only cuts windows for pending seams, and the mix audio is deleted straight after.
+        Nothing would ever make that window, so the run spins on a seam it cannot finish (2026-09-14,
+        4 seams, 15 idle minutes before it was noticed). Send the mix back for another pass."""
+        return self._conn().execute(
+            "UPDATE mixes SET status='pending', updated=? WHERE status='windows_ready' AND EXISTS ("
+            " SELECT 1 FROM seams s WHERE s.mix_id=mixes.mix_id AND s.status='pending' AND s.window_path IS NULL)",
+            (time.time(),)).rowcount
 
     def seams_of_mix(self, mix_id) -> list[dict]:
         return [dict(r) for r in self._conn().execute("SELECT * FROM seams WHERE mix_id=?", (mix_id,))]
@@ -134,6 +211,26 @@ class State:
         c.execute("UPDATE mixes SET status='pending' WHERE status='downloading'")
         c.execute("UPDATE tracks SET status='pending' WHERE status='downloading'")
         c.execute("UPDATE seams SET status='ready' WHERE status='analysing'")
+        n = self._requeue_mixes_owing_windows()
+        if n:
+            log.warning("%d mix(es) re-queued: they owe a window to a seam that was re-queued after they were cut", n)
+
+    def retry_tracks(self, match: str) -> dict:
+        """Failed tracks whose error contains `match` go back to pending, and the seams they failed
+        go back to ready (window cut) or pending, unless the seam's other track is failed too."""
+        c = self._conn()
+        like = f"%{match}%"
+        c.execute("BEGIN IMMEDIATE")
+        n_tracks = c.execute("UPDATE tracks SET status='pending', error=NULL, updated=? WHERE status='failed' AND error LIKE ?",
+                             (time.time(), like)).rowcount
+        n_seams = c.execute(
+            "UPDATE seams SET status=CASE WHEN window_path IS NULL THEN 'pending' ELSE 'ready' END, error=NULL, updated=?"
+            " WHERE status='failed' AND error LIKE ? AND NOT EXISTS ("
+            "  SELECT 1 FROM tracks t WHERE t.track_id IN (seams.a, seams.b) AND t.status='failed')",
+            (time.time(), "track: " + like)).rowcount
+        c.execute("COMMIT")
+        n_mixes = self._requeue_mixes_owing_windows()
+        return {"tracks": n_tracks, "seams": n_seams, "mixes": n_mixes}
 
     # ── queries ─────────────────────────────────────────────────────────────────
     def counts(self, tiers: list | None = None) -> dict:
@@ -148,6 +245,30 @@ class State:
             out[table] = {r["status"]: r["n"] for r in rows}
         return out
 
+    def failure_summary(self, tiers: list, top: int = 8) -> dict:
+        """Failed and waiting items grouped by error text (ids stripped), most common first.
+        `waiting` = pending tracks/mixes that carry an error: refused by YouTube, retried when the gate reopens."""
+        c = self._conn()
+        q = ",".join("?" * len(tiers))
+
+        def bucket(err):
+            err = re.sub(r"\[youtube\] [\w-]+: ", "[youtube] ", err or "")
+            err = re.sub(r"\bmix\d+\b", "mix", err)
+            return err[:90]
+
+        def group(rows):
+            counts = {}
+            for (e,) in rows:
+                counts[bucket(e)] = counts.get(bucket(e), 0) + 1
+            return dict(sorted(counts.items(), key=lambda kv: -kv[1])[:top])
+
+        return {
+            "tracks_failed": group(c.execute("SELECT error FROM tracks WHERE status='failed'")),
+            "tracks_waiting": group(c.execute("SELECT error FROM tracks WHERE status='pending' AND error IS NOT NULL")),
+            "mixes_failed": group(c.execute("SELECT error FROM mixes WHERE status='failed'")),
+            "seams_failed": group(c.execute("SELECT error FROM seams WHERE status='failed' AND tier IN (%s)" % q, tiers)),
+        }
+
     def pending_unanalysed_mixes(self, tiers: list) -> int:
         """Mixes downloaded whose seams (in the run tiers) are not all finished. Gates the mix worker."""
         return self._conn().execute(
@@ -160,6 +281,28 @@ class State:
         q = ",".join("?" * len(tiers))
         seams = c.execute("SELECT COUNT(*) FROM seams WHERE tier IN (%s) AND status NOT IN ('done','failed')" % q, tiers).fetchone()[0]
         return seams > 0
+
+    def tracks_settled(self, tiers: list) -> bool:
+        """No track of the run tiers is still queued (tracks-first order: mixes wait for this)."""
+        q = ",".join("?" * len(tiers))
+        return self._conn().execute(
+            "SELECT COUNT(*) FROM tracks t WHERE t.status IN ('pending','downloading') AND EXISTS ("
+            " SELECT 1 FROM seams s WHERE (s.a=t.track_id OR s.b=t.track_id) AND s.tier IN (%s)"
+            " AND s.status NOT IN ('done','failed'))" % q, tiers).fetchone()[0] == 0
+
+    def download_work_left(self, tiers: list) -> bool:
+        """Download-only runs: a mix still to fetch, or a track still to fetch for a seam of the run tiers."""
+        c = self._conn()
+        q = ",".join("?" * len(tiers))
+        mixes = c.execute(
+            "SELECT COUNT(*) FROM mixes m WHERE m.status IN ('pending','downloading') AND EXISTS ("
+            " SELECT 1 FROM seams s WHERE s.mix_id=m.mix_id AND s.tier IN (%s) AND s.status NOT IN ('done','failed'))" % q,
+            tiers).fetchone()[0]
+        tracks = c.execute(
+            "SELECT COUNT(*) FROM tracks t WHERE t.status IN ('pending','downloading') AND EXISTS ("
+            " SELECT 1 FROM seams s WHERE (s.a=t.track_id OR s.b=t.track_id) AND s.tier IN (%s) AND s.status NOT IN ('done','failed'))" % q,
+            tiers).fetchone()[0]
+        return mixes + tracks > 0
 
     def archivable(self, tiers: list) -> dict:
         c = self._conn()

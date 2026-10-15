@@ -13,6 +13,7 @@ ruff==0.16.6            # pinned: CI and local must lint with the same version
 librosa==0.10.2        # onset, energy, MFCC, spectral features — the DSP workhorse
 pyrubberband==0.4.0   # rubberband R3 time-stretch (needs rubberband-cli); CI installs the binary, this is the binding
 soundfile==0.12.1      # reads MP3/WAV cleanly; librosa depends on it internally
+pyyaml>=6.0            # djdata reads its per-corpus config from yaml
 pyloudnorm             # LUFS loudness measurement (build_features.py)
 beautifulsoup4         # HTML parsing for MixesDB scraper (mixesdb_client.py)
 scipy                  # butterworth filters for audio mixing
@@ -35,7 +36,6 @@ httpx==0.27.0          # async HTTP client — iTunes preview downloads
 mutagen               # audio file header validation (MP3/M4A) — used in validate_previews + build_features
 
 # ── vector store ───────────────────────────────────────────────────────────────
-chromadb==0.5.3        # embedded vector database with HNSW index
 
 # ── experiment tracking ────────────────────────────────────────────────────────
 mlflow==2.13.0         # local experiment tracking server + model registry

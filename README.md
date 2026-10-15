@@ -1,98 +1,62 @@
 # AI DJ
 
-Generates a real mixed audio file (.mp3) from a description of what you want to hear.
-
-> "high energy techno set, slow build" → ordered tracklist → mixed .mp3
-
-Trained on ~2,800 real DJ sets (1001tracklists) across six electronic genres:
-techno, trance, tech house, drum and bass, melodic house, afro house.
-
-## How it works
+Builds a beat-matched stereo DJ mix from a genre, a BPM range and an energy curve.
 
 ```
-scrape tracklists → fetch 30s previews → discogs-effnet embeddings + BPM/key/energy
-→ contrastive track encoder (Model A) → sequence transformer (Model B)
-→ GBM edge scorer + hard mixing rules → beam-search set planner
-→ structural segmenter (intro/buildup/drop/breakdown/outro) → mixer → .mp3
+real DJ mixes → measured tracks and transitions → pair model → set plan
+→ full audio fetched and verified → mixed .flac or .mp3
 ```
 
-The planner picks and orders tracks: candidates filtered by genre and BPM, ranked
-by Model B's context vector (what fits *after the tracks already played*), pruned
-by hard rules (BPM ±5%, Camelot-compatible keys, one track per artist), scored by
-the GBM, searched with a beam. An energy curve (build / peak / wave / chill / arc)
-shapes the set.
+## Data
 
-The fetcher turns the plan into files. It searches YouTube for each track and
-accepts a download only if the decoded audio is at least four minutes long and a
-constellation fingerprint locates the track's own 30-second preview inside it, so
-radio edits and wrong recordings never reach the mixer.
+| Genre | Mixes | DJs | Tracks | Measured transitions |
+|---|---:|---:|---:|---:|
+| Tech house | 903 | 170 | 8,889 | 2,585 |
+| Trance | 652 | 65 | 6,816 | 751 |
+| Techno | 643 | 29 | 5,838 | 1,187 |
+| Drum and bass | 564 | 99 | 7,194 | 777 |
+| Melodic house | 526 | 10 | 3,739 | 271 |
+| Afro house | 414 | 9 | 2,981 | 156 |
+| House | 235 | 116 | 2,155 | 1,004 |
+| **All** | **3,937** | **482** | **37,612** | **6,731** |
 
-The mixer turns those files into audio. Each track plays a ~3-minute
-phrase-aligned window chosen against the energy curve (low energy → windows that
-avoid drops), not the whole track. How long it plays comes from the genre's
-measured median across 1,665 real sets, and flexes per track to start and end on
-section boundaries. Every transition is classified — slam / rise /
-fade / melt / wave / blend / drop — from the two tracks' energy, onset, key and
-BPM, then gated by the set's energy curve, so a chill set never fires a slam.
-Each type has its own recipe: bar-aligned overlaps with per-band EQ automation
-(bass swaps, 3-band fades, staggered filter-style sweeps). A `drop` transition
-brings the incoming track in over its own buildup with the bass cut and the
-filter closed, and lands the bass swap on the drop itself.
+![Mixes per genre, and the twenty DJs with the most sets](docs/figures/mixes_per_genre.png)
 
-Beat alignment is measured rather than assumed. The two grids are phase-corrected
-against real kick transients, then the residual at each seam is measured by kick
-envelope cross-correlation and removed, which took the test seams from 180-215 ms
-out to 0.1 ms.
+## Pipeline
 
-What each learned part contributes (validated on held-out mixes, no leakage):
-
-| Component | What it does | Result |
-|---|---|---|
-| Model A (contrastive encoder) | 128-dim "mixability" space for retrieval | 0.663 AUC (BPM alone: 0.624) |
-| Model B (sequence transformer) | picks next track given the set so far | +17% MRR over context-free |
-| Edge scorer (GBM) | scores a single transition | 0.685 AUC |
-| Segmenter | phrase-aligned section maps + per-bar energy | drives cue points & windows |
-| Mixer | typed transitions, EQ automation, time-stretch | renders the actual audio |
-| Fetcher | plan → verified full audio | duration + fingerprint gated |
+- **Data.** Three sources: 1001tracklists, the Raveform dataset and the DJ data pipeline
+  (`djdata_package/`), which finds each track inside real DJ mixes and measures every transition.
+- **Planner.** The pair model scores which track should come next, given the set so far. A beam
+  search orders the set along the energy curve. On 58 DJs it never trained on, the real next track
+  is in its top 10 of 100 for 65 % of pairs.
+- **Fetcher.** Copies held tracks from disk or S3 and downloads the rest from YouTube. A download is
+  kept only when its fingerprint matches the track's own preview.
+- **Mixer.** Plays a phrase-aligned section of each track, picks a transition type, aligns the beats
+  at every transition and renders in stereo at −14 LUFS.
 
 ## Quick start
 
 ```bash
 conda activate aidj
 
-# plan a set from intent
-python -m src.models.predict_model --genre techno --bpm 126 136 --n 10 --curve build
-
-# fetch and verify full audio for that plan
-python -m src.models.predict_model --genre techno --bpm 126 136 --n 10 --json plan.json
-python -m src.data.track_fetcher --plan plan.json --out data/external/run1
-
-# render the plan, which carries the genre, the curve and the per-track
-# energy targets through to the mixer (.flac for a lossless render)
-python -m src.audio.audio_mixer out.flac --plan plan.json --tracks-dir data/external/run1
-
-# or render loose files directly
-python -m src.audio.audio_mixer out.flac track1.mp3 track2.mp3 --genre techno --curve build
-
-# retrain everything (CPU is fine, ~10 min each)
-python -m src.models.train_model      # Model A
-python -m src.models.train_sequence   # Model B
-python -m src.models.edge_scorer      # GBM
+# plan, fetch and render in one command
+python -m scripts.make_mix --genre techno --bpm 126 132 --curve chill --n 6 \
+    --minutes 20 --audio full --out mix.flac
 ```
 
-## What's not done yet
+Each stage also runs alone: `src.models.predict_model`, `src.data.track_fetcher`,
+`src.audio.audio_mixer`.
 
-- Jamendo as an alternative full-audio source. YouTube works but its audio is
-  already lossy, so the render is a second generation of loss
-- Natural-language intent parsing (one Claude call) and the FastAPI service
-- DJ style profiles / archetype conditioning
-- v2 research: aligning mix audio to recover real transitions, transition critic
+## Not built yet
+
+- A natural-language prompt and an API
+- Transition types, play length and cue points learned from the measured mixes
+- DJ style profiles and a club or radio setting
+
+## Docs
+
+`START_HERE.md` is the index. It points to the file for each stage.
 
 ## Stack
 
-- **Embeddings**: discogs-effnet (frozen) + librosa/DeepRhythm features
-- **Models**: PyTorch (contrastive MLP, causal transformer), scikit-learn (GBM)
-- **Vector store**: ChromaDB (HNSW)
-- **Tracking**: MLflow + W&B
-- **Audio**: librosa, essentia, scipy (EQ), ffmpeg
-- **Orchestration**: Airflow
+PyTorch, discogs-effnet, librosa, essentia, rubberband, ffmpeg, Airflow, S3.

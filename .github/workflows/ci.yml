@@ -43,8 +43,17 @@ jobs:
       - name: Format check (ruff format)
         run: ruff format --check src/ tests/ scripts/
 
+      - name: Lint djdata (ruff check)
+        run: ruff check --config djdata_package/pyproject.toml djdata_package/djdata/seam djdata_package/djdata/sources djdata_package/djdata/store djdata_package/djdata/pipeline.py djdata_package/tests --output-format=github
+
+      - name: Format check djdata (ruff format)
+        run: ruff format --check --config djdata_package/pyproject.toml djdata_package/djdata/seam djdata_package/djdata/sources djdata_package/djdata/store djdata_package/djdata/pipeline.py djdata_package/tests
+
       - name: Run tests
         run: pytest tests/ -v
+
+      - name: Run djdata tests
+        run: cd djdata_package && pytest tests/ -v
         env:
           SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
           SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}

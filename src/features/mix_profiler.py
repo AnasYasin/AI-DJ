@@ -1,7 +1,7 @@
 """
 Phase 9 — Mix profiler.
 
-Reads tracklist.csv + features.parquet, computes an energy curve shape
+Reads tracklist.csv + the dataset's tracks, computes an energy curve shape
 for each mix, and writes data/processed/mix_metadata.csv.
 
 Energy curve shapes
@@ -31,7 +31,6 @@ log = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 TRACKLIST_PATH = Path("data/interim/tracklist.csv")
-FEATURES_PATH = Path("data/processed/features.parquet")
 MIX_METADATA_PATH = Path("data/processed/mix_metadata.csv")
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
@@ -111,20 +110,23 @@ def _energy_curve_shape(energies: list[float]) -> str:
 
 def compute_mix_metadata(
     tracklist_path: Path = TRACKLIST_PATH,
-    features_path: Path = FEATURES_PATH,
+    features: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Build one row per mix_id with its energy curve shape.
 
     Args:
         tracklist_path: path to tracklist.csv
-        features_path:  path to features.parquet
+        features:       a tracks frame with track_id and energy_mean; the dataset's when None
 
     Returns:
         DataFrame with columns: mix_id, dj_name, energy_curve_shape
     """
     tracklist = pd.read_csv(tracklist_path)
-    features = pd.read_parquet(features_path, columns=["track_id", "energy_mean"])
+    if features is None:
+        from src.data.dataset import load_tracks
+
+        features = load_tracks(columns=["track_id", "energy_mean"])
 
     feat_idx = features.set_index("track_id")["energy_mean"]
 
@@ -161,7 +163,7 @@ def compute_mix_metadata(
     df = pd.DataFrame(records, columns=["mix_id", "dj_name", "energy_curve_shape"])
 
     if skipped:
-        log.info("Skipped %d mixes with < %d tracks in features.parquet", skipped, MIN_TRACKS)
+        log.info("Skipped %d mixes with < %d tracks in the dataset", skipped, MIN_TRACKS)
 
     shape_dist = df["energy_curve_shape"].value_counts().to_string()
     log.info("Computed %d mix profiles:\n%s", len(df), shape_dist)
@@ -173,17 +175,13 @@ def main() -> None:
     if not TRACKLIST_PATH.exists():
         log.error("tracklist.csv not found at %s — run scraper first.", TRACKLIST_PATH)
         return
-    if not FEATURES_PATH.exists():
-        log.error("features.parquet not found at %s — run build_features.py first.", FEATURES_PATH)
-        return
 
     log.info("Loading %s", TRACKLIST_PATH)
-    log.info("Loading %s", FEATURES_PATH)
 
     df = compute_mix_metadata()
 
     if df.empty:
-        log.warning("No mix profiles produced — check features.parquet coverage.")
+        log.warning("No mix profiles produced — check the dataset coverage.")
         return
 
     MIX_METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)

@@ -8,7 +8,7 @@ import numpy as np
 
 from src.audio.audio_mixer import SR
 
-OUT = Path("data/external/transition_tests")
+OUT = Path("data/external/ear_test/transition_types")
 reports = json.loads((OUT / "report.json").read_text())
 
 

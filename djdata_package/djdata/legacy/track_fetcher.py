@@ -36,6 +36,7 @@ from collections import defaultdict
 import json
 import logging
 from pathlib import Path
+import difflib
 import re
 import shutil
 import subprocess
@@ -86,6 +87,51 @@ def _title_overlap(query: str, candidate: str) -> float:
     """Fraction of the wanted words present in the candidate's title."""
     want, got = _norm(query), _norm(candidate)
     return len(want & got) / max(len(want), 1)
+
+
+_VERSION_WORDS = re.compile(r"\b(remix|rmx|edit|bootleg|rework|dub|vip|instrumental|extended|radio edit|club mix|remaster)\b")
+CONFIDENT_SCORE = 2.6     # above this the name and artist are enough; no fingerprint needed
+
+
+def _version_words(text: str) -> set:
+    """The remix or edit words in a title. A track and its remix are different recordings."""
+    return set(_VERSION_WORDS.findall(text.lower()))
+
+
+def _name_score(artist: str, title: str, candidate: dict) -> float:
+    """How well a search result matches the artist and title we asked for, on names alone.
+
+    The artist has to appear, in the title or in the channel that uploaded it. Version words have to
+    agree, because a remix is a different recording from the original and the duration gate cannot tell
+    them apart. An upload by the artist's own channel, which for YouTube's auto-generated catalogue is
+    "<Artist> - Topic", is the strongest evidence there is that the audio is the official one.
+    """
+    cand_title = candidate.get("title") or ""
+    channel = (candidate.get("channel") or candidate.get("uploader") or "")
+    artist_words = _norm(artist)
+    if not artist_words:
+        return 0.0
+    in_title = len(artist_words & _norm(cand_title)) / len(artist_words)
+    in_channel = len(artist_words & _norm(channel)) / len(artist_words)
+    if max(in_title, in_channel) < 0.5:
+        return 0.0                                   # not this artist at all
+
+    score = 1.5 * max(in_title, in_channel)
+    score += 1.5 * difflib.SequenceMatcher(None, _clean(title), _clean(cand_title)).ratio()
+    wanted_versions, got_versions = _version_words(title), _version_words(cand_title)
+    if wanted_versions == got_versions:
+        score += 0.8
+    elif wanted_versions and not (wanted_versions & got_versions):
+        score -= 1.2                                 # we asked for a remix and this is not it
+    elif got_versions - wanted_versions:
+        score -= 0.8                                 # we asked for the original and this is a remix
+    if channel.lower().endswith(" - topic") or _norm(channel) == artist_words:
+        score += 0.6
+    return score
+
+
+def _clean(text: str) -> str:
+    return _NONWORD.sub(" ", _PAREN.sub(" ", str(text).lower())).strip()
 
 
 # ── Identity check ─────────────────────────────────────────────────────────────
@@ -155,20 +201,30 @@ def _search(query: str, n: int = SEARCH_RESULTS) -> list[dict]:
     return [e for e in (res or {}).get("entries", []) if e]
 
 
-def _rank(query: str, entries: list[dict]) -> list[dict]:
-    """Drop candidates that fail the duration or title gate, best first."""
+def _rank(query: str, entries: list[dict], artist: str = "", title: str = "",
+          min_seconds: int = MIN_SECONDS, max_seconds: int = MAX_SECONDS) -> list[dict]:
+    """Drop candidates that fail the duration or title gate, best first.
+
+    With `artist` and `title` given, the order comes from `_name_score`: the artist must be present and
+    the remix wording must agree. That is what picks the right recording before anything is downloaded,
+    so the fingerprint is only needed where the names leave real doubt."""
     keep = []
     for e in entries:
         dur = e.get("duration")
-        title = e.get("title") or ""
-        if dur is None or not (MIN_SECONDS <= dur <= MAX_SECONDS):
-            log.debug("  reject %r: duration %s", title[:60], dur)
+        cand_title = e.get("title") or ""
+        if dur is None or not (min_seconds <= dur <= max_seconds):
+            log.debug("  reject %r: duration %s", cand_title[:60], dur)
             continue
-        if _BAD_TITLE.search(title):
-            log.debug("  reject %r: title form", title[:60])
+        if _BAD_TITLE.search(cand_title):
+            log.debug("  reject %r: title form", cand_title[:60])
             continue
-        keep.append({**e, "overlap": _title_overlap(query, title)})
-    return sorted(keep, key=lambda e: -e["overlap"])
+        score = _name_score(artist, title, e) if artist else 0.0
+        if artist and score <= 0:
+            log.debug("  reject %r: not this artist", cand_title[:60])
+            continue
+        keep.append({**e, "overlap": _title_overlap(query, cand_title), "name_score": score})
+    key = (lambda e: -e["name_score"]) if artist else (lambda e: -e["overlap"])
+    return sorted(keep, key=key)
 
 
 def _download(url: str, dest: Path) -> Path | None:
@@ -238,7 +294,7 @@ def fetch_track(
         return {"track_id": track_id, "status": "cached", "path": str(existing[0])}
 
     query = f"{artist} {title}"
-    ranked = _rank(query, _search(query))
+    ranked = _rank(query, _search(query), artist=artist, title=title)
     if not ranked:
         return {"track_id": track_id, "status": "no_candidate", "query": query}
 
@@ -260,7 +316,14 @@ def fetch_track(
             path.unlink(missing_ok=True)
             continue
 
-        if preview_path and Path(preview_path).exists():
+        name_score = cand.get("name_score", 0.0)
+        confident = name_score >= CONFIDENT_SCORE
+        if confident:
+            # artist, title and remix wording all agree: the names are the check, fingerprinting every
+            # track costs minutes each and buys nothing here (Anas, 2026-09-19)
+            votes, offset = -2, float("nan")
+            log.info("  %s: name score %.2f, accepted without a fingerprint", title[:40], name_score)
+        elif preview_path and Path(preview_path).exists():
             votes, offset = verify_match(preview_path, path)
             if votes < VERIFY_MIN_HASHES:
                 log.info(

@@ -13,8 +13,8 @@ Steps (measured 2026-09-09/10 on rendered seams with a coarse error of ±1 bar a
 Result: alignment within 9 ms in 14 of 14 runs.
 """
 
-import numpy as np
 import librosa
+import numpy as np
 from scipy.signal import correlate
 
 SR, NFFT, HOP, SLOTS = 44_100, 2048, 256, 8
@@ -79,7 +79,7 @@ class Aligner:
             m0 = anchor_m - bar
             o_t = np.arange(anchor_o, anchor_o + win * rate, rate / fps)
         lo = max(int(m0 * fps), 0)
-        es = self.oe["M"][lo: int((m0 + win + 2 * bar) * fps)]
+        es = self.oe["M"][lo : int((m0 + win + 2 * bar) * fps)]
         er = np.interp(o_t * fps, np.arange(len(self.oe[tag])), self.oe[tag])
         if len(es) <= len(er):
             return anchor_m
@@ -133,8 +133,11 @@ class Aligner:
 
     def align(self, tag, side, anchor_m, anchor_o, rate) -> dict:
         m1 = self.step1(tag, anchor_m, anchor_o, rate, side)
-        regions = ([m1 - 40 * self.beat - 1.0, m1 - 6 * self.beat - 1.0] if side == "before"
-                   else [m1 + 2 * self.beat + 1.0, m1 + 36 * self.beat + 1.0])
+        regions = (
+            [m1 - 40 * self.beat - 1.0, m1 - 6 * self.beat - 1.0]
+            if side == "before"
+            else [m1 + 2 * self.beat + 1.0, m1 + 36 * self.beat + 1.0]
+        )
         o2, r2 = self.step2(tag, m1, anchor_o, rate, regions)
         o3, nb = self.bar_check(tag, o2, m1, r2, side)
         return {"o": o3, "m": m1, "rate": r2, "bar_fix": nb, "onset_shift_s": m1 - anchor_m}

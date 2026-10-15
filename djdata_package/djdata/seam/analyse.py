@@ -14,7 +14,9 @@ from .params import parameters, relative_curves
 log = logging.getLogger("djdata.seam.analyse")
 
 
-def analyse(window_path: str | Path, a_path: str | Path, b_path: str | Path, coarse: dict, cfg_an: dict) -> dict:
+def analyse(
+    window_path: str | Path, a_path: str | Path, b_path: str | Path, coarse: dict, cfg_an: dict
+) -> dict:
     t_all = time.time()
     timing = {}
     t0w, t1w = coarse["window"]
@@ -32,7 +34,9 @@ def analyse(window_path: str | Path, a_path: str | Path, b_path: str | Path, coa
     ov_end = max(coarse["overlap_start_mix_t"], coarse["overlap_end_mix_t"]) - t0w
     # tempo: the mix's own onset autocorrelation, seeded by the outgoing track's beat period over its rate
     seed_bpm = coarse.get("bpm_guess") or 128.0
-    beat = mix_beat_period(oe["M"], seed_bpm) if coarse.get("bpm_guess") else _beat_from_scan(oe["M"])
+    beat = (
+        mix_beat_period(oe["M"], seed_bpm) if coarse.get("bpm_guess") else _beat_from_scan(oe["M"])
+    )
     al = Aligner(SM, SS, oe, beat, idx)
 
     t = time.time()
@@ -66,15 +70,25 @@ def analyse(window_path: str | Path, a_path: str | Path, b_path: str | Path, coa
         return o + (mix_t - m) * r
 
     # alone regions (for reference levels and calibration) and absent regions (for presence floors)
-    alone = {"A": list(range(max(k0 - 40, 0), max(k0 - 8, 0))), "B": list(range(min(k1 + 8, nb), min(k1 + 40, nb)))}
+    alone = {
+        "A": list(range(max(k0 - 40, 0), max(k0 - 8, 0))),
+        "B": list(range(min(k1 + 8, nb), min(k1 + 40, nb))),
+    }
     b_absent = [k for k in range(0, k0) if omap("B", beats[k + 1]) < 0.0]
     a_dur = coarse["A"].get("duration")
     a_absent = [k for k in range(k1, nb) if a_dur and omap("A", beats[k]) > a_dur]
     absent = {"A": a_absent, "B": b_absent}
 
     t = time.time()
-    fitter = Fitter(SM, SS, {k: v for k, v in maps.items() if not k.endswith("_info")}, idx, beats,
-                    cfg_an["lam"], cfg_an["local_ms"])
+    fitter = Fitter(
+        SM,
+        SS,
+        {k: v for k, v in maps.items() if not k.endswith("_info")},
+        idx,
+        beats,
+        cfg_an["lam"],
+        cfg_an["local_ms"],
+    )
     fitter.calibrate(alone)
     fit = fitter.fit()
     timing["fit"] = round(time.time() - t, 1)
@@ -86,18 +100,28 @@ def analyse(window_path: str | Path, a_path: str | Path, b_path: str | Path, coa
 
     row = {
         "tempo_bpm": round(60.0 / beat, 2),
-        "rate_A": round(maps["A"][2], 5), "rate_B": round(maps["B"][2], 5),
-        "bar_fix_A": maps["A_info"]["bar_fix"], "bar_fix_B": maps["B_info"]["bar_fix"],
-        "onset_shift_A_s": round(maps["A_info"]["onset_shift_s"], 3), "onset_shift_B_s": round(maps["B_info"]["onset_shift_s"], 3),
-        "absent_region_B_beats": len(b_absent), "absent_region_A_beats": len(a_absent),
-        "raveform_overlap_start_t": coarse["overlap_start_mix_t"], "raveform_overlap_end_t": coarse["overlap_end_mix_t"],
+        "rate_A": round(maps["A"][2], 5),
+        "rate_B": round(maps["B"][2], 5),
+        "bar_fix_A": maps["A_info"]["bar_fix"],
+        "bar_fix_B": maps["B_info"]["bar_fix"],
+        "onset_shift_A_s": round(maps["A_info"]["onset_shift_s"], 3),
+        "onset_shift_B_s": round(maps["B_info"]["onset_shift_s"], 3),
+        "absent_region_B_beats": len(b_absent),
+        "absent_region_A_beats": len(a_absent),
+        "raveform_overlap_start_t": coarse["overlap_start_mix_t"],
+        "raveform_overlap_end_t": coarse["overlap_end_mix_t"],
         **par,
         "timing_s": {**timing, "total": round(time.time() - t_all, 1)},
     }
     curve_rows = []
     for k in range(nb):
-        r = {"beat": k - k0, "mix_t": round(float(beats_abs[k]), 3), "A_present": int(pres["A"][k]), "B_present": int(pres["B"][k]),
-             "unexplained": round(float(fit["unexplained"][k]), 3)}
+        r = {
+            "beat": k - k0,
+            "mix_t": round(float(beats_abs[k]), 3),
+            "A_present": int(pres["A"][k]),
+            "B_present": int(pres["B"][k]),
+            "unexplained": round(float(fit["unexplained"][k]), 3),
+        }
         for tag in ("A", "B"):
             for b in range(len(bands)):
                 v = curves["rel"][(tag, b)][k]

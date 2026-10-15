@@ -100,4 +100,7 @@ help:
 ci:
 	ruff check src/ tests/ scripts/ dags/
 	ruff format --check src/ tests/ scripts/
+	ruff check --config djdata_package/pyproject.toml djdata_package/djdata/seam djdata_package/djdata/sources djdata_package/djdata/store djdata_package/djdata/pipeline.py djdata_package/tests
+	ruff format --check --config djdata_package/pyproject.toml djdata_package/djdata/seam djdata_package/djdata/sources djdata_package/djdata/store djdata_package/djdata/pipeline.py djdata_package/tests
 	pytest tests/ -q
+	cd djdata_package && pytest tests/ -q
