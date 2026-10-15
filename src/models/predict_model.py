@@ -3,10 +3,9 @@ Phase 8 — mix planner: intent → ordered tracklist.
 
 Pipeline per step of the beam search:
   1. Candidate pool: genre + BPM-range filter over the dataset's tracks (data/dataset/<date>/).
-  2. Hard rules mask: |log BPM ratio| ≤ 0.05 vs current track, Camelot
-     distance ≤ 2, track not already used.
-  3. Score = w_ctx·z(Model-B context similarity)
-           + w_gbm·EdgeScorer probability
+  2. Hard rules mask: |log BPM ratio| ≤ 0.05 vs current track, track and artist
+     not already used. No key rule: the pair model sees the Camelot distance.
+  3. Score = w_pair·z(pair model logit: this record after the current one, given the set so far)
            + w_energy·(energy-curve fit at this position)
   4. Beam search (width 8) keeps the best partial sets; best complete set wins.
 
@@ -24,22 +23,19 @@ from pathlib import Path
 import re
 
 import numpy as np
-import torch
 
+from src.audio.key_shift import CLASH_DISTANCE
 from src.data.dataset import dj_key, load_plays, load_tracks
 from src.data.preprocess_tracklist import is_unidentified
 from src.features.compatibility import compatibility
-from src.models.edge_scorer import EdgeScorer, TrackArrays, camelot_distance, pair_features
-from src.models.key_rules import clash_allowed, is_clash, key_term, sequence_allowed
-from src.models.train_sequence import TOKEN_EXTRA, SequenceModel
+from src.models.pair_model import PairScorer
+from src.models.track_arrays import TrackArrays, camelot_distance
 
 log = logging.getLogger(__name__)
 
-SEQ_MODEL_PATH = Path("models/sequence_model.pt")
-
 BEAM_WIDTH = 8
 MAX_BPM_LOG_RATIO = 0.05  # ≈ ±5% — pyrubberband stretches this cleanly
-W_CTX, W_GBM, W_ENERGY = 1.0, 1.0, 0.7
+W_PAIR, W_ENERGY = 1.0, 0.7
 
 # Weight on pair compatibility, which is what decides how LONG the mixer is
 # allowed to hold two records together. The default is 0: without it the planner
@@ -54,46 +50,6 @@ CURVES = {
     "chill": lambda t: 0.15 + 0.1 * t,
     "arc": lambda t: np.sin(np.pi * t),
 }
-
-
-# ── Model B wrapper ────────────────────────────────────────────────────────────
-
-
-class ContextModel:
-    def __init__(self, path: Path = SEQ_MODEL_PATH):
-        ckpt = torch.load(path, weights_only=False)
-        self.model = SequenceModel(ckpt["genres"], ckpt["hparams"])
-        self.model.load_state_dict(ckpt["state_dict"])
-        self.model.eval()
-        self.max_len = ckpt["hparams"]["max_len"]
-
-    @torch.no_grad()
-    def next_vectors(self, beams_tokens: list[np.ndarray], genre: str) -> np.ndarray:
-        """List of (L_i, 132) token matrices → (n_beams, 128) context vectors."""
-        L = max(t.shape[0] for t in beams_tokens)
-        B = len(beams_tokens)
-        tokens = np.zeros((B, L, 128 + TOKEN_EXTRA), dtype=np.float32)
-        pad = np.ones((B, L), dtype=bool)
-        for i, t in enumerate(beams_tokens):
-            tokens[i, : t.shape[0]] = t
-            pad[i, : t.shape[0]] = False
-        gi = torch.tensor([self.model.genre_to_idx[genre]] * B)
-        preds = self.model(torch.from_numpy(tokens), gi, torch.from_numpy(pad))
-        last = torch.tensor([t.shape[0] - 1 for t in beams_tokens])
-        return preds[torch.arange(B), last].numpy()
-
-
-def make_tokens(A: TrackArrays, track_idxs: list[int], n_total: int) -> np.ndarray:
-    """Token matrix for a partial set (planner-side mirror of seq_tensors)."""
-    idx = np.array(track_idxs)
-    emb = A.proj[idx]
-    b = A.bpm[idx]
-    e = A.energy[idx]
-    d_bpm = np.r_[0.0, np.diff(b)] / 20.0
-    d_energy = np.r_[0.0, np.diff(e)] * 5.0
-    pos = np.arange(len(idx), dtype=np.float32) / max(n_total - 1, 1)
-    extra = np.stack([pos, b / 200.0, d_bpm, d_energy], axis=1)
-    return np.concatenate([emb, extra], axis=1).astype(np.float32)
 
 
 # ── Artists ────────────────────────────────────────────────────────────────────
@@ -235,8 +191,7 @@ def plan_mix(
         pool["artist_tracks"],
     )
 
-    scorer = EdgeScorer.load()
-    ctx_model = ContextModel()
+    scorer = PairScorer(A)
 
     # energy targets from the pool's own distribution
     shape = CURVES[curve](np.arange(n_tracks) / max(n_tracks - 1, 1))
@@ -244,24 +199,21 @@ def plan_mix(
     targets = e_lo + shape * (e_hi - e_lo)
     e_scale = A.energy.std() + 1e-9
 
-    # seed beams: tracks nearest the opening energy target
+    # seed beams: from the slower half of the pool, the tracks nearest the opening energy target.
+    # Real sets open in the slower half of their own BPM range 71 % of the time (chance 50 %) and in
+    # the lower energy half 59 %; the tempo then climbs 1 % over the set (trance 4 %, techno 2 %).
     if seed_track is not None:
         seeds = [A.idx[seed_track]]
     else:
-        seeds = list(np.argsort(np.abs(A.energy - targets[0]))[:BEAM_WIDTH])
+        slow = np.flatnonzero(A.bpm <= np.median(A.bpm))
+        seeds = list(slow[np.argsort(np.abs(A.energy[slow] - targets[0]))[:BEAM_WIDTH]])
     beams = [([int(s)], 0.0) for s in seeds]
 
     for step in range(1, n_tracks):
-        ctx = ctx_model.next_vectors(
-            [make_tokens(A, tracks, n_tracks) for tracks, _ in beams], genre
-        )  # (n_beams, 128)
         expansions = []
-        for bi, (tracks, score) in enumerate(beams):
+        for tracks, score in beams:
             last = tracks[-1]
             mask = np.abs(np.log(A.bpm[last] / A.bpm)) <= MAX_BPM_LOG_RATIO
-            cam = camelot_distance(A.cam_pos[last], A.cam_mode[last], A.cam_pos, A.cam_mode)
-            if not clash_allowed(_join_distances(A, tracks), n_tracks - 1):
-                mask &= ~is_clash(cam)
             mask[tracks] = False
             for t in tracks:  # one track per artist, collaborations included
                 for name in artist_sets[t]:
@@ -269,14 +221,11 @@ def plan_mix(
             cand = np.flatnonzero(mask)
             if len(cand) == 0:
                 continue
-            ctx_sim = A.proj[cand] @ ctx[bi]
-            gbm = scorer.score(pair_features(A, last, cand))
             e_fit = 1.0 - np.abs(A.energy[cand] - targets[step]) / (2 * e_scale)
-            z = (ctx_sim - ctx_sim.mean()) / (ctx_sim.std() + 1e-9)
-            total = W_CTX * z + W_GBM * gbm + W_ENERGY * e_fit + key_term(genre, cam[cand])
+            total = W_PAIR * _z(scorer.score(last, tracks, cand)) + W_ENERGY * e_fit
             if compat_weight:
                 total = total + compat_weight * compatibility(
-                    0.0,  # key is the planner's soft term above, not a compatibility veto
+                    0.0,  # key is the pair model's to weigh, not a compatibility veto
                     np.abs(A.energy[last] - A.energy[cand]),
                     np.abs(A.loud[last] - A.loud[cand]),
                     np.abs(np.log(A.bpm[last] / A.bpm[cand])) * 100,
@@ -289,8 +238,8 @@ def plan_mix(
             break
         expansions.sort(key=lambda x: -x[1])
         seen, beams = set(), []
-        for tracks, score in expansions:  # dedupe identical unordered sets
-            key = frozenset(tracks)
+        for tracks, score in expansions:  # dedupe: same records AND same last record
+            key = (frozenset(tracks), tracks[-1])  # same records in another order are another beam
             if key not in seen:
                 seen.add(key)
                 beams.append((tracks, score))
@@ -304,7 +253,7 @@ def plan_mix(
         "audio": audio,
         "dj": dj,
         "score": round(score, 2),
-        "n_clashes": int(is_clash(_join_distances(A, tracks)).sum()),
+        "n_clashes": int((np.array(_join_distances(A, tracks)) > CLASH_DISTANCE).sum()),
         "tracks": [],
     }
     for i, ti in enumerate(tracks):
@@ -342,6 +291,11 @@ def plan_mix(
             )
         out["tracks"].append(entry)
     return out
+
+
+def _z(x: np.ndarray) -> np.ndarray:
+    """Standardised within the candidate set, so the weights read against the other terms."""
+    return (x - x.mean()) / (x.std() + 1e-9)
 
 
 def _join_distances(A: TrackArrays, tracks: list[int]) -> list[float]:
@@ -410,10 +364,10 @@ def repair_candidates(
     A candidate must pass the hard rules against BOTH neighbours (BPM within
     MAX_BPM_LOG_RATIO) and must not repeat a
     track or an artist already in the plan. It is scored the way plan_mix
-    scores a step: Model B context from the tracks before the slot, the GBM
-    edge from the previous track, energy fit to the slot's target, and pair
-    compatibility with each neighbour. At the first or last slot there is one
-    neighbour and the fit is against that one plus the energy target.
+    scores a step: the pair model from the previous track given the tracks
+    before the slot (at the first slot, the next track scored after the
+    candidate), energy fit to the slot's target, and pair compatibility with
+    each neighbour. At the first or last slot there is one neighbour.
     """
     tracks = plan["tracks"]
     others = [t for i, t in enumerate(tracks) if i != slot]
@@ -443,14 +397,6 @@ def repair_candidates(
     for _, ni in neighbours:
         mask &= np.abs(np.log(A.bpm[ni] / A.bpm)) <= MAX_BPM_LOG_RATIO
     cand = np.flatnonzero(mask)
-    # the repaired sequence must still respect the clash cap and never clash twice in a row
-    fixed = [A.idx.get(t["track_id"]) for t in tracks]
-    keep = []
-    for ci in cand:
-        seq = [ci if k == slot else ti for k, ti in enumerate(fixed)]
-        known = [ti for ti in seq if ti is not None]
-        keep.append(sequence_allowed(_join_distances(A, known), len(tracks) - 1))
-    cand = cand[np.array(keep, dtype=bool)] if len(cand) else cand
     if len(cand) == 0:
         return []
 
@@ -464,17 +410,20 @@ def repair_candidates(
         if slot > 0 and tracks[slot - 1]["track_id"] in A.idx
         else None
     )
-    if before:
-        ctx = ContextModel().next_vectors([make_tokens(A, before, len(tracks))], plan["genre"])[0]
-        ctx_sim = A.proj[cand] @ ctx
-        total = total + W_CTX * (ctx_sim - ctx_sim.mean()) / (ctx_sim.std() + 1e-9)
+    next_ti = (
+        A.idx[tracks[slot + 1]["track_id"]]
+        if slot + 1 < len(tracks) and tracks[slot + 1]["track_id"] in A.idx
+        else None
+    )
     if prev_ti is not None:
-        total = total + W_GBM * EdgeScorer.load().score(pair_features(A, prev_ti, cand))
+        total = total + W_PAIR * _z(PairScorer(A).score(prev_ti, before, cand))
+    elif (
+        next_ti is not None
+    ):  # an opening slot: the candidate is scored as what the next record follows
+        total = total + W_PAIR * _z(PairScorer(A).score_before(next_ti, cand))
     for _, ni in neighbours:
-        cam = camelot_distance(A.cam_pos[ni], A.cam_mode[ni], A.cam_pos[cand], A.cam_mode[cand])
-        total = total + key_term(plan["genre"], cam) / len(neighbours)
         c = compatibility(
-            0.0,  # key is the soft term above
+            0.0,  # key is the pair model's to weigh
             np.abs(A.energy[ni] - A.energy[cand]),
             np.abs(A.loud[ni] - A.loud[cand]),
             np.abs(np.log(A.bpm[ni] / A.bpm[cand])) * 100,

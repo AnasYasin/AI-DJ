@@ -4,8 +4,10 @@ Generates a real mixed audio file (.mp3) from a description of what you want to 
 
 > "high energy techno set, slow build" → ordered tracklist → mixed .mp3
 
-Trained on ~2,800 real DJ sets (1001tracklists) across six electronic genres:
-techno, trance, tech house, drum and bass, melodic house, afro house.
+Trained on 3,937 real DJ sets and 65,513 plays from three sources (1001tracklists
+tracklists, the Raveform dataset, and the DJ data pipeline below) across seven
+electronic genres: techno, tech house, house, trance, drum and bass, melodic house,
+afro house. 12,153 of the 37,612 records are held as full audio.
 
 ## Data pipeline (djdata)
 
@@ -22,21 +24,24 @@ every number sits beside its floor. `START_HERE.md` says how to run it and read 
 
 ```
 scrape tracklists → fetch 30s previews → discogs-effnet embeddings + BPM/key/energy
-→ contrastive track encoder (Model A) → sequence transformer (Model B)
-→ GBM edge scorer + hard mixing rules → beam-search set planner
+→ pair model (which record follows which, given the set so far)
+→ hard mixing rules → beam-search set planner
 → structural segmenter (intro/buildup/drop/breakdown/outro) → mixer → .mp3
 ```
 
-The planner picks and orders tracks: candidates filtered by genre and BPM, ranked
-by Model B's context vector (what fits *after the tracks already played*), pruned
-by hard rules (BPM ±5%, Camelot-compatible keys, one track per artist), scored by
-the GBM, searched with a beam. An energy curve (build / peak / wave / chill / arc)
-shapes the set.
+The planner picks and orders tracks. Candidates are filtered by genre and BPM,
+pruned by hard rules (BPM within 5 %, no repeated record, one record per artist),
+scored by the pair model and the fit to an energy curve (build / peak / wave /
+chill / arc), and searched with a beam. There is no key rule: real sets clash on
+58 % of joins, and the pair model sees the Camelot distance itself. The opener is
+chosen from the slower half of the pool, where 71 % of real sets open.
 
-The fetcher turns the plan into files. It searches YouTube for each track and
-accepts a download only if the decoded audio is at least four minutes long and a
-constellation fingerprint locates the track's own 30-second preview inside it, so
-radio edits and wrong recordings never reach the mixer.
+The fetcher turns the plan into files. A record held as full audio is copied from
+disk or S3. A Raveform record is downloaded by its YouTube id. Anything else is
+searched on YouTube, and a download is accepted only if the decoded audio is at
+least four minutes long and a constellation fingerprint locates the track's own
+30-second preview inside it, so radio edits and wrong recordings never reach the
+mixer. A fetched record is registered as held, so it is never searched again.
 
 The mixer turns those files into audio. Each track plays a ~3-minute
 phrase-aligned window chosen against the energy curve (low energy → windows that
@@ -55,13 +60,11 @@ against real kick transients, then the residual at each seam is measured by kick
 envelope cross-correlation and removed, which took the test seams from 180-215 ms
 out to 0.1 ms.
 
-What each learned part contributes (validated on held-out mixes, no leakage):
+What each part contributes (the model is scored on DJs it never saw in training):
 
 | Component | What it does | Result |
 |---|---|---|
-| Model A (contrastive encoder) | 128-dim "mixability" space for retrieval | 0.663 AUC (BPM alone: 0.624) |
-| Model B (sequence transformer) | picks next track given the set so far | +17% MRR over context-free |
-| Edge scorer (GBM) | scores a single transition | 0.685 AUC |
+| Pair model | scores the next record given the last one and the set so far | true next record in the top 10 of 100 for 0.649 of pairs, AUC 0.876, on 58 DJs never trained on |
 | Segmenter | phrase-aligned section maps + per-bar energy | drives cue points & windows |
 | Mixer | typed transitions, EQ automation, time-stretch | renders the actual audio |
 | Fetcher | plan → verified full audio | duration + fingerprint gated |
@@ -85,10 +88,12 @@ python -m src.audio.audio_mixer out.flac --plan plan.json --tracks-dir data/exte
 # or render loose files directly
 python -m src.audio.audio_mixer out.flac track1.mp3 track2.mp3 --genre techno --curve build
 
-# retrain everything (CPU is fine, ~10 min each)
-python -m src.models.train_model      # Model A
-python -m src.models.train_sequence   # Model B
-python -m src.models.edge_scorer      # GBM
+# plan, fetch and render in one command, from held audio only
+python -m scripts.make_mix --genre techno --bpm 126 132 --curve chill --n 6 \
+    --minutes 20 --audio full --out mix.flac
+
+# retrain the pair model (CPU, about 6 h for 5 seeds)
+python -m src.models.pair_model --seeds 5
 ```
 
 ## What's not done yet
@@ -96,13 +101,15 @@ python -m src.models.edge_scorer      # GBM
 - Jamendo as an alternative full-audio source. YouTube works but its audio is
   already lossy, so the render is a second generation of loss
 - Natural-language intent parsing (one Claude call) and the FastAPI service
-- DJ style profiles / archetype conditioning
-- v2 research: aligning mix audio to recover real transitions, transition critic
+- Transition types and recipes from the measured seams, per DJ and per genre
+  (`TRANSITION_EXPERIMENTS.md`); today the mixer's rules choose them
+- Play length and cue points from the measured plays
+- DJ style profiles, and a club or radio setting (`TODO.md`)
 
 ## Stack
 
 - **Embeddings**: discogs-effnet (frozen) + librosa/DeepRhythm features
-- **Models**: PyTorch (contrastive MLP, causal transformer), scikit-learn (GBM)
+- **Model**: PyTorch (the pair model, a record encoder and a pair head)
 - **Data**: one dated dataset folder of four parquet files, built from the three sources by `djdata export-dataset` (`DATA_ARCHITECTURE.md`)
 - **Tracking**: MLflow + W&B
 - **Audio**: librosa, essentia, scipy (EQ), ffmpeg

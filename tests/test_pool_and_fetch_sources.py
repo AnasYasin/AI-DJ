@@ -35,9 +35,6 @@ def _patch(monkeypatch, tracks, plays=None):
         "load_plays",
         lambda **k: plays if plays is not None else pd.DataFrame(columns=["dj_key", "track_id"]),
     )
-    monkeypatch.setattr(
-        "src.models.edge_scorer.project_tracks", lambda df: np.zeros((len(df), 128), np.float32)
-    )
 
 
 def test_audio_full_keeps_only_held_records(monkeypatch):

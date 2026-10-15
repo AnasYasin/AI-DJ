@@ -1,0 +1,13 @@
+config,params,best epoch,epochs run,train AUC,dev AUC,fit,val AUC,hit@10,MRR,median rank,seconds
+dot S base,346945,6,9,0.769,0.675,overfits,0.71,0.364,0.169,19.0,152
+dot M base,726657,2,5,0.722,0.673,underfits,0.703,0.351,0.166,20.0,123
+dot L base,1584385,1,4,0.724,0.68,underfits,0.705,0.351,0.163,20.0,217
+dot M rich,735361,6,9,0.805,0.692,overfits,0.73,0.37,0.174,17.0,84
+pair S rich,388289,3,6,0.851,0.727,overfits,0.826,0.528,0.316,9.0,34
+pair M rich,874881,4,7,0.872,0.735,overfits,0.833,0.544,0.334,9.0,61
+pair L rich,2142977,7,10,0.881,0.723,overfits,0.829,0.535,0.336,9.0,9184
+gap MLP,4225,15,18,0.775,0.691,overfits,0.796,0.516,0.355,10.0,40
+mean ctx M rich,940417,9,12,0.91,0.783,overfits,0.867,0.602,0.368,7.0,645
+gru ctx M rich,1039489,9,12,0.913,0.748,overfits,0.836,0.548,0.343,8.0,727
+tfm ctx M rich,1074945,3,6,0.876,0.77,overfits,0.856,0.576,0.344,8.0,438
+tfm ctx L rich,2936321,9,12,0.909,0.774,overfits,0.863,0.583,0.352,7.0,2093

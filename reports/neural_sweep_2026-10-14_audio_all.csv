@@ -1,0 +1,2 @@
+config,params,best epoch,epochs run,train AUC,dev AUC,fit,val AUC,hit@10,MRR,median rank,hit@10 old,hit@10 measured,seconds
+mean ctx M rich,940417,6,9,0.905,0.778,overfits,0.865,0.605,0.367,7.0,0.59,0.628,460

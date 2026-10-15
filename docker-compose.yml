@@ -15,7 +15,7 @@ version: "3.9"
 # Usage:
 #   Start all services:          docker-compose up mlflow chromadb airflow
 #   Build the ML image:          docker-compose build trainer
-#   Run a script manually:       docker-compose run --rm trainer python src/models/train_model.py
+#   Run a script manually:       docker-compose run --rm trainer python -m src.models.pair_model
 #   Stop everything:             docker-compose down
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -109,7 +109,7 @@ services:
   # The `image: ai-dj:latest` tag makes this image available to DockerOperator.
   # Run individual pipeline steps:
   #   docker-compose run --rm trainer python src/features/build_features.py
-  #   docker-compose run --rm trainer python src/models/train_model.py
+  #   docker-compose run --rm trainer python -m src.models.pair_model
   trainer:
     build: .
     image: ai-dj:latest

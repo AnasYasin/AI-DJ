@@ -77,24 +77,28 @@ learned cue points, overlays ("w/" tracks).
 ## Key data files
 - `data/dataset/<date>/` — what every model and the planner read: `tracks`, `plays`, `seams`,
   `layers` parquet, every row with `source` (old, raveform, djs), tracks with `audio` (preview, full),
-  `fold` on plays and seams (fold 0 = validation). Built by `djdata export-dataset --date <date>` from
+  `split` on plays and seams (train | validation, by whole DJ, 58 validation DJs). Built by `djdata export-dataset --date <date>` from
   the three sources; read only through `src/data/dataset.py` (`load_tracks`, `load_plays`, ...).
   Layout, ids and rules: `DATA_ARCHITECTURE.md`.
 - `data/processed/tracklist_clean.csv`, `features.parquet` — the old source's tables (2,852 mixes,
   28,460 tracks from 30 s previews: `embedding`[1280 discogs-effnet], bpm, key, energy_mean,
-  loudness_lufs, onset_strength (RAW — see below), mfcc_0..12). Model A vectors are computed at load
-  time by `project_tracks()`, never stored.
+  loudness_lufs, onset_strength (RAW — see below), mfcc_0..12).
 - `data/djdata/<source>/out/` — the measured sources' tables (`DATA_PIPELINE.md`).
 - `data/raw/previews/` — 28,460 × 30 s iTunes m4a. Ground truth for fetch verification.
 - `data/interim/segments/` — segment JSON cache, keyed on path+size+mtime (20.1 s cold → 0 s warm)
-- `models/` — contrastive_encoder.pt + encoder_norm.npz, sequence_model.pt, edge_gbm.pkl
+- `models/` — pair_model.pt, the planner's one learned score (gitignored; `python -m src.models.pair_model` rebuilds it in about 6 h)
 
 ## Models
-| | | |
-|---|---|---|
-| A | `train_model.py` | Two branches, effnet 1280→256 and 7 scalars→64, fused to 128, NT-Xent, numpy semi-hard negatives per genre. Val adjacency AUC **0.663** (raw 0.622, BPM 0.624) on the old leaky split. `project_tracks()` z-scores with `encoder_norm.npz` and projects at load time. |
-| B | `train_sequence.py` | Causal transformer 947k, genre token, InfoNCE. **+17% MRR** over context-free. |
-| GBM | `edge_scorer.py` | 7 pair features. Val AUC **0.69**. |
+One model, the **pair model** (`src/models/pair_model.py`, `models/pair_model.pt`, 2026-10-14): record encoder
+FC 1,305→512, batch norm, ReLU, dropout 0.5, FC 512→128, one per record; context vector = mean of the encoded set
+so far (last 16); pair head FC 799→256, ReLU, dropout, FC 256→1 over [zA, zB, zA⊙zB, |zA−zB|, 31 gap features,
+c, c⊙zB]. Ranking loss over the true next record and 16 random feasible candidates, 5 seeds averaged. On 58
+validation DJs never seen: AUC **0.876**, hit@10 **0.649** of 100 feasible candidates, median rank 5 (raw effnet
+cosine 0.310, the old Model A 0.285, a rich GBM 0.572). It replaced Model A (contrastive record encoder, dot
+product), Model B (context transformer) and the GBM edge scorer, all deleted 2026-10-14. Every model tried, its
+numbers and what to try with more data: `PAIRING_EXPERIMENTS.md`. `TrackArrays` (`track_arrays.py`) holds a pool's
+column arrays. The model is only valid inside the feasible set it was trained on (same genre, BPM ±5 %): given
+candidates of any BPM it ranks far-BPM records first, so the BPM veto is part of the model, not a taste rule.
 
 discogs-effnet frozen (beat MERT 1.04x / MuQ 1.175x / CLAP on a 200-track signal-ratio test).
 BPM from DeepRhythm. Key from essentia `edma`. Transition classifier dropped — the rules are applied
@@ -134,15 +138,21 @@ full audio is held (12,153), `dj=` only records that DJ has played (`dj_key`, th
 `min_energy_pct` is a percentile of THIS pool, after the filters (techno 134-142 at p65: 1,506 → 527).
 Plan entries carry `source`, `source_ref`, `audio` for the fetcher. Then beam search, width 8:
 
-- **Hard veto**: \|log bpm ratio\| ≤ 0.05 · unused · artist unused. No key veto: a clash (Camelot > 2) is
-  allowed on at most half the joins and never two in a row (`clash_allowed` in `key_rules.py`)
-  (`split_artists()` splits &, x, vs., feat., pres. — a collaboration blocks the solo artist)
-- **Score**: `1.0·z(proj·ctx) + 1.0·GBM + 0.7·energy_fit + key_term + compat_weight·compatibility`.
-  `key_term` is +0.2 per Camelot step beyond 2 (`KEY_WEIGHT` = −0.2, negated), so it pushes clashes up to
-  the cap, toward the 42-55 % real share
-- Seeds: 8 tracks nearest `curve[0]` energy — **no model involved in the opening track**
-- Dedupes on `frozenset` — **two orderings of the same set collide, ordering is never compared**
-- `W_CTX / W_GBM / W_ENERGY = 1.0 / 1.0 / 0.7` were **never tuned**
+- **Hard veto**: \|log bpm ratio\| ≤ 0.05 · unused · artist unused
+  (`split_artists()` splits &, x, vs., feat., pres. — a collaboration blocks the solo artist).
+  No key rule at all (2026-10-14): real sets clash on 58 % of joins and put two clashes in a row in 84-90 % of
+  mixes; the pair model sees the Camelot distance and plans 0.37 clashes per join on its own. `n_clashes` and
+  `cam_dist` are reported, never acted on.
+- **Score**: `1.0·z(pair model logit) + 0.7·energy_fit + compat_weight·compatibility`, the logit standardised
+  within the candidate set; the pair model scores candidate B after the current record A given the beam's set so far
+- Seeds: the 8 tracks nearest `curve[0]` energy among the slower half of the pool — **no model involved in
+  the opening track**. Measured 2026-10-14 over 3,671 real sets: the opener is in the set's slower BPM half
+  71 % of the time (lowest third 56 %) and in its lower energy half 59 %; the set's tempo climbs a median
+  0.8 % from first to last record (trance 4.5 %, techno 2.3 %); the closer is low on energy and onset
+  (rank 0.35-0.38). Fame and play count show no pattern for openers.
+- Dedupes on (set of records, last record) — two orderings that end on different records are different beams
+- Slot repair at the first slot scores "the second record after the candidate" (`score_before`)
+- `W_PAIR / W_ENERGY = 1.0 / 0.7` were **never tuned**
 
 Curves `build peak wave chill arc` map onto the **pool's own** energy quantiles (15th to 85th percentile), so a peak curve over a
 mixed pool is only a relative peak — `min_energy_pct` is what makes a set loud in absolute terms.
@@ -169,9 +179,9 @@ marks it `audio = full`, so no later mix looks for it (15 s per record). Not yet
 and a link download (both need a real `make_mix` run).
 
 Failing all candidates → **slot repair** (2026-09-08, Anas's design): the verified tracks stay, `repair_candidates`
-in `predict_model.py` ranks replacements for the empty slot against BOTH neighbours (BPM ≤5%, Camelot ≤2, no
-repeated track or artist; scored by Model B context, GBM edge from the previous track, energy fit to the slot's
-target, compatibility with each neighbour; a first/last slot fits its one neighbour), `make_mix` fetches up to
+in `predict_model.py` ranks replacements for the empty slot against BOTH neighbours (BPM ≤5%, no
+repeated track or artist; scored by the pair model from the previous track given the tracks before the slot, energy
+fit to the slot's target, compatibility with each neighbour; a first/last slot fits its one neighbour), `make_mix` fetches up to
 `REPAIR_TRIES`=5 of them, and only if none verifies does it replan the whole set (`max_rounds`). In a 20-track
 pool almost nothing fits between two neighbours; the catalog pools (thousands) give 5 candidates easily.
 `yt-dlp` must stay current or every download returns HTTP 403.
@@ -295,6 +305,6 @@ MLflow :5000 · Airflow :8080 (airflow/airflow) · W&B · S3 `aidj-1` (us-east-1
 
 ## Notes
 - `starting_time` rolls over hourly: if time_B < time_A → gap = (60−time_A)+time_B; skip pairs > 15 min
-- `tests/conftest.py` — `tmp_audio_file` fixture (sine wave WAV). 214 tests, ruff clean.
+- `tests/conftest.py` — `tmp_audio_file` fixture (sine wave WAV). 265 tests in tests/, 115 in djdata_package/tests/ (2026-10-15), ruff clean.
 - `test_stretch_uses_the_r3_engine` fails on the laptop only: `data/interim/stretch/` holds a cached stretch of the test's own input, so `_stretch` returns it and never calls the mocked rubberband. CI has no cache. Checked 2026-09-28.
 - S3 sync: `aws s3 sync data/processed/ s3://aidj-1/processed/`; the dataset and the archive go to `s3://aidj-1/dataset/<date>/` and `archive/<date>/`
