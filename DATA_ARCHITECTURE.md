@@ -62,14 +62,14 @@ two sources keeps the full-audio row. 146 records have no BPM (138 uncertain Rav
 periodic kick); training drops them.
 
 **plays.parquet**, one row per play in a mix, 65,513. `mix_id, source, source_ref, dj, dj_key, genre,
-mix_title, mix_url, position, track_id, listed_min, fold` for every source, and for the measured
+mix_title, mix_url, position, track_id, listed_min, split` for every source, and for the measured
 sources `found, confidence, time_zero_s, rate, mode (keylock | resample), played_bpm, first_heard_s,
 last_heard_s, played_from_s, played_to_s, votes, floor`. A mix in two sources keeps its measured rows.
 11 % of plays name a track that has no features row (unfetched or unidentified); they stay, as order
 data.
 
 **seams.parquet**, one row per consecutive pair in a mix, 53,721. `seam_id, mix_id, source, dj, genre,
-track_a, track_b, order_a, order_b, kind (seam | overlay), fold`, and for the measured sources every
+track_a, track_b, order_a, order_b, kind (seam | overlay), split`, and for the measured sources every
 column of `seams_index.csv` (placement, window and audit, per-band entry and exit with votes, floors
 and separations, carried dB, bass swap and bass words, presence and loop, bars and positions,
 signature, nearest recipe, distance) plus `a_mode, b_mode`. The old data's pairs carry the identity
@@ -80,13 +80,16 @@ number. The 867 overlay rows are the old data's "w/" records (parent as `track_a
 The per-window `presence.csv` and the per-beat curves stay in the source's `out/`; they are
 intermediates of the measurement, joinable by mix id and time.
 
-**README.md** in the folder: counts per source, fold sizes, the share of tracks seen in more than one
-fold, the md5 of every input table.
+**README.md** in the folder: counts per source, the validation mixes per genre and per source, the md5 of
+every input table.
 
-**Folds.** `fold = md5(dj_key) % 5` on every play, and on every seam through its mix, so every mix of a
-DJ and every mix two sources share sit in one fold. Fold 0 is validation (`VAL_FOLD` in the loader).
-On 2026-10-14 fold 0 holds 388 mixes, old and Raveform only, because the seven DJ-data DJs hashed into
-folds 1 to 4; 7 % of tracks appear in more than one fold. A balanced assignment is open.
+**Validation split.** `split` is `train` or `validation` on every play, and on every seam through its
+mix, by whole DJ, so no validation DJ is ever trained on (`validation_split()` in
+`djdata_package/djdata/dataset.py`, `VALIDATION` in the loader). DJs with 3 to 40 mixes are
+eligible; at least three per genre are taken first, then more while every genre stays under 15 % of its
+mixes. On 2026-10-14: 561 mixes (14.2 %) from 58 DJs, every genre and every source represented (old 291,
+Raveform 234, DJ data 36), 1,370 of the 6,731 measured seams. It replaced a `md5(dj_key) % 5` fold whose
+validation fold held no DJ-data mix. The old fold text is in `docs/notes-archive/`.
 
 **Genre.** `genre_of` in `dataset.py` is the one mapping from a source's label to the seven genres
 (techno, tech house, house, trance, drum and bass, melodic house, afro house, else other). Raveform's
@@ -98,9 +101,8 @@ first set it was listed in.
 ```
 src/data/dataset.py     load_tracks(date=, sources=, audio=)  load_plays  load_seams  load_layers
                         the newest date when none is given
-src/models/train_model.py      Model A: tracks + plays, folds; project_tracks() gives the vectors at load time
-src/models/train_sequence.py   Model B: tracks + plays + project_tracks
-src/models/edge_scorer.py      the GBM: tracks + plays; TrackArrays(df) projects when no vectors are given
+src/models/pair_model.py       the pair model: tracks + plays, the `split` column (validation DJs never trained on)
+src/models/track_arrays.py     TrackArrays(df): a pool's column arrays for the planner and the pair model
 src/models/predict_model.py    the planner's pool: tracks (genre, BPM, energy floor, artist, title)
 src/features/mix_profiler.py, transition_labeler.py   tracks (legacy phase 4 scripts)
 notebooks/build_dj_data_report.py   reads the sources' out/ tables directly, not the dataset

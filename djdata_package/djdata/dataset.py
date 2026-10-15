@@ -3,7 +3,7 @@
     djdata export-dataset --date 2026-10-14        -> data/dataset/2026-10-14/
 
     tracks.parquet   one row per record, every source, the full-audio row wins over the preview row
-    plays.parquet    one row per play in a mix, every source, with the fold the mix belongs to
+    plays.parquet    one row per play in a mix, every source, with the split (train | validation)
     seams.parquet    one row per consecutive pair in a mix, every source; the measured sources carry
                      every column of their seams_index (bands, bass, bars, signature), the old data
                      carries the pair alone. Overlays ("w/" records) are rows with kind = overlay
@@ -16,9 +16,13 @@ YouTube ids and mix numbers are re-hashed here from the title and the page url a
 only) sits beside the id for joins where punctuation differs ("vs" against "vs."; 49 of 732 old
 matches on 2026-10-13).
 
-Folds. By DJ: fold = md5(dj_key) % 5, so every mix of a DJ sits in one fold and a mix that two
-sources share (140 DJ-data mixes are old-data mixes) lands in one fold by construction. Fold 0 is the
-validation fold. The README of each export prints the track overlap between folds.
+Validation. `split` on every play and seam, train or validation, by whole DJ (a general planner is
+judged on DJs it has never seen, and a mix-level split would leak each DJ's habits). Anas, 2026-10-13:
+15 % of mixes, diverse, not so large that training starves. `validation_split` picks DJs with 3 to 40
+mixes (a DJ with 200 mixes stays in training), at least MIN_DJS per genre, then fills in a fixed order,
+the one-and-two-mix DJs last, until every genre and every source holds VALIDATION_SHARE of its mixes. A mix two sources share (140 DJ-data mixes
+are old-data mixes) sits on one side by construction. The README prints the per-genre and per-source
+table and the track overlap between the sides.
 
 Genre. `genre_of` is the one mapping from a source's label (the old data's six names, Raveform's
 mixesdb tag strings) onto the seven genres. The notebook builder carries a copy; keep them equal.
@@ -31,6 +35,7 @@ import json
 import logging
 from pathlib import Path
 import re
+import sys
 
 import numpy as np
 import pandas as pd
@@ -56,7 +61,12 @@ ENRICH = {
     "spotify": Path("data/interim/enrich/spotify_records.csv"),
     "lastfm": Path("data/interim/enrich/lastfm_artists.csv"),
 }
-N_FOLDS = 5
+VALIDATION_SHARE = 0.15
+VALIDATION_DJ_MIXES = (
+    3,
+    40,
+)  # a validation DJ has this many mixes: diverse, and training keeps the big names
+MIN_DJS = 3  # per genre in validation, where the genre has them
 MFCC = [f"mfcc_{i}" for i in range(13)]
 FEATURE_COLS = [
     "bpm",
@@ -109,11 +119,72 @@ def split_title(text: str) -> tuple[str, str]:
     return (artist.strip(), title.strip()) if sep else ("", t.strip())
 
 
+# the loader lives in the repo above the package, as in seam/tempo.py
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from src.data.dataset import dj_key  # noqa: E402  one definition, the loader's
 
 
-def fold_of(dj: str) -> int:
-    return int(hashlib.md5(dj_key(dj).encode()).hexdigest(), 16) % N_FOLDS
+def validation_split(plays: pd.DataFrame, share: float = VALIDATION_SHARE) -> pd.Series:
+    """mix_id -> "train" | "validation", by whole DJ, deterministic.
+
+    Eligible DJs have VALIDATION_DJ_MIXES mixes. First MIN_DJS per genre (the DJ's main genre), then
+    DJs in dj_key order while every genre and source they touch is still under `share` of its mixes.
+    """
+    mixes = plays.drop_duplicates("mix_id")[["mix_id", "dj_key", "genre", "source"]]
+    genre_total = mixes["genre"].value_counts()
+    source_total = mixes["source"].value_counts()
+    per_dj = mixes.groupby("dj_key")
+    n_mixes = per_dj.size()
+    eligible = sorted(n_mixes[n_mixes.between(*VALIDATION_DJ_MIXES)].index)
+    # a genre owned by a few big names (trance: 3 DJs over 80 mixes, 46 with one or two) fills up
+    # from the small DJs, which adds voices and keeps the big names in training
+    small = sorted(n_mixes[n_mixes < VALIDATION_DJ_MIXES[0]].index)
+    main_genre = per_dj["genre"].agg(lambda s: s.value_counts().idxmax())
+
+    chosen: list[str] = []
+    genre_have = {g: 0 for g in genre_total.index}
+    source_have = {s: 0 for s in source_total.index}
+
+    def room(dj: str) -> bool:
+        g = per_dj.get_group(dj)
+        for genre, n in g["genre"].value_counts().items():
+            if genre_have[genre] + n > share * genre_total[genre] + VALIDATION_DJ_MIXES[1] / 2:
+                return False
+        for src, n in (
+            g["source"].value_counts().items()
+        ):  # a source may run over its share, a genre may not:
+            if (
+                source_have[src] + n > (share + 0.10) * source_total[src]
+            ):  # trance's small DJs are all Raveform
+                return False
+        return True
+
+    def take(dj: str) -> None:
+        chosen.append(dj)
+        g = per_dj.get_group(dj)
+        for genre, n in g["genre"].value_counts().items():
+            genre_have[genre] += n
+        for src, n in g["source"].value_counts().items():
+            source_have[src] += n
+
+    for genre in sorted(genre_total.index):  # every genre gets voices first
+        for dj in [d for d in eligible if main_genre[d] == genre][:MIN_DJS]:
+            if dj not in chosen and room(dj):
+                take(dj)
+    for dj in eligible + small:  # then fill every genre and source to the share
+        if dj in chosen:
+            continue
+        g = per_dj.get_group(dj)
+        wants = any(genre_have[ge] < share * genre_total[ge] for ge in g["genre"].unique()) or any(
+            source_have[s] < share * source_total[s] for s in g["source"].unique()
+        )
+        if wants and room(dj):
+            take(dj)
+    side = mixes["dj_key"].isin(chosen).map({True: "validation", False: "train"})
+    return pd.Series(side.values, index=mixes["mix_id"].values)
 
 
 def genre_of(text: str) -> str:
@@ -470,9 +541,9 @@ def export(date: str, out_dir: Path = DATASET_DIR) -> dict:
     layers = pd.concat([l_rv, l_dj], ignore_index=True)
 
     plays["dj_key"] = plays["dj"].map(dj_key)
-    plays["fold"] = plays["dj"].map(fold_of)
-    fold_of_mix = plays.drop_duplicates("mix_id").set_index("mix_id")["fold"]
-    seams["fold"] = seams["mix_id"].map(fold_of_mix)
+    split = validation_split(plays)
+    plays["split"] = plays["mix_id"].map(split)
+    seams["split"] = seams["mix_id"].map(split)
 
     counts = plays.groupby("track_id").size()
     tracks["play_count"] = tracks["track_id"].map(counts).fillna(0).astype(int)
@@ -486,8 +557,11 @@ def export(date: str, out_dir: Path = DATASET_DIR) -> dict:
     seams.to_parquet(out / "seams.parquet", index=False)
     layers.to_parquet(out / "layers.parquet", index=False)
 
-    # how much the folds share: a track seen in two folds is the leak Step 4 wants reported
-    by_fold = plays.groupby("track_id")["fold"].nunique()
+    # how much the two sides share: a track seen on both is the leak Step 4 wants reported
+    by_side = plays.groupby("track_id")["split"].nunique()
+    mixes = plays.drop_duplicates("mix_id")
+    val = mixes[mixes["split"] == "validation"]
+    val_seams = seams[(seams["split"] == "validation") & (seams.get("measured", 0) == 1)]
     report = {
         "date": date,
         "tracks": {s: int(n) for s, n in tracks["source"].value_counts().items()},
@@ -503,12 +577,24 @@ def export(date: str, out_dir: Path = DATASET_DIR) -> dict:
         if "signature" in seams
         else {},
         "layers": int(len(layers)),
-        "folds": {
-            int(f): int(n)
-            for f, n in plays.drop_duplicates("mix_id")["fold"].value_counts().sort_index().items()
+        "validation_mixes": int(len(val)),
+        "validation_share_of_mixes": round(len(val) / len(mixes), 3),
+        "validation_djs": int(val["dj_key"].nunique()),
+        "validation_by_genre": {
+            g: f"{int(n)} of {int(genre_total)}"
+            for g, n, genre_total in zip(
+                mixes["genre"].value_counts().index,
+                val["genre"].value_counts().reindex(mixes["genre"].value_counts().index).fillna(0),
+                mixes["genre"].value_counts(),
+            )
         },
-        "tracks_in_more_than_one_fold": int((by_fold > 1).sum()),
-        "tracks_in_more_than_one_fold_share": round(float((by_fold > 1).mean()), 4),
+        "validation_by_source": {
+            s: f"{int(val[val['source'] == s]['mix_id'].nunique())} of {int(n)}"
+            for s, n in mixes["source"].value_counts().items()
+        },
+        "validation_measured_seams": f"{int(len(val_seams))} of {int((seams.get('measured', 0) == 1).sum())}",
+        "tracks_on_both_sides": int((by_side > 1).sum()),
+        "tracks_on_both_sides_share": round(float((by_side > 1).mean()), 4),
         "inputs": _md5s(),
     }
     (out / "README.md").write_text(_readme(report))

@@ -17,7 +17,6 @@ def test_ids_follow_the_1001_scheme():
         "Solarstone vs Sirocco", "Destination"
     )
     assert dataset.dj_key("Aly & Fila") == "alyandfila" == dataset.dj_key("Alyandfila")
-    assert 0 <= dataset.fold_of("Solomun") < dataset.N_FOLDS
     assert dataset.genre_of("Trance Progressive Trance Psytrance") == "trance"
     assert dataset.genre_of("drum and base") == "drum and bass"
 
@@ -77,3 +76,25 @@ def test_old_tables_pair_in_play_order_and_keep_overlays(tmp_path):
     ov = seams[seams["kind"] == "overlay"].iloc[0]
     assert (ov["track_a"], ov["track_b"]) == ("t2", "t9")
     assert set(tracks["track_id"]) == {"t1", "t2", "t3"} and (tracks["audio"] == "preview").all()
+
+
+def test_validation_split_is_by_whole_dj_and_near_the_share():
+    rows = []
+    for g in ("techno", "trance"):
+        for d in range(12):  # 12 DJs per genre, 5 mixes each, plus one big DJ with 60
+            for m in range(5):
+                rows.append(
+                    {"mix_id": f"{g}{d}m{m}", "dj_key": f"{g}dj{d}", "genre": g, "source": "old"}
+                )
+        for m in range(60):
+            rows.append(
+                {"mix_id": f"{g}bigm{m}", "dj_key": f"{g}big", "genre": g, "source": "old"}
+            )
+    plays = pd.DataFrame(rows)
+    split = dataset.validation_split(plays, share=0.15)
+    plays["split"] = plays["mix_id"].map(split)
+    assert plays.groupby("dj_key")["split"].nunique().max() == 1  # a DJ sits on one side
+    assert plays.loc[plays["dj_key"].str.endswith("big"), "split"].eq("train").all()
+    share = (plays["split"] == "validation").mean()
+    assert 0.10 <= share <= 0.25, share
+    assert plays[plays["split"] == "validation"].groupby("genre")["dj_key"].nunique().min() >= 3

@@ -3,7 +3,7 @@
     from src.data.dataset import load_tracks, load_plays, load_seams
     tracks = load_tracks()                       # the newest date, every source
     tracks = load_tracks(sources=["raveform", "djs"], audio="full")
-    plays  = load_plays(fold=None)               # fold 0 is validation
+    plays  = load_plays()                        # plays["split"] is train or validation
 
 Nothing else in `src/` reads `data/processed` or `data/djdata` for training or planning. A new source
 is a rerun of the export, never an edit here.
@@ -17,7 +17,7 @@ import re
 import pandas as pd
 
 DATASET_DIR = Path("data/dataset")
-VAL_FOLD = 0
+VALIDATION = "validation"  # the value of the `split` column on plays and seams
 
 
 def dj_key(name: str) -> str:
