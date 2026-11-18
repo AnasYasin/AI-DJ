@@ -1642,3 +1642,37 @@ def test_kick_hit_residual_confirms_an_aligned_pair():
 
     out = kick_hit_residual(_kick_train(128, 16), _kick_train(128, 16, seed=1), 128)
     assert out is not None and abs(out[0]) < 0.005
+
+
+# ── a planned type per seam (2026-11-18) ───────────────────────────────────────
+
+
+def test_planned_type_picks_inside_the_measured_type_and_the_rules_veto():
+    from src.audio.audio_mixer import planned_type
+
+    assert planned_type("centre swap", "melt") == ("melt", "ok")  # the rules' pick is inside it
+    assert planned_type("centre swap", "blend") == ("fade", "ok")  # outside: the first recipe
+    assert planned_type("late swap", "rise") == ("blend", "ok")
+    assert planned_type("tension", "wave") == ("tension", "ok")
+    assert planned_type("cut", "blend") == ("slam", "ok")
+    assert planned_type("tension", "slam")[0] is None  # the pair calls for a cut
+    assert planned_type("cut", "blend", slam_allowed=False)[0] is None  # a chill set never cuts
+
+
+def test_tension_recipe_leaves_the_planned_bars_without_bass():
+    from src.audio.audio_mixer import TENSION_BASS_IN, _tension_recipe
+
+    recipe = _tension_recipe(n_bars=32, bass_free_bars=12)
+    bass_out = recipe["A_bands"]["low"][1][0]
+    bass_in = recipe["B_bands"]["low"][1][0]
+    assert bass_in == TENSION_BASS_IN
+    assert round((bass_in - bass_out) * 32) == 12
+    assert (
+        _tension_recipe(8, 30)["A_bands"]["low"][1][0] > 0
+    )  # a short overlap still starts with bass
+
+
+def test_a_planned_start_moves_the_window_towards_it():
+    early, _ = _choose_window(_boundary_info(), 48, 16, None, start_near=0)
+    late, _ = _choose_window(_boundary_info(), 48, 16, None, start_near=40)
+    assert early < late

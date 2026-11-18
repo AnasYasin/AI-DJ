@@ -174,6 +174,53 @@ def classify_transition(
     return gate_transition(measured_transition(ta, tb), curve, position)
 
 
+# ── A planned type per seam ────────────────────────────────────────────────────
+# A set planned from a style group (src/models/set_plan.py) names the measured transition
+# type of each seam. Each measured type covers one or more recipes here (the table in
+# TRANSITION_EXPERIMENTS.md, "The labels"); the rules above pick the recipe inside it, and
+# they veto the plan when the pair calls for a cut or the curve forbids one.
+SIGNATURE_TYPES = {
+    "centre swap": ("fade", "melt", "wave"),
+    "cut": ("slam",),
+    "tension": ("tension",),
+    "end swap": ("rise", "drop"),
+    "late swap": ("blend",),
+}
+
+
+def planned_type(
+    signature: str, measured: str, slam_allowed: bool = True
+) -> tuple[str | None, str]:
+    """(recipe, verdict) for a planned measured type. The recipe is None when the rules veto the plan."""
+    recipes = SIGNATURE_TYPES[signature]
+    if signature == "cut":
+        return ("slam", "ok") if slam_allowed else (None, "the curve does not allow a cut here")
+    if measured == "slam":  # a clash with an energy jump, or a tight pair with a large one
+        return None, "the rules call for a cut on this pair"
+    return (measured if measured in recipes else recipes[0]), "ok"
+
+
+TENSION_BASS_IN = (
+    0.65  # where in the overlap the incoming bass enters; the handover sits there too
+)
+
+
+def _tension_recipe(n_bars: int, bass_free_bars: float) -> dict:
+    """Both records play, the outgoing bass is cut, the mix runs `bass_free_bars` with no bass,
+    then the incoming bass enters. Measured on 1,038 real tension seams (2026-11-18): overlap a
+    median 28 bars, bass-free a median 12.5 bars (middle half 9.5 to 17), a sweep on 14 to 21 %."""
+    free = min(bass_free_bars, TENSION_BASS_IN * n_bars - 1) / max(n_bars, 1)
+    bass_out, edge = max(TENSION_BASS_IN - free, 0.02), 0.02
+    return {
+        "A_vol": [(0.0, 1), (0.9, 1), (1.0, 0)],
+        "B_vol": [(0.0, 0), (0.1, 1), (1.0, 1)],
+        "A_bands": {"low": [(0.0, 1), (bass_out, 1), (bass_out + edge, 0), (1.0, 0)]},
+        "B_bands": {
+            "low": [(0.0, 0), (TENSION_BASS_IN, 0), (TENSION_BASS_IN + edge, 1), (1.0, 1)]
+        },
+    }
+
+
 # ── Recipes ────────────────────────────────────────────────────────────────────
 # Envelopes are (time_fraction, gain) breakpoints, linearly interpolated then
 # lightly smoothed. Bands: A/B_bands = {low, mid, high}; None = full-band only.
@@ -246,6 +293,8 @@ RECIPES = {
     },
 }
 
+RECIPES["tension"] = _tension_recipe(32, 12)  # rebuilt per seam from its own bars
+
 # ── Who is the lead record ─────────────────────────────────────────────────────
 # A long overlap is not a long crossfade. Sitting both records at the same level
 # for a minute gives the ear nothing to hold onto; it hears two tracks, not a
@@ -263,6 +312,13 @@ RECIPES = {
 #   mid_dip_db  extra midrange cut on whichever record is supporting, so the
 #               two do not fight over the same band
 LEAD = {
+    "tension": {  # the lead changes hands where the incoming bass enters
+        "support_db": -6.0,
+        "handover": TENSION_BASS_IN,
+        "swap_bars": 4,
+        "entry_bars": 6,
+        "mid_dip_db": -3.0,
+    },
     "melt": {
         "support_db": -8.0,
         "handover": 0.70,
@@ -372,7 +428,16 @@ def _lead_envelopes(n_bars: int, cfg: dict, grid_bars: int = 1) -> tuple[list, l
     return a_vol, b_vol, a_mid, b_mid
 
 
-DEFAULT_BARS = {"slam": 4, "rise": 32, "fade": 32, "melt": 64, "wave": 16, "blend": 16, "drop": 16}
+DEFAULT_BARS = {
+    "slam": 4,
+    "rise": 32,
+    "fade": 32,
+    "melt": 64,
+    "wave": 16,
+    "blend": 16,
+    "drop": 16,
+    "tension": 32,  # real tension seams overlap a median 28 bars
+}
 
 # ── Phrase grid ────────────────────────────────────────────────────────────────
 # Dance music is built in 8-bar phrases (16 and 32 at the section level), and a
@@ -457,6 +522,7 @@ DEFAULT_PLAY_MINUTES = 4.17  # median across all genres
 LENGTH_FLEX_BARS = 16
 LENGTH_PENALTY = 0.5  # cost per unit of relative deviation from the genre target
 CUE_IN_BONUS, CUE_OUT_BONUS = 0.10, 0.25  # for starting / ending on a section change
+START_NEAR_PENALTY = 0.03  # per bar away from a planned start; 8 bars cost about one cue-out bonus
 GENRE_BARS = {
     "techno": DEFAULT_BARS,
     "tech house": {
@@ -1045,9 +1111,14 @@ def _choose_window(
     e_target01: float | None,
     phrase_bars: int | None = None,
     quiet_tail: bool = False,
+    start_near: float | None = None,
 ) -> tuple[int, int]:
     """
     Pick which window of the track to play, and how long it runs.
+
+    `start_near`: the bar a planned set wants the track to start around. A window loses
+    START_NEAR_PENALTY per bar its start sits away from it, so the cue-in still lands on a
+    phrase line and can still take a section boundary a few bars off.
 
     `quiet_tail`: the NEXT slot is low-energy, so prefer a cue-out whose tail
     (what plays under the incoming record) is a breakdown, outro or intro.
@@ -1079,6 +1150,8 @@ def _choose_window(
     labels = {s["label"]: s for s in info["sections"]}
     first_ok = labels["intro"]["bars"][1] if "intro" in labels else 0
     lo_start = max(first_ok - 8, 0)
+    if start_near is not None:  # a planned start may sit inside the intro
+        lo_start = min(lo_start, max(int(start_near), 0))
     lo_start += (offset - lo_start) % phrase  # first phrase start at or after lo_start
     last_ok = n - 1 - tail_bars
     room = last_ok - lo_start
@@ -1109,6 +1182,8 @@ def _choose_window(
             score += CUE_IN_BONUS * (start in bounds) + CUE_OUT_BONUS * (end in bounds) - drift
             if quiet_tail and _section_at(info["sections"], end) in QUIET_SECTIONS:
                 score += TAIL_QUIET_BONUS
+            if start_near is not None:
+                score -= START_NEAR_PENALTY * abs(start - start_near)
             if score > best_score:
                 best, best_score = (start, end), score
     return best if best else (lo_start, last_ok)
@@ -1597,6 +1672,7 @@ def _prepare_track(
     phrase_bars: int = DEFAULT_PHRASE_BARS,
     quiet_tail: bool = False,
     cue: tuple[int | None, int | None] | None = None,
+    start_near: float | None = None,
 ) -> dict:
     info = segment(path)
     y = load_audio(path)  # (samples, channels)
@@ -1608,7 +1684,7 @@ def _prepare_track(
     bars = np.array(info["bars"], dtype=np.float64) / rate
 
     cue_in_bar, cue_out_bar = _choose_window(
-        info, target_bars, max_tail_bars, e_target01, phrase_bars, quiet_tail
+        info, target_bars, max_tail_bars, e_target01, phrase_bars, quiet_tail, start_near
     )
     if cue is not None:  # test hook: the regression set pins the window on a chosen part
         cue_in_bar = cue_in_bar if cue[0] is None else int(cue[0])
@@ -1705,8 +1781,15 @@ def render_mix(
     total_minutes: float | None = None,
     force_bars: int | None = None,
     cue_overrides: list | None = None,
+    seam_plan: list[dict] | None = None,
 ) -> dict:
     """
+    seam_plan: one dict per seam from `src.models.set_plan.set_plan`, seam i joining tracks i
+    and i + 1: `type` (the measured type), `overlap_bars`, `bass_free_bars`, and for the
+    incoming track `enters_bar` and `play_min`. The mixer renders the planned type with its
+    own recipe; its rules stay as the check and replace a planned type they veto
+    (`plan_check` in the report). Cue-in and play length are rough targets for the window
+    search, never pins.
     total_minutes: when given, the LAST track keeps playing past its window until
     the mix reaches this length (whole phrases; it stops early only if the track
     runs out), or is cut short if the mix would overshoot by more than a phrase.
@@ -1744,6 +1827,12 @@ def render_mix(
                 "use `energy_target01` instead."
             )
     bars_table = GENRE_BARS.get(genre or "", DEFAULT_BARS)
+    bars_table = {
+        **bars_table,
+        "tension": bars_table["rise"],
+    }  # the default when no plan gives a length
+    if seam_plan is not None and len(seam_plan) != len(track_paths) - 1:
+        raise ValueError(f"seam_plan has {len(seam_plan)} seams for {len(track_paths)} tracks")
     # Tail reserved after each window so the next track has something to mix
     # over. The transition type is not known yet, because it depends on features
     # measured from the prepared tracks, so this has to be an estimate.
@@ -1771,7 +1860,18 @@ def render_mix(
         next_et = energy_targets[i + 1] if energy_targets and i + 1 < len(track_paths) else None
         quiet_tail = structure_regime(next_et) == "low"
         cue = cue_overrides[i] if cue_overrides and i < len(cue_overrides) else None
-        t = _prepare_track(p, target_bpm, max_tail, target_bars, et, phrase, quiet_tail, cue)
+        want_bars, start_near = target_bars, None
+        if seam_plan and i > 0:  # the seam that brings this track in says where and how long
+            slot = seam_plan[i - 1]
+            start_near = slot.get("enters_bar")
+            if slot.get("play_min"):
+                # the plan's play time is first heard to last heard, so it holds the next overlap
+                after = seam_plan[i].get("overlap_bars", 0) if i < len(seam_plan) else 0
+                heard = slot["play_min"] * 60 / bar_dur_t
+                want_bars = max(_whole_phrases(int(heard - after), phrase), MIN_BODY_BARS)
+        t = _prepare_track(
+            p, target_bpm, max_tail, want_bars, et, phrase, quiet_tail, cue, start_near
+        )
         played_bars = t["cue_out_bar"] - t["cue_in_bar"]
         log.info(
             "  %s: %.0f→%.0f bpm, window bars %d–%d (%d bars, %.2f min vs %.2f target),"
@@ -1822,8 +1922,21 @@ def render_mix(
         if ttype != measured:
             why = "forced" if force_type else f"curve={curve}"
             log.info("  transition %d: %s → %s (%s)", i, measured, ttype, why)
+        slot = seam_plan[i - 1] if seam_plan and not force_type else None
+        plan_check = None
+        if slot:
+            slam_allowed = gate_transition("slam", curve, position) == "slam"
+            planned, plan_check = planned_type(slot["type"], measured, slam_allowed)
+            log.info("  transition %d: planned %s → %s (%s)", i, slot["type"], planned, plan_check)
+            if planned is None:
+                slot = None  # vetoed: the rules' own type and length stand
+            else:
+                ttype = planned
         recipe = RECIPES[ttype]
         n_bars = bars_table[ttype]
+        planned_bars = slot.get("overlap_bars") if slot and ttype != "slam" else None
+        if planned_bars:
+            n_bars = max(int(round(planned_bars)), 2)
         regime = structure_regime(energy_targets[i] if energy_targets else None)
         lands_on_drop = False
 
@@ -1854,11 +1967,15 @@ def render_mix(
         # stretches.
         compat = pair_compatibility(prev, cur)
         ceiling_bars = max(int(max_overlap_seconds(compat) / bar_dur), 2)
-        want = (
-            min(ceiling_bars, int(n_bars * LONG_STRETCH))
-            if ttype in STRETCHABLE
-            else min(ceiling_bars, n_bars)
-        )
+        # A planned length comes from what the style group's DJs do, so the compatibility ceiling
+        # does not shorten it; `compatibility` and `max_overlap_s` in the report still say what
+        # the pair alone would have been given.
+        if planned_bars:
+            want = n_bars
+        elif ttype in STRETCHABLE:
+            want = min(ceiling_bars, int(n_bars * LONG_STRETCH))
+        else:
+            want = min(ceiling_bars, n_bars)
         if want != n_bars:
             log.info(
                 "  transition %d: %d → %d bars (compatibility %.2f allows %.0fs)",
@@ -1876,12 +1993,15 @@ def render_mix(
         # drop-aligned blend ends on the drop. Everything else starts at cue-in.
         in_bar = cur["cue_in_bar"]
         if ttype == "slam":
-            land_on = cur["drop_bar"] if cur["drop_bar"] is not None else cur["cue_in_bar"]
+            # A planned cut lands on the planned start. Aiming at the drop put two of four planned
+            # cuts at bar 54 on 2026-11-18, where real cuts enter around bar 22 (middle half 8 to 38).
+            to_drop = cur["drop_bar"] is not None and not slot
+            land_on = cur["drop_bar"] if to_drop else cur["cue_in_bar"]
             in_bar = max(land_on - bars_table["slam"] // 2, 0)
         elif ttype == "drop" and cur["drop_bar"] is not None:
             in_bar = max(cur["drop_bar"] - n_bars, 0)
             lands_on_drop = True
-        elif regime == "high":
+        elif regime == "high" and not slot:  # a planned seam keeps its planned overlap
             # a peak slot: whatever the type's EQ character, the overlap ends on
             # the incoming drop, so the bass swap and the handover ARE the drop.
             # The drop has to be at least a phrase past the cue-in, or there is
@@ -1923,6 +2043,8 @@ def render_mix(
         if lands_on_drop and cur["drop_bar"] is not None:
             in_bar = max(cur["drop_bar"] - n_bars, 0)
         n_ov = int(n_bars * bar_dur * SR)
+        if ttype == "tension":
+            recipe = _tension_recipe(n_bars, slot.get("bass_free_bars", 12) if slot else 12)
 
         # Both grids are phase-calibrated to real kicks (the ε correction at
         # prepare time), so cutting on bar times already lands close. What is
@@ -2119,6 +2241,8 @@ def render_mix(
                 "to": cur["name"][:30],
                 "type": ttype,
                 "measured": measured,
+                "planned": seam_plan[i - 1]["type"] if seam_plan else None,
+                "plan_check": plan_check,
                 "bars": n_bars,
                 "compatibility": round(compat, 3),
                 "max_overlap_s": max_overlap_seconds(compat),
