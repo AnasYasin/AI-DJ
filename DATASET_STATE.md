@@ -24,6 +24,63 @@ their own 1001 page links, see the DJ PROFILING note below and `DATA_ARCHITECTUR
 speed theory and the quad-fingerprint work in **THE BLOCKER** below are kept as a record of what was tested;
 the speed part is superseded, the quad fingerprint remains a valid second opinion.
 
+# Curves, segments and the cue table for every held track (2026-11-13 and 14)
+
+**What was measured.** Every held track of both measured sources, 12,211 files (Raveform 6,917, DJ data
+5,294), got `curves/<id>.npz` and `segments/<id>.json`. What is in them is in `DATA_ARCHITECTURE.md`, how
+to run it in `DATA_PIPELINE.md`. One VM in the telfy account, 32 vCPU, about 8 hours, 0 failed.
+
+**How it was checked.**
+
+- Before the full run, 8 tracks were measured on the laptop and on the VM. Curves, bars, sections and
+  BPM matched on all 8 after two faults were fixed. DeepRhythm was missing on the VM, so 7 of 8 BPMs came
+  from the librosa fallback. Then 8 workers downloaded its checkpoint at once and 2 got a broken file.
+- After the run, every file was loaded on the laptop. 12,211 segment files have a BPM and at least one
+  section. 12,211 curve files have five arrays of equal length with no missing or infinite value.
+- The S3 object counts equal the track counts for both folders of both sources.
+
+**Numbers.**
+
+- Downbeats come from Beat This! on 12,155 tracks and from the kick-phase fallback on 56 (0.5 %). The
+  fallback is a coin toss on 4/4, so bar numbers on those 56 are not to be trusted. 0.3 % of measured seams
+  touch one of them (`a_downbeat_source`, `b_downbeat_source`).
+- `downbeat_confidence` has a median of 0.71. A quarter of the tracks are under 0.54 and 5 % under 0.36.
+- `out/track_structure_log.csv` for Raveform has 6,853 rows for 6,917 tracks. The run was stopped once and
+  the unflushed rows were lost. The files of those 64 tracks exist and the downbeat source is inside each
+  segment file.
+
+**The cue table (`out/seam_cues.csv`, 2026-11-14).** One row for each of the 6,731 measured seams, 425 DJs,
+1,172 mixes. Both tracks are held for every one of them. The bass swap position exists on 83 %, the share
+of seams that have a bass swap reading.
+
+It reproduces the 2026-11-13 analysis made without real downbeats. On the same 4,989 seams and with the
+same definition the share of entries before bar 8 is 0.60, 0.42, 0.39 and 0.31 for house, tech house,
+trance and techno, against 0.59, 0.42, 0.39 and 0.31 then, and 4.4 % of entries are past bar 48 in both.
+Drum and bass moved from 0.41 to 0.51. The earlier figure took the bar length from the BPM column, which
+is half-time on some of those tracks.
+
+**Limits, to keep in mind before learning from it.**
+
+- The cue times are the seam window reading, `window_t0 + in_s` and `out_s`. It agrees with the coarse
+  locate reading (`b_first_heard_s`, `a_last_heard_s`, the plays' `played_from_s` and `played_to_s`) within
+  5 s on 19 % of entries and 37 % of exits. The coarse reading lags by a median of 7.6 s. The window
+  reading is the one checked on mixer renders (section below, 2026-10-09). It reads the entry late by 7 to
+  17 bars when the incoming track is cued at a sparse intro, because it measures when the track is audible.
+- `in_s` and `out_s` sit on a 2.5 s grid, which is more than one bar. `_phrase_pos` of the entry comes out
+  near uniform (10 to 15 % per bar of the phrase), so the table cannot say whether DJs enter on a phrase
+  line. `_edge_bars` has the same limit. The 8-bar bucket and the section are usable.
+- 17.5 % of entries read before second 0 of the incoming track, 9.1 % by more than 5 s (Raveform 18.7 %,
+  DJ data 14.7 %). The cause is not separated. It is a looped intro, a different version of the track or a
+  wrong `time_zero_s`. 6.6 % of exits read past the last bar of the outgoing track, 0.4 % by more than 5 s
+  past its end.
+- The export of 2026-11-14 equals the 2026-10-14 one on every old column of plays, seams and layers. On
+  tracks, `listeners` is filled on 25 more rows (36,179 against 36,154), none changed. The cause was not
+  found.
+- The export of 2026-11-18 differs from 2026-11-14 in two columns. `dj_key` changed on 214 plays, because
+  the key now drops accents and Roman Flügel's two keys merged. `split` changed on 67 plays in 4 mixes.
+  Every other column of the four tables is identical. It also carries the profile tables
+  (`DATA_ARCHITECTURE.md`).
+
 # Cleanup (2026-10-13, Anas: "do it now")
 
 Removed from git: `scripts/diag/loudfix_render.py`, `loudfix_worst.py`, `seamfix_ab.py` (nothing referenced them) and
@@ -41,8 +98,8 @@ record the 2026-10-09 to 12 re-run and stay; the next run wants one script with 
 
 The VM re-run (`scripts/vm/rerun_placement_2026-10-09.sh`, then `rerun_raveform_2026-10-10.sh` and
 `after_measure_2026-10-11.sh`, started 2026-10-09, OOM-killed twice, finished 20:38 German time 2026-10-11; the memory note
-`vm-run-restart-2026-10-10` has the worker counts and the pitfalls). Tables on the laptop, the VM and S3; the old ones in
-`out/before_2026-10-09/`.
+`vm-run-restart-2026-10-10` has the worker counts and the pitfalls). Tables on the laptop and S3; the old ones in
+`s3://aidj-telfy/archive/2026-10-09_old_placement/` (its tables for both corpora and 1,694 of its 2,459 DJ windows).
 
 **Beat-match check, whole corpus (script in the session scratchpad, same method as the 2026-10-08 section: record BPM from
 `track_features.parquet` times the placement's rate, both sides of a blend, half or double tempo folded; blends = centre,
@@ -61,7 +118,8 @@ So the DJ corpus now beat-matches as well as Raveform. 52 % of the 4,024 found r
 
 **Counts.** DJ corpus: 3,489 seams in the index, 2,638 cut, 2,617 measured (35 windows of 25 minutes to 4 hours were set aside
 in `windows_big/`, list `out/measure_big_windows_2026-10-11.csv` with a `decision` column; the 14 under 50 minutes were
-measured at 2 workers on 2026-10-12 and are in, the 21 over 50 minutes are left out as not transitions, Anas 2026-10-12). Of the 3,489 (before the 14 came in): 1,108 typed, 728 gap, 644
+measured at 2 workers on 2026-10-12 and are in, the 21 over 50 minutes are left out as not transitions, Anas 2026-10-12; their
+window files were not kept, the csv is the record). Of the 3,489 (before the 14 came in): 1,108 typed, 728 gap, 644
 unmeasured (floors not trusted), 851 unusable (a gap of minutes between A last heard and B first heard). Raveform: 5,060
 measured, 4,076 typed, 546 gap, 337 unmeasured.
 
@@ -144,7 +202,7 @@ gives the speed; the record is matched resampled and key-locked (rubberband R3) 
 votes ±1 % then ±0.2 %, and the better-voted of old and new stands. `plays.csv` carries `mode` and `played_bpm`.
 Needs `tempo --all-tracks` before `locate`, and rubberband-cli + pyrubberband on the machine. The DJ corpus is being
 re-run with it on the VM (`scripts/vm/rerun_placement_2026-10-09.sh`, started 2026-10-09); every stage after locate
-runs again, the old tables are in `out/before_2026-10-09/`.
+runs again; the old tables are in `s3://aidj-telfy/archive/2026-10-09_old_placement/`.
 
 The mixer was never affected: `_stretch` uses rubberband time-stretch, which keeps pitch.
 
@@ -199,7 +257,7 @@ recommendation, waiting on his word.
 
 ```
                         old dataset                       Raveform + DJ corpus
-tracks                  28,460, 30 s previews only        12,211, full audio on VM and S3
+tracks                  28,460, 30 s previews only        12,211, full audio on S3
 plays / pairs           29,393 plays, 2,834 sets          about 20,000 plays, 1,224 mixes
 seam measurements       none                              7,519 seams: bands in/out, bass swap, overlap, loop, label, bars
 vectors                 preview mean, DeepRhythm BPM,     whole-track mean, patches kept, measured tempo,
@@ -299,7 +357,7 @@ genre from the audio. Look at it again before the pool reads both datasets.
 
 Run on the VM 2026-09-29 20:26 to 2026-09-30 09:07 UTC, code e862a82 (75d703f plus the webm start fix
 below), `djdata_package/config.yaml`, run script `~/AI-DJ/data/djdata/raveform/run_full_2026-09-30.sh`.
-Tables in `data/djdata/raveform/out/` on the VM and the laptop, and at `s3://aidj-1/djdata/out/`.
+Tables in `data/djdata/raveform/out/` on the VM and the laptop, and at `s3://aidj-telfy/djdata/out/`.
 Stages locate (the alignment stands in), pairs, cut (adopts the manifest's windows and audits them),
 measure, tempo, label, export-seams. `layers` and `layer-bands` cannot run: the full mixes were deleted
 when the windows were cut, and neither S3 nor the VM holds them (checked 2026-09-29).
@@ -402,7 +460,7 @@ the 3 are not traced. The ear has not heard any Raveform output of this code.
 # 2026-09-29, the full DJ profiling run, every DJ with Fred
 
 Run on the VM 2026-09-28 16:05 to 2026-09-29 16:01 UTC, then a fix-up to 17:08 UTC, code 75d703f.
-Tables in `data/djdata/djs/out/` on the VM and at `s3://aidj-1/djdata_djs/out/`.
+Tables in `data/djdata/djs/out/` on the VM and at `s3://aidj-telfy/djdata_djs/out/`.
 285 mixes (265 from their 1001 page, Fred's 3 own-audio shows and 17 solo sets), 5,571 records on disk.
 
 ```
@@ -729,7 +787,7 @@ quiet tail or filtered intro, or those are real edits.
 # RAVEFORM — good
 
 5,062 usable seams, 919 mixes, 6,579 tracks. On the VM at `~/AI-DJ/data/djdata/raveform` and on S3 at
-`s3://aidj-1/djdata/`.
+`s3://aidj-telfy/djdata/`.
 
 ## How we find the tracks
 
@@ -829,7 +887,7 @@ long_blend, short_blend.
 ## What Raveform still needs
 
 **Measured at scale on 2026-09-30**, see the section at the top. The dead NNLS gain fit's 1,181 rows
-moved to `djdata/out/old_gainfit_2026-09-14/` (VM and S3).
+moved to `djdata/out/old_gainfit_2026-09-14/` (S3).
 
 **The measured times have never been checked by ear.** In `ear_test/raveform_mapping/MARKS.csv` and
 `raveform_mapping_genres/MARKS.csv` the columns `your_incoming_in`, `your_outgoing_out` and
@@ -1258,7 +1316,7 @@ and everything between 30 and 80 passed. On Raveform's audio the same control si
 
 The package replaces the diag scripts for every job below. The 59 untracked diag scripts were deleted
 on 2026-09-30, after both VM runs; all 61 untracked ones are kept at
-`s3://aidj-1/archive/scripts_diag_untracked_2026-09-30.tar.gz`. `dj_previews_fetch.py` and
+`s3://aidj-telfy/archive/scripts_diag_untracked_2026-09-30.tar.gz`. `dj_previews_fetch.py` and
 `seam_previews_fetch.py` stay, since nothing replaces them. The 18 tracked mixer diagnostics in
 `scripts/diag/` are untouched.
 

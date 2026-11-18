@@ -94,7 +94,7 @@ patches stay on disk for all tracks or only the means are kept.
 techno 108, trance 87, house 79, drum and bass 79, deep house 20). Full tracks on the VM, 6 spawn
 processes, 1,588 s, 1.6 s per track. Previews on the laptop, 3 processes, 1.0 s per track. Outputs:
 `data/interim/embedding_sample/` (report, sample table, seam list), the test script `scripts/features/embedding_tests.py`,
-`s3://aidj-1/djdata/features/` (the 977 patch files, the sample table, the report).
+`s3://aidj-telfy/djdata/features/` (the 977 patch files, the sample table, the report).
 
 **Results, raw cosine on frozen discogs-effnet, no training.** Negatives are one random track per
 seam from another seam, same genre or other genre. 500 positives, so the AUC's standard error is
@@ -136,7 +136,7 @@ it covers the planner, the mixer and the transition model, not only the embeddin
   installed in its `aidj` environment on 2026-10-07. The 20-track timing below put a full track at
   4.8 s in one process, so the full run is 4 to 6 h at 4 to 8 processes and the GPU path
   (`DiscogsEmbedderGPU`) is not needed.
-- Audio reaches any VM from S3 (`s3://aidj-1/djdata/tracks/`, `s3://aidj-1/djdata_djs/tracks/`), never
+- Audio reaches any VM from S3 (`s3://aidj-telfy/djdata/tracks/`, `s3://aidj-telfy/djdata_djs/tracks/`), never
   from the laptop. Previews stay on the laptop and are embedded there.
 
 **20-track timing, 2026-10-07, CPU VM, one process.** Mean track 6.2 min. Decode to 16 kHz 1.1 s,
@@ -183,8 +183,8 @@ fetched and verified at all, which is the cost of ever replacing the previews wi
 **Started 2026-10-07 01:06 UTC** on the CPU VM, `~/AI-DJ/run_track_features_2026-10-07.sh` in tmux
 `trackfeat`: Raveform then the DJ corpus, 6 spawn processes, the 977 sample tracks resumed. One table
 per corpus at `data/djdata/<corpus>/out/track_features.parquet`, vectors at
-`data/djdata/<corpus>/embeddings/`. At the end the script syncs to `s3://aidj-1/djdata/` and
-`s3://aidj-1/djdata_djs/` (same layout) and shuts the VM down, which the seam-run scripts did not.
+`data/djdata/<corpus>/embeddings/`. At the end the script syncs to `s3://aidj-telfy/djdata/` and
+`s3://aidj-telfy/djdata_djs/` (same layout) and shuts the VM down, which the seam-run scripts did not.
 Expected about 5.5 h. The sample's S3 copy under `djdata/features/` is superseded by this and can go
 once the sync is checked.
 

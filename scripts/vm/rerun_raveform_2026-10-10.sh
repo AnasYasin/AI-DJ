@@ -21,5 +21,5 @@ run python -m djdata.cli measure      --config $C --workers 16   # Raveform wind
 run python -m djdata.cli label        --config $C
 run python -m djdata.cli types        --config $C
 run python -m djdata.cli export-seams --config $C
-run aws s3 sync data/djdata/raveform/out/ s3://aidj-1/djdata/out/
+run aws s3 sync data/djdata/raveform/out/ s3://aidj-telfy/djdata/out/
 echo "== $(date -u +%H:%M:%S) raveform done"

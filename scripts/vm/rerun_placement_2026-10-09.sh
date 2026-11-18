@@ -51,6 +51,6 @@ run python -m djdata.cli layer-bands  --config $C --workers 16
 run bash scripts/vm/rerun_raveform_2026-10-10.sh
 
 # ---- to S3, dated copies beside the live tables ---------------------------------------------------
-run aws s3 sync data/djdata/djs/out/      s3://aidj-1/djdata_djs/out/
-run aws s3 sync data/djdata/raveform/out/ s3://aidj-1/djdata/out/
+run aws s3 sync data/djdata/djs/out/      s3://aidj-telfy/djdata_djs/out/
+run aws s3 sync data/djdata/raveform/out/ s3://aidj-telfy/djdata/out/
 echo "== $(date -u +%H:%M:%S) done"

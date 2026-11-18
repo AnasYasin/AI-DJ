@@ -539,6 +539,16 @@ def export(date: str, out_dir: Path = DATASET_DIR) -> dict:
         drop=True
     )  # a record played twice in one old set
     layers = pd.concat([l_rv, l_dj], ignore_index=True)
+    # where in each track the seam happens (scripts/experiments/seam_cues.py), measured seams only.
+    # ponytail: that script reads seam ids from the newest dataset, so a new seam gets its cue columns
+    # on the second export; move the script into measured_tables if seams are measured again
+    cues = [
+        pd.read_csv(f)
+        for s in ("raveform", "djs")
+        if (f := SOURCES[s]["root"] / "out" / "seam_cues.csv").exists()
+    ]
+    if cues:
+        seams = seams.merge(pd.concat(cues), on="seam_id", how="left")
 
     plays["dj_key"] = plays["dj"].map(dj_key)
     split = validation_split(plays)

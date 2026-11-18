@@ -36,7 +36,11 @@ DJ's real choice on 0.25 of seams, and the DJ's own most common type gives 0.51.
 records at the cue points adds nothing in techno and a signal across DJs in house that does not hold
 inside Claptone. Agreed shape: per-DJ and per-genre tables of type shares and recipe distributions
 (never medians), types drawn for the whole set and placed on seams that can carry them, the mixer's
-rules as the veto, the mixer's own rendering. Open: whether consecutive seams depend on each other.
+rules as the veto, the mixer's own rendering. Consecutive seams do not depend on each other (2026-11-13).
+Style groups of DJs per genre, with the share and recipe of each type, were built on 2026-11-18
+(`src/data/profiles.py`). Still to build are the plan for a set, the type per seam into the mixer, slot
+fit in the planner, the tension recipe and an end-to-end mix. Detail in `TRANSITION_EXPERIMENTS.md`, "The design
+that follows".
 Tension is 20 % of measured seams and loop 63, so item 5's first question has an answer in the data.
 
 ## 4. DJ profiling
