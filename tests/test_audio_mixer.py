@@ -1656,7 +1656,6 @@ def test_planned_type_picks_inside_the_measured_type_and_the_rules_veto():
     assert planned_type("tension", "wave") == ("tension", "ok")
     assert planned_type("cut", "blend") == ("slam", "ok")
     assert planned_type("tension", "slam")[0] is None  # the pair calls for a cut
-    assert planned_type("cut", "blend", slam_allowed=False)[0] is None  # a chill set never cuts
 
 
 def test_tension_recipe_leaves_the_planned_bars_without_bass():

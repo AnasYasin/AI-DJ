@@ -178,7 +178,7 @@ def classify_transition(
 # A set planned from a style group (src/models/set_plan.py) names the measured transition
 # type of each seam. Each measured type covers one or more recipes here (the table in
 # TRANSITION_EXPERIMENTS.md, "The labels"); the rules above pick the recipe inside it, and
-# they veto the plan when the pair calls for a cut or the curve forbids one.
+# they veto a planned blend when the pair calls for a cut.
 SIGNATURE_TYPES = {
     "centre swap": ("fade", "melt", "wave"),
     "cut": ("slam",),
@@ -188,13 +188,16 @@ SIGNATURE_TYPES = {
 }
 
 
-def planned_type(
-    signature: str, measured: str, slam_allowed: bool = True
-) -> tuple[str | None, str]:
-    """(recipe, verdict) for a planned measured type. The recipe is None when the rules veto the plan."""
+def planned_type(signature: str, measured: str) -> tuple[str | None, str]:
+    """(recipe, verdict) for a planned measured type. The recipe is None when the rules veto the plan.
+
+    The curve gate is not asked: a cut the style group plans stands in any set (on 2026-11-18 a chill
+    curve vetoed all four planned cuts of a `techno cut` set). The curve still gates the types the
+    rules choose alone.
+    """
     recipes = SIGNATURE_TYPES[signature]
     if signature == "cut":
-        return ("slam", "ok") if slam_allowed else (None, "the curve does not allow a cut here")
+        return "slam", "ok"
     if measured == "slam":  # a clash with an energy jump, or a tight pair with a large one
         return None, "the rules call for a cut on this pair"
     return (measured if measured in recipes else recipes[0]), "ok"
@@ -1925,8 +1928,7 @@ def render_mix(
         slot = seam_plan[i - 1] if seam_plan and not force_type else None
         plan_check = None
         if slot:
-            slam_allowed = gate_transition("slam", curve, position) == "slam"
-            planned, plan_check = planned_type(slot["type"], measured, slam_allowed)
+            planned, plan_check = planned_type(slot["type"], measured)
             log.info("  transition %d: planned %s → %s (%s)", i, slot["type"], planned, plan_check)
             if planned is None:
                 slot = None  # vetoed: the rules' own type and length stand
@@ -2365,6 +2367,9 @@ def render_plan(
         )
     if len(paths) < 2:
         raise ValueError(f"only {len(paths)} of {len(plan['tracks'])} planned tracks have audio")
+
+    if plan.get("seams") and not missing:  # a dropped track would shift every slot
+        kwargs.setdefault("seam_plan", plan["seams"])
 
     if any(t is None for t in targets):
         # Plans written before energy_target01 existed. Better to lose the

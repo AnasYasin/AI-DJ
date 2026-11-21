@@ -5,6 +5,7 @@ Profiles built from the dataset: what kind of set each mix is, and which DJs sha
                                                                      groups.parquet   load_groups()
                                                                      group_types.parquet   load_group_types()
                                                                      dj_types.parquet      load_dj_types()
+                                                                     structure.parquet     load_structure()
 
 Both are computed from plays, tracks and seams alone, so new DJ data needs only `djdata export-dataset`
 and this command again.
@@ -58,7 +59,15 @@ group without owning it.
 
 dj_types.parquet, the same columns per group, DJ and transition type: what one DJ of the group does, for a
 request that names the DJ.
+
+structure.parquet, one row per held track that has a segment file (`data/djdata/<source>/segments/`):
+`n_bars`, `bar_s` (median bar length in seconds), `intro_bars` (the bar its intro ends, 0 without one),
+`first_drop_bar` (empty without a drop) and `outro_bars`. The planner reads it to see whether a track can
+carry a planned slot.
 """
+
+import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -286,6 +295,33 @@ def weighted_quantile(values: pd.Series, weights: pd.Series, q: float) -> float:
     return float(values[order][np.searchsorted(reached, q)])
 
 
+def structure_table() -> pd.DataFrame:
+    """One row per held track with a segment file: its length in bars and where its sections sit."""
+    rows = []
+    for t in load_tracks(
+        audio="full", columns=["track_id", "source", "source_ref", "audio"]
+    ).itertuples():
+        path = Path("data/djdata") / t.source / "segments" / f"{t.source_ref}.json"
+        if not path.exists():
+            continue
+        seg = json.loads(path.read_text())
+        first = {
+            s["label"]: s["bars"] for s in reversed(seg["sections"])
+        }  # the first of each label
+        last = {s["label"]: s["bars"] for s in seg["sections"]}
+        rows.append(
+            {
+                "track_id": t.track_id,
+                "n_bars": seg["n_bars"],
+                "bar_s": float(np.median(np.diff(seg["bars"]))),
+                "intro_bars": first["intro"][1] if "intro" in first else 0,
+                "first_drop_bar": first["drop"][0] if "drop" in first else np.nan,
+                "outro_bars": seg["n_bars"] - last["outro"][0] if "outro" in last else 0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def group_names(groups: pd.DataFrame) -> dict[str, str]:
     """Numbered group -> "<genre> <word>". The group purest in its main type picks its word first."""
     names = {}
@@ -335,6 +371,7 @@ if __name__ == "__main__":
     groups.to_parquet(latest() / "groups.parquet", index=False)
     type_table(table, ["group"]).to_parquet(latest() / "group_types.parquet", index=False)
     type_table(table, ["group", "dj_key"]).to_parquet(latest() / "dj_types.parquet", index=False)
+    structure_table().to_parquet(latest() / "structure.parquet", index=False)
     print(groups.drop(columns="genre").round(2).to_string())
     table.to_parquet(out, index=False)
     print(out, len(table), "mixes")

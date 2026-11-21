@@ -25,10 +25,11 @@ import re
 import numpy as np
 
 from src.audio.key_shift import CLASH_DISTANCE
-from src.data.dataset import dj_key, load_plays, load_tracks
+from src.data.dataset import dj_key, load_groups, load_plays, load_structure, load_tracks
 from src.data.preprocess_tracklist import is_unidentified
 from src.features.compatibility import compatibility
 from src.models.pair_model import PairScorer
+from src.models.set_plan import set_plan, slot_fit, style_of
 from src.models.track_arrays import TrackArrays, camelot_distance
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ log = logging.getLogger(__name__)
 BEAM_WIDTH = 8
 MAX_BPM_LOG_RATIO = 0.05  # ≈ ±5% — pyrubberband stretches this cleanly
 W_PAIR, W_ENERGY = 1.0, 0.7
+W_SLOT = 0.7  # weight of "this track can carry its planned slot" (set_plan.slot_fit); never tuned
 
 # Weight on pair compatibility, which is what decides how LONG the mixer is
 # allowed to hold two records together. The default is 0: without it the planner
@@ -82,7 +84,7 @@ def _load_pool(
     exclude_ids: set[str] | None,
     min_energy_pct: float | None,
     audio: str | None = None,
-    dj: str | None = None,
+    dj: str | list[str] | None = None,
 ) -> dict:
     """Candidate pool + per-track artist sets, shared by plan_mix and repair_candidates.
 
@@ -96,9 +98,10 @@ def _load_pool(
         f = f[f["audio"] == audio]
     if dj is not None:
         plays = load_plays(columns=["dj_key", "track_id"])
-        mine = set(plays.loc[plays["dj_key"] == dj_key(dj), "track_id"])
+        keys = {dj_key(d) for d in ([dj] if isinstance(dj, str) else dj)}
+        mine = set(plays.loc[plays["dj_key"].isin(keys), "track_id"])
         f = f[f["track_id"].isin(mine)]
-        log.info("dj %s: %d records with features", dj, len(f))
+        log.info("dj %s: %d records with features", ", ".join(sorted(keys)), len(f))
     meta = f.set_index("track_id")[["genre", "artist", "title", "source", "source_ref", "audio"]]
     # "Massano – ID" is a placeholder for an unreleased track. It has no
     # searchable name, so it can never be fetched or played, and it must not
@@ -151,8 +154,8 @@ def _load_pool(
 
 
 def plan_mix(
-    genre: str,
-    bpm_range: tuple[float, float],
+    genre: str | None,
+    bpm_range: tuple[float, float] | None,
     n_tracks: int = 10,
     curve: str = "build",
     seed_track: str | None = None,
@@ -162,12 +165,20 @@ def plan_mix(
     compat_weight: float = W_COMPAT_DEFAULT,
     audio: str | None = None,
     dj: str | None = None,
+    group: str | None = None,
+    seed: int = 0,
 ) -> dict:
     """
     Plan a set.
 
     `audio="full"` plans only from records whose full audio is held; `dj` only from records that
     DJ has played (see `_load_pool`).
+
+    `group` plans in the style of a style group (`load_groups()`), and a profiled `dj` in that DJ's
+    own style inside their group. The set then gets a plan per seam (`set_plan`, `seams` in the
+    result), the pool is what the group's DJs play (the named DJ's own records when there are
+    enough), `bpm_range` defaults to the range of the group's sets, the audio has to be held, and
+    each step prefers tracks that can carry their slot (`slot_fit`). `seed` orders the planned types.
 
     `exclude_ids` drops tracks a previous attempt could not fetch, so the caller
     can replan around them instead of rendering a short set.
@@ -181,9 +192,27 @@ def plan_mix(
     overlap length by that same measure, so a set planned without it will be
     rendered with short transitions however smooth the ordering looks.
     """
-    pool = _load_pool(
-        genre, bpm_range, n_tracks, track_ids, exclude_ids, min_energy_pct, audio, dj
-    )
+    group, style_dj = style_of(genre, group, dj) if group or dj else (None, None)
+    seams, pool_dj = None, dj
+    if group:
+        card = load_groups().set_index("group").loc[group]
+        genre, audio = card["genre"], "full"  # a slot fit needs the track's segment file
+        bpm_range = bpm_range or (round(card["bpm_low"]), round(card["bpm_high"]))
+        seams = set_plan(group, n_tracks, style_dj, seed)
+        pool_dj = dj or list(card["djs"])
+    if bpm_range is None:
+        raise ValueError(
+            f"no BPM range given and {dj or 'nobody'} is not a profiled DJ in {genre}"
+        )
+    args = (genre, bpm_range, n_tracks, track_ids, exclude_ids, min_energy_pct, audio)
+    try:
+        pool = _load_pool(*args, pool_dj)
+    except ValueError:
+        if not (group and dj):
+            raise
+        pool_dj = list(card["djs"])  # the named DJ plays too few held records in this range
+        log.info("dj %s alone is too small a pool, using the group's DJs", dj)
+        pool = _load_pool(*args, pool_dj)
     meta, A, artist_sets, artist_tracks = (
         pool["meta"],
         pool["A"],
@@ -192,6 +221,7 @@ def plan_mix(
     )
 
     scorer = PairScorer(A)
+    structure = load_structure().set_index("track_id").reindex(A.tid) if seams else None
 
     # energy targets from the pool's own distribution
     shape = CURVES[curve](np.arange(n_tracks) / max(n_tracks - 1, 1))
@@ -223,6 +253,8 @@ def plan_mix(
                 continue
             e_fit = 1.0 - np.abs(A.energy[cand] - targets[step]) / (2 * e_scale)
             total = W_PAIR * _z(scorer.score(last, tracks, cand)) + W_ENERGY * e_fit
+            if seams:
+                total = total + W_SLOT * slot_fit(structure.iloc[cand], seams[step - 1])
             if compat_weight:
                 total = total + compat_weight * compatibility(
                     0.0,  # key is the pair model's to weigh, not a compatibility veto
@@ -251,7 +283,11 @@ def plan_mix(
         "genre": genre,
         "curve": curve,
         "audio": audio,
-        "dj": dj,
+        "dj": pool_dj,  # the pool, for a slot repair: one DJ, or the group's DJs
+        "bpm_range": list(bpm_range),
+        "group": group,
+        "style_dj": style_dj,
+        "seams": seams,
         "score": round(score, 2),
         "n_clashes": int((np.array(_join_distances(A, tracks)) > CLASH_DISTANCE).sum()),
         "tracks": [],
@@ -445,8 +481,9 @@ def repair_candidates(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     p = argparse.ArgumentParser(description="Plan a DJ set from intent.")
-    p.add_argument("--genre", required=True)
-    p.add_argument("--bpm", nargs=2, type=float, required=True, metavar=("LO", "HI"))
+    p.add_argument("--genre", default=None, help="needed unless --group is given")
+    p.add_argument("--bpm", nargs=2, type=float, default=None, metavar=("LO", "HI"))
+    p.add_argument("--group", default=None, help='style group to mix like, e.g. "techno blend"')
     p.add_argument("--n", type=int, default=10)
     p.add_argument("--curve", choices=list(CURVES), default="build")
     p.add_argument("--seed-track", default=None)
@@ -462,13 +499,15 @@ if __name__ == "__main__":
     p.add_argument(
         "--audio", choices=["full"], default=None, help="only records whose full audio is held"
     )
-    p.add_argument("--dj", default=None, help="only records this DJ has played")
+    p.add_argument("--dj", default=None, help="this DJ's records, and their style if profiled")
     p.add_argument("--json", default=None, help="write full plan to this path")
     args = p.parse_args()
+    if not (args.group or (args.genre and (args.bpm or args.dj))):
+        p.error("give --group, or --genre with --bpm, or --genre with a profiled --dj")
 
     plan = plan_mix(
         args.genre,
-        tuple(args.bpm),
+        tuple(args.bpm) if args.bpm else None,
         args.n,
         args.curve,
         args.seed_track,
@@ -476,8 +515,11 @@ if __name__ == "__main__":
         compat_weight=args.compat_weight,
         audio=args.audio,
         dj=args.dj,
+        group=args.group,
     )
     print(f"\n{plan['genre']} | curve={plan['curve']} | beam score {plan['score']}")
+    if plan["seams"]:
+        print(f"  group {plan['group']}: " + ", ".join(s["type"] for s in plan["seams"]))
     for t in plan["tracks"]:
         trans = f"  Δbpm {t['d_bpm']:+.1f} cam {t['cam_dist']:.1f}" if t["n"] > 1 else ""
         print(
