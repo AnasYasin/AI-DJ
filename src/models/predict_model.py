@@ -29,7 +29,7 @@ from src.data.dataset import dj_key, load_groups, load_plays, load_structure, lo
 from src.data.preprocess_tracklist import is_unidentified
 from src.features.compatibility import compatibility
 from src.models.pair_model import PairScorer
-from src.models.set_plan import set_plan, slot_fit, style_of
+from src.models.set_plan import join_fit, set_plan, style_of
 from src.models.track_arrays import TrackArrays, camelot_distance
 
 log = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 BEAM_WIDTH = 8
 MAX_BPM_LOG_RATIO = 0.05  # ≈ ±5% — pyrubberband stretches this cleanly
 W_PAIR, W_ENERGY = 1.0, 0.7
-W_SLOT = 0.7  # weight of "this track can carry its planned slot" (set_plan.slot_fit); never tuned
+W_SLOT = 0.7  # weight of "this seam suits this join" (set_plan.join_fit); never tuned
 
 # Weight on pair compatibility, which is what decides how LONG the mixer is
 # allowed to hold two records together. The default is 0: without it the planner
@@ -175,10 +175,12 @@ def plan_mix(
     DJ has played (see `_load_pool`).
 
     `group` plans in the style of a style group (`load_groups()`), and a profiled `dj` in that DJ's
-    own style inside their group. The set then gets a plan per seam (`set_plan`, `seams` in the
-    result), the pool is what the group's DJs play (the named DJ's own records when there are
-    enough), `bpm_range` defaults to the range of the group's sets, the audio has to be held, and
-    each step prefers tracks that can carry their slot (`slot_fit`). `seed` orders the planned types.
+    own style inside their group. The set then gets a budget of seams (`set_plan`), the pool is what
+    the group's DJs play (the named DJ's own records when there are enough), `bpm_range` defaults to
+    the range of the group's sets and the audio has to be held. At every step each candidate takes
+    the seam left in the budget that suits its join best (`join_fit`), so a cut lands where the two
+    tracks can carry one and the long blends where the tempos are close. The budget is used up by
+    the last join. `seams` in the result is in set order. `seed` draws the play times.
 
     `exclude_ids` drops tracks a previous attempt could not fetch, so the caller
     can replan around them instead of rendering a short set.
@@ -255,11 +257,12 @@ def plan_mix(
     else:
         slow = np.flatnonzero(A.bpm <= np.median(A.bpm))
         seeds = list(slow[np.argsort(np.abs(A.energy[slow] - targets[0]))[:BEAM_WIDTH]])
-    beams = [([int(s)], 0.0) for s in seeds]
+    beams = [([int(s)], 0.0, ()) for s in seeds]  # tracks, score, the budget seams used so far
+    grid = structure["downbeat_confidence"].fillna(1.0).to_numpy() if seams else None
 
     for step in range(1, n_tracks):
         expansions = []
-        for tracks, score in beams:
+        for tracks, score, used in beams:
             last = tracks[-1]
             mask = np.abs(np.log(A.bpm[last] / A.bpm)) <= MAX_BPM_LOG_RATIO
             mask[tracks] = False
@@ -271,9 +274,19 @@ def plan_mix(
                 continue
             e_fit = 1.0 - np.abs(A.energy[cand] - targets[step]) / (2 * e_scale)
             total = W_PAIR * _z(scorer.score(last, tracks, cand)) + W_ENERGY * e_fit
+            chosen = np.zeros(len(cand), dtype=int)
             if seams:
-                leaves_by = seams[step] if step < len(seams) else None
-                total = total + W_SLOT * slot_fit(structure.iloc[cand], seams[step - 1], leaves_by)
+                # one seam of each type still in the budget; each candidate takes the one that fits
+                left = {seams[k]["type"]: k for k in reversed(range(len(seams))) if k not in used}
+                gap = np.abs(np.log(A.bpm[last] / A.bpm[cand])) * 100
+                fits = np.stack(
+                    [
+                        join_fit(structure.iloc[cand], seams[k], gap, grid[last])
+                        for k in left.values()
+                    ]
+                )
+                chosen = np.array(list(left.values()))[fits.argmax(axis=0)]
+                total = total + W_SLOT * fits.max(axis=0)
             if compat_weight:
                 total = total + compat_weight * compatibility(
                     0.0,  # key is the pair model's to weigh, not a compatibility veto
@@ -282,22 +295,23 @@ def plan_mix(
                     np.abs(np.log(A.bpm[last] / A.bpm[cand])) * 100,
                 )
             order = np.argsort(-total)[:BEAM_WIDTH]
-            for c, s in zip(cand[order], total[order]):
-                expansions.append((tracks + [int(c)], score + float(s)))
+            for c, s, k in zip(cand[order], total[order], chosen[order]):
+                expansions.append((tracks + [int(c)], score + float(s), (*used, int(k))))
         if not expansions:
             log.warning("beam search dead-ended at step %d — relax rules or widen pool", step)
             break
         expansions.sort(key=lambda x: -x[1])
         seen, beams = set(), []
-        for tracks, score in expansions:  # dedupe: same records AND same last record
+        for tracks, score, used in expansions:  # dedupe: same records AND same last record
             key = (frozenset(tracks), tracks[-1])  # same records in another order are another beam
             if key not in seen:
                 seen.add(key)
-                beams.append((tracks, score))
+                beams.append((tracks, score, used))
             if len(beams) >= BEAM_WIDTH:
                 break
 
-    tracks, score = beams[0]
+    tracks, score, used = beams[0]
+    seams = [seams[k] for k in used] if seams else None  # in set order
     out = {
         "genre": genre,
         "curve": curve,

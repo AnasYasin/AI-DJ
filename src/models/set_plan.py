@@ -19,7 +19,6 @@ import pandas as pd
 from src.data.dataset import dj_key, load_dj_types, load_group_types
 
 MIN_ROW_SEAMS = 15  # a type backed by fewer seams in the group is left out of the plan
-RANGES = ("overlap_bars", "enters_bar", "play_min")  # drawn between their 25th and 75th percentile
 
 
 def type_counts(shares: pd.Series, n_seams: int) -> dict[str, int]:
@@ -48,11 +47,14 @@ def style_of(
 
 
 def set_plan(group: str, n_tracks: int, dj: str | None = None, seed: int = 0) -> list[dict]:
-    """One dict per seam, in set order: type, overlap_bars, bass_free_bars, enters_bar, play_min and
-    entry_section (the section the group's incoming tracks are most often in when first heard).
+    """The set's budget of seams, one dict each: `type`, `bass_free_bars`, `entry_section` (the
+    section the group's incoming tracks are most often in when first heard), `play_min` drawn from
+    the group's middle half, and the middle half itself for the overlap and for the bar the incoming
+    track starts at (`overlap_low`, `overlap_high`, `enters_low`, `enters_high`).
 
-    The order of types is random: consecutive seams in real sets are independent of each other
-    (TRANSITION_EXPERIMENTS.md, Test 3).
+    The plan advises: the planner gives each seam to the join it suits (`join_fit`), and the mixer
+    picks the exact bar and length inside the ranges from the two tracks. The list order is random
+    and means nothing until the planner has placed the seams.
     """
     rows = load_group_types()
     rows = rows[rows["group"] == group]
@@ -73,32 +75,54 @@ def set_plan(group: str, n_tracks: int, dj: str | None = None, seed: int = 0) ->
         row = rows.loc[kind]
         seam = {"type": str(kind), "bass_free_bars": round(float(row["bass_free_bars"]), 1)}
         seam["entry_section"] = str(row["entry_section"])
-        for name in RANGES:
-            seam[name] = round(float(rng.uniform(row[f"{name}_low"], row[f"{name}_high"])), 1)
+        seam["play_min"] = round(float(rng.uniform(row["play_min_low"], row["play_min_high"])), 1)
+        for name, column in (("overlap", "overlap_bars"), ("enters", "enters_bar")):
+            seam[f"{name}_low"] = round(float(row[f"{column}_low"]), 1)
+            seam[f"{name}_high"] = round(float(row[f"{column}_high"]), 1)
         plan.append(seam)
     return plan
 
 
-def slot_fit(structure: pd.DataFrame, seam: dict, leaves_by: dict | None = None) -> np.ndarray:
+def join_fit(
+    structure: pd.DataFrame, seam: dict, tempo_gap_pct: np.ndarray, last_grid: float
+) -> np.ndarray:
+    """0 to 1 per candidate track: how well this seam suits the join from the last track to it.
+    Half is `slot_fit`, half is the tempo gap between the two tracks (0 to 5 %): a cut scores
+    higher the further apart they are, every other type the closer they are.
+
+    Measured on 3,646 real seams (2026-11-23): the tempo gap is the one pair feature that differs
+    by type. Cuts sit on a median gap of 1.63 %, centre swaps on 0.97 % and late swaps on 0.86 %,
+    and inside a group a longer overlap goes with a smaller gap (rank correlation -0.16). Key
+    distance and energy step do not differ by type, so they are not used. The signal is weak; the
+    larger gain is that long blends land on pairs that drift less.
+
+    A cut is 0 when either bar grid is too unsure for the mixer to cut on (`last_grid`, and the
+    candidate's own `downbeat_confidence`).
+    """
+    close = 1 - np.clip(np.asarray(tempo_gap_pct) / 5.0, 0, 1)
+    slot = slot_fit(structure, seam)
+    if seam["type"] != "cut":
+        return 0.5 * slot + 0.5 * close
+    sure = (structure["downbeat_confidence"].fillna(1.0) >= 0.5).to_numpy() & (last_grid >= 0.5)
+    return np.where(sure, 0.5 * slot + 0.5 * (1 - close), 0.0)
+
+
+def slot_fit(structure: pd.DataFrame, seam: dict) -> np.ndarray:
     """0 to 1 per track of `structure`: can it carry the slot this seam opens. Half for room (it is
-    long enough to start at the planned bar and play the planned time), half for the place (the planned
-    start is inside its intro when the group enters tracks in their intro, past its first drop when the
-    group enters them in their body). A track with no segment file gets 0.5.
+    long enough to start at the low end of the style's start range and play the planned time), half
+    for the place (the range reaches into its intro when the group enters tracks in their intro, past
+    its first drop when the group enters them in their body). A track with no segment file gets 0.5.
 
     ponytail: two yes-or-no checks from the section labels, and "drop" means the loud body on many
     techno tracks. Use the level curves at the planned bar if the ear says tracks start in the wrong place.
     """
     play_bars = seam["play_min"] * 60 / structure["bar_s"]
-    room = seam["enters_bar"] + play_bars <= structure["n_bars"]
+    room = seam["enters_low"] + play_bars <= structure["n_bars"]
     if seam["entry_section"] == "intro":
-        place = structure["intro_bars"] >= seam["enters_bar"]
+        place = structure["intro_bars"] >= seam["enters_low"]
     else:
-        place = structure["first_drop_bar"] <= seam["enters_bar"]
+        place = structure["first_drop_bar"] <= seam["enters_high"]
     fit = 0.5 * room + 0.5 * place
-    # the mixer vetoes a cut when either track's bar grid is this unsure, so a track that comes in
-    # or goes out (`leaves_by`, the next seam) on a cut needs a sure one
-    if "cut" in (seam["type"], (leaves_by or {}).get("type")):
-        fit = fit.where(structure["downbeat_confidence"] >= 0.5, 0.0)
     return fit.where(structure["n_bars"].notna(), 0.5).to_numpy(dtype=float)
 
 
@@ -112,18 +136,27 @@ def demo():
             "first_drop_bar": [32, 0, None],
         }
     )
-    seam = {
-        "type": "tension",
-        "enters_bar": 8,
-        "play_min": 5.0,
-        "entry_section": "intro",
-    }  # 150 bars from bar 8
+    seam = {"type": "tension", "enters_low": 8, "enters_high": 8, "play_min": 5.0}
+    seam["entry_section"] = "intro"  # 150 bars from bar 8
     assert slot_fit(tracks, seam).tolist() == [1.0, 0.0, 0.5]
     assert slot_fit(tracks, seam | {"entry_section": "drop"}).tolist() == [0.5, 0.5, 0.5]
-    assert slot_fit(tracks, seam, leaves_by={"type": "cut"}).tolist() == [1.0, 0.0, 0.5]
-    assert (
-        slot_fit(tracks, seam | {"type": "cut"})[0] == 1.0
-    )  # a sure grid keeps its fit in a cut slot
+    gap = np.array([0.0, 0.0, 5.0])  # the first two tracks at the same tempo, the third 5 % off
+    assert join_fit(tracks, seam, gap, last_grid=0.9).tolist() == [
+        1.0,
+        0.5,
+        0.25,
+    ]  # a blend: close
+    cut = seam | {"type": "cut"}
+    assert join_fit(tracks, cut, gap, last_grid=0.9).tolist() == [
+        0.5,
+        0.0,
+        0.75,
+    ]  # a cut: far apart
+    assert join_fit(tracks, cut, gap, last_grid=0.2).tolist() == [
+        0.0,
+        0.0,
+        0.0,
+    ]  # unsure grid before
     shares = pd.Series({"centre swap": 0.54, "tension": 0.18, "end swap": 0.12, "cut": 0.07})
     # 7 seams: 4.15, 1.38, 0.92 and 0.54 exact, so the two spare seams go to end swap and cut
     assert type_counts(shares, 7) == {"centre swap": 4, "tension": 1, "end swap": 1, "cut": 1}

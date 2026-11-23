@@ -1124,15 +1124,16 @@ def _choose_window(
     e_target01: float | None,
     phrase_bars: int | None = None,
     quiet_tail: bool = False,
-    start_near: float | None = None,
+    start_range: tuple[float, float] | None = None,
 ) -> tuple[int, int]:
     """
     Pick which window of the track to play, and how long it runs.
 
-    `start_near`: the bar a planned set wants the track to start around. Only starts within one
-    phrase of it are scored, so the cue-in still lands on a phrase line and can take a section
-    boundary a few bars off. A score penalty of 0.03 per bar was tried first (2026-11-18) and lost
-    to the energy match, which runs on bar-energy z-scores: 2 of 15 planned starts landed at bar 0.
+    `start_range`: the bars a planned set's style starts tracks between (the middle half of what
+    its DJs do). Only phrase lines inside it are scored, so the plan says roughly where and the
+    scoring below, which knows this track's sections and energy, says exactly where. A score
+    penalty of 0.03 per bar was tried first (2026-11-18) and lost to the energy match, which runs
+    on bar-energy z-scores: 2 of 15 planned starts landed at bar 0.
 
     `quiet_tail`: the NEXT slot is low-energy, so prefer a cue-out whose tail
     (what plays under the incoming record) is a breakdown, outro or intro.
@@ -1164,8 +1165,8 @@ def _choose_window(
     labels = {s["label"]: s for s in info["sections"]}
     first_ok = labels["intro"]["bars"][1] if "intro" in labels else 0
     lo_start = max(first_ok - 8, 0)
-    if start_near is not None:  # a planned start may sit inside the intro
-        lo_start = min(lo_start, max(int(start_near), 0))
+    if start_range is not None:  # a planned start may sit inside the intro
+        lo_start = min(lo_start, max(int(start_range[0]), 0))
     lo_start += (offset - lo_start) % phrase  # first phrase start at or after lo_start
     last_ok = n - 1 - tail_bars
     room = last_ok - lo_start
@@ -1185,21 +1186,25 @@ def _choose_window(
         for d in range(-LENGTH_FLEX_BARS, LENGTH_FLEX_BARS + 1, phrase)
         if MIN_BODY_BARS <= target_bars + d <= room
     ]
+    windows = [(s, n) for n in lengths for s in range(lo_start, last_ok - n + 1, phrase)]
+    if start_range is not None and windows:
+        # Over every length, so a long window that only fits from bar 0 cannot pull the start out of
+        # the range (2 of 15 did on 2026-11-23). No phrase line inside it: those nearest its middle.
+        inside = [w for w in windows if start_range[0] <= w[0] <= start_range[1]]
+        nearest = min(abs(w[0] - sum(start_range) / 2) for w in windows)
+        windows = inside or [w for w in windows if abs(w[0] - sum(start_range) / 2) == nearest]
     best, best_score = None, -np.inf
-    for length in lengths:
+    for start, length in windows:
+        end = start + length
         drift = LENGTH_PENALTY * abs(length - target_bars) / target_bars
-        starts = range(lo_start, last_ok - length + 1, phrase)
-        near = [s for s in starts if start_near is not None and abs(s - start_near) <= phrase]
-        for start in near or starts:  # no start that near fits this length: any start
-            end = start + length
-            score = -float(np.abs(be[start:end] - target).mean())
-            # The cue-out earns more than the cue-in: it is where the record
-            # hands over, so a ragged end is the one the ear catches.
-            score += CUE_IN_BONUS * (start in bounds) + CUE_OUT_BONUS * (end in bounds) - drift
-            if quiet_tail and _section_at(info["sections"], end) in QUIET_SECTIONS:
-                score += TAIL_QUIET_BONUS
-            if score > best_score:
-                best, best_score = (start, end), score
+        score = -float(np.abs(be[start:end] - target).mean())
+        # The cue-out earns more than the cue-in: it is where the record
+        # hands over, so a ragged end is the one the ear catches.
+        score += CUE_IN_BONUS * (start in bounds) + CUE_OUT_BONUS * (end in bounds) - drift
+        if quiet_tail and _section_at(info["sections"], end) in QUIET_SECTIONS:
+            score += TAIL_QUIET_BONUS
+        if score > best_score:
+            best, best_score = (start, end), score
     return best if best else (lo_start, last_ok)
 
 
@@ -1686,7 +1691,7 @@ def _prepare_track(
     phrase_bars: int = DEFAULT_PHRASE_BARS,
     quiet_tail: bool = False,
     cue: tuple[int | None, int | None] | None = None,
-    start_near: float | None = None,
+    start_range: tuple[float, float] | None = None,
 ) -> dict:
     info = segment(path)
     y = load_audio(path)  # (samples, channels)
@@ -1698,7 +1703,7 @@ def _prepare_track(
     bars = np.array(info["bars"], dtype=np.float64) / rate
 
     cue_in_bar, cue_out_bar = _choose_window(
-        info, target_bars, max_tail_bars, e_target01, phrase_bars, quiet_tail, start_near
+        info, target_bars, max_tail_bars, e_target01, phrase_bars, quiet_tail, start_range
     )
     if cue is not None:  # test hook: the regression set pins the window on a chosen part
         cue_in_bar = cue_in_bar if cue[0] is None else int(cue[0])
@@ -1799,11 +1804,12 @@ def render_mix(
 ) -> dict:
     """
     seam_plan: one dict per seam from `src.models.set_plan.set_plan`, seam i joining tracks i
-    and i + 1: `type` (the measured type), `overlap_bars`, `bass_free_bars`, and for the
-    incoming track `enters_bar` and `play_min`. The mixer renders the planned type with its
-    own recipe; its rules stay as the check and replace a planned type they veto
-    (`plan_check` in the report). Cue-in and play length are rough targets for the window
-    search, never pins.
+    and i + 1: `type` (the measured type), `bass_free_bars`, the style's ranges `overlap_low`
+    to `overlap_high` and, for the incoming track, `enters_low` to `enters_high`, and its
+    `play_min`. The plan advises and the mixer decides inside it: it renders the planned type with
+    its own recipe, its rules veto a type the pair cannot carry (`plan_check` in the report), the
+    window search picks the cue-in inside the start range from the track's own sections, and the
+    pair's compatibility picks the overlap inside the overlap range.
     total_minutes: when given, the LAST track keeps playing past its window until
     the mix reaches this length (whole phrases; it stops early only if the track
     runs out), or is cut short if the mix would overshoot by more than a phrase.
@@ -1874,17 +1880,17 @@ def render_mix(
         next_et = energy_targets[i + 1] if energy_targets and i + 1 < len(track_paths) else None
         quiet_tail = structure_regime(next_et) == "low"
         cue = cue_overrides[i] if cue_overrides and i < len(cue_overrides) else None
-        want_bars, start_near = target_bars, None
+        want_bars, start_range = target_bars, None
         if seam_plan and i > 0:  # the seam that brings this track in says where and how long
             slot = seam_plan[i - 1]
-            start_near = slot.get("enters_bar")
-            if slot.get("play_min"):
-                # the plan's play time is first heard to last heard, so it holds the next overlap
-                after = seam_plan[i].get("overlap_bars", 0) if i < len(seam_plan) else 0
-                heard = slot["play_min"] * 60 / bar_dur_t
-                want_bars = max(_whole_phrases(int(heard - after), phrase), MIN_BODY_BARS)
+            start_range = (slot["enters_low"], slot["enters_high"])
+            # the plan's play time is first heard to last heard, so it holds the next overlap
+            nxt = seam_plan[i] if i < len(seam_plan) else None
+            after = (nxt["overlap_low"] + nxt["overlap_high"]) / 2 if nxt else 0
+            heard = slot["play_min"] * 60 / bar_dur_t
+            want_bars = max(_whole_phrases(int(heard - after), phrase), MIN_BODY_BARS)
         t = _prepare_track(
-            p, target_bpm, max_tail, want_bars, et, phrase, quiet_tail, cue, start_near
+            p, target_bpm, max_tail, want_bars, et, phrase, quiet_tail, cue, start_range
         )
         played_bars = t["cue_out_bar"] - t["cue_in_bar"]
         log.info(
@@ -1948,9 +1954,9 @@ def render_mix(
                 ttype = planned
         recipe = RECIPES[ttype]
         n_bars = bars_table[ttype]
-        planned_bars = slot.get("overlap_bars") if slot and ttype != "slam" else None
-        if planned_bars:
-            n_bars = max(int(round(planned_bars)), 2)
+        planned_bars = (
+            (slot["overlap_low"], slot["overlap_high"]) if slot and ttype != "slam" else None
+        )
         regime = structure_regime(energy_targets[i] if energy_targets else None)
         lands_on_drop = False
 
@@ -1981,11 +1987,11 @@ def render_mix(
         # stretches.
         compat = pair_compatibility(prev, cur)
         ceiling_bars = max(int(max_overlap_seconds(compat) / bar_dur), 2)
-        # A planned length comes from what the style group's DJs do, so the compatibility ceiling
-        # does not shorten it; `compatibility` and `max_overlap_s` in the report still say what
-        # the pair alone would have been given.
+        # A planned set gives the range its style overlaps in, and the pair picks inside it: a
+        # well-matched pair runs to the long end, a poor one stays at the short end. Before
+        # 2026-11-23 the plan drew one length and the pair had no say (a 48-bar blend drifted 196 ms).
         if planned_bars:
-            want = n_bars
+            want = int(round(float(np.clip(ceiling_bars, *planned_bars))))
         elif ttype in STRETCHABLE:
             want = min(ceiling_bars, int(n_bars * LONG_STRETCH))
         else:
@@ -2007,9 +2013,12 @@ def render_mix(
         # drop-aligned blend ends on the drop. Everything else starts at cue-in.
         in_bar = cur["cue_in_bar"]
         if ttype == "slam":
-            # A planned cut lands on the planned start. Aiming at the drop put two of four planned
-            # cuts at bar 54 on 2026-11-18, where real cuts enter around bar 22 (middle half 8 to 38).
-            to_drop = cur["drop_bar"] is not None and not slot
+            # A cut lands on the incoming drop, as the recipe always did. In a planned set only when
+            # that drop sits inside the style's start range: aiming at any drop put two of four
+            # planned cuts at bar 54 on 2026-11-18, where real cuts enter around bar 22.
+            to_drop = cur["drop_bar"] is not None and (
+                not slot or cur["drop_bar"] <= slot["enters_high"] + phrase
+            )
             land_on = cur["drop_bar"] if to_drop else cur["cue_in_bar"]
             in_bar = max(land_on - bars_table["slam"] // 2, 0)
         elif ttype == "drop" and cur["drop_bar"] is not None:

@@ -1673,6 +1673,6 @@ def test_tension_recipe_leaves_the_planned_bars_without_bass():
 
 
 def test_a_planned_start_moves_the_window_towards_it():
-    early, _ = _choose_window(_boundary_info(), 48, 16, None, start_near=0)
-    late, _ = _choose_window(_boundary_info(), 48, 16, None, start_near=40)
-    assert early < late
+    early, _ = _choose_window(_boundary_info(), 48, 16, None, start_range=(0, 8))
+    late, _ = _choose_window(_boundary_info(), 48, 16, None, start_range=(36, 44))
+    assert early <= 8 and 36 <= late <= 44
