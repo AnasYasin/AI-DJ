@@ -32,6 +32,8 @@ group, unless the DJ is deep (DEEP seams) or hand-picked (seams in the `djs` sou
 group alone. The row holds the group's DJs, its seam count,
 the mean of each STYLE column over its DJs, and what a prompt can be matched against: `mixes` and the 10th and
 90th percentile of BPM and energy over the group's mixes (`bpm_low`, `bpm_high`, `energy_low`, `energy_high`).
+`no_bass` and `no_bass_high` are the median and 75th percentile, over the group's real plays, of the share
+of the played part of a track that has no bass; the planner leaves out tracks emptier than `no_bass_high`.
 A group is named by its genre and one word from WORDS: its most used transition type, or, when another group
 of the genre has that word, the STYLE column where it stands furthest above the genre's other groups. A type
 word needs NAMED of the group's seams to be of that type, so the name never claims a rare move. A group
@@ -62,7 +64,8 @@ request that names the DJ.
 
 structure.parquet, one row per held track that has a segment file (`data/djdata/<source>/segments/`):
 `n_bars`, `bar_s` (median bar length in seconds), `intro_bars` (the bar its intro ends, 0 without one),
-`first_drop_bar` (empty without a drop) and `outro_bars`. The planner reads it to see whether a track can
+`first_drop_bar` (empty without a drop), `outro_bars`, `downbeat_confidence` and `no_bass` (the share of
+the track with its lows more than BASS_FREE_DB under its own loud lows: breakdowns and buildups). The planner reads it to see whether a track can
 carry a planned slot.
 """
 
@@ -235,6 +238,9 @@ def group_table(mixes: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         energy_low=("energy", lambda e: e.quantile(0.1)),
         energy_high=("energy", lambda e: e.quantile(0.9)),
     )
+    seams = seams.merge(units[["genre", "dj_key", "group"]], on=["genre", "dj_key"])
+    empty = played_bass_free(seams).groupby(seams["group"])
+    card["no_bass"], card["no_bass_high"] = empty.median(), empty.quantile(0.75)
     return groups.join(card, on="group"), units
 
 
@@ -295,6 +301,36 @@ def weighted_quantile(values: pd.Series, weights: pd.Series, q: float) -> float:
     return float(values[order][np.searchsorted(reached, q)])
 
 
+BASS_FREE_DB = 10.0  # lows this far under the track's own 90th percentile count as no bass
+
+
+def bass_free(source: str, ref: str, start_s: float = 0.0, end_s: float | None = None) -> float:
+    """Share of a held track, or of the part between two track times, that has no bass."""
+    path = Path("data/djdata") / source / "curves" / f"{ref}.npz"
+    if not path.exists():
+        return float("nan")
+    low = np.load(path)["low_db"]
+    part = low[int(max(start_s, 0) / 0.25) : None if end_s is None else int(end_s / 0.25)]
+    return (
+        float((part < np.percentile(low, 90) - BASS_FREE_DB).mean()) if len(part) else float("nan")
+    )
+
+
+def played_bass_free(seams: pd.DataFrame) -> pd.Series:
+    """Per seam, the bass-free share of what was played of the outgoing track: from where the seam
+    before brought it in to where this seam lets it go. NaN without both ends."""
+    held = load_tracks(columns=["track_id", "source", "source_ref"]).set_index("track_id")
+    entries = seams.drop_duplicates(["mix_id", "track_b"]).set_index(["mix_id", "track_b"])[
+        "b_in_s"
+    ]
+    start = entries.reindex(pd.MultiIndex.from_frame(seams[["mix_id", "track_a"]])).to_numpy()
+    shares = [
+        bass_free(*held.loc[track], a, b) if np.isfinite(a) and b - a > 60 else np.nan
+        for track, a, b in zip(seams["track_a"], start, seams["a_out_s"])
+    ]
+    return pd.Series(shares, index=seams.index)
+
+
 def structure_table() -> pd.DataFrame:
     """One row per held track with a segment file: its length in bars and where its sections sit."""
     rows = []
@@ -317,6 +353,8 @@ def structure_table() -> pd.DataFrame:
                 "intro_bars": first["intro"][1] if "intro" in first else 0,
                 "first_drop_bar": first["drop"][0] if "drop" in first else np.nan,
                 "outro_bars": seg["n_bars"] - last["outro"][0] if "outro" in last else 0,
+                "downbeat_confidence": seg["downbeat_confidence"],
+                "no_bass": bass_free(t.source, t.source_ref),
             }
         )
     return pd.DataFrame(rows)

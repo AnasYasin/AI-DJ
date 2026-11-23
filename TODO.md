@@ -69,6 +69,23 @@ datacenter block. The held and link paths in the planner's fetcher stay. The sea
 `fetch_track` calls `download_by_name` with the pipeline's config, and the fetcher's own search,
 rank and download code goes.
 
+## 7. A critic that judges rendered transitions
+
+Anas, 2026-11-23: this will be built, so the design has to leave room for it. For each join the mixer
+renders a few short versions (another type, another part of either track), a critic scores them, and
+the best one the set's budget of types allows is kept. The critic is a model trained to tell real DJ
+transitions from the mixer's own. The 6,731 measured seams with their windows on S3 are the real side,
+and renders of the same pairs are the other side. It judges the sound, where every check today judges
+numbers.
+
+What it needs from the rest, so nothing built before it blocks it:
+
+- The mixer can render one join alone as a short clip, given the two tracks, a type, an overlap and the
+  two cue bars. Today a join is only rendered inside a whole set.
+- The plan keeps more than one candidate per join until the critic has chosen.
+- The budget of types is a limit on the whole set, so a join can change its type when another join
+  takes that type over.
+
 ## Ear test 2026-10-15: the cases items 1 and 3 must get right
 
 Seven chill sets from held audio, `data/external/ear_test/sets_2026-10-15/` (one flac and one

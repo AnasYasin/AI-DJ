@@ -188,8 +188,17 @@ SIGNATURE_TYPES = {
 }
 
 
-def planned_type(signature: str, measured: str) -> tuple[str | None, str]:
+CUT_MIN_GRID_CONFIDENCE = 0.5  # the low end of what real tracks read (0.50 to 0.98); tune by ear
+
+
+def planned_type(
+    signature: str, measured: str, grid_confidence: float = 1.0
+) -> tuple[str | None, str]:
     """(recipe, verdict) for a planned measured type. The recipe is None when the rules veto the plan.
+
+    `grid_confidence`: the lower `downbeat_confidence` of the two tracks. A cut is 4 bars with no
+    blend to hide in, so it is vetoed when either bar grid is a guess. Heard 2026-11-23 (Anas): the
+    first cut of a `techno cut` set sounded off, its incoming track read 0.20.
 
     The curve gate is not asked: a cut the style group plans stands in any set (on 2026-11-18 a chill
     curve vetoed all four planned cuts of a `techno cut` set). The curve still gates the types the
@@ -197,6 +206,8 @@ def planned_type(signature: str, measured: str) -> tuple[str | None, str]:
     """
     recipes = SIGNATURE_TYPES[signature]
     if signature == "cut":
+        if grid_confidence < CUT_MIN_GRID_CONFIDENCE:
+            return None, f"a bar grid is too unsure for a cut ({grid_confidence:.2f})"
         return "slam", "ok"
     if measured == "slam":  # a clash with an energy jump, or a tight pair with a large one
         return None, "the rules call for a cut on this pair"
@@ -525,7 +536,6 @@ DEFAULT_PLAY_MINUTES = 4.17  # median across all genres
 LENGTH_FLEX_BARS = 16
 LENGTH_PENALTY = 0.5  # cost per unit of relative deviation from the genre target
 CUE_IN_BONUS, CUE_OUT_BONUS = 0.10, 0.25  # for starting / ending on a section change
-START_NEAR_PENALTY = 0.03  # per bar away from a planned start; 8 bars cost about one cue-out bonus
 GENRE_BARS = {
     "techno": DEFAULT_BARS,
     "tech house": {
@@ -1119,9 +1129,10 @@ def _choose_window(
     """
     Pick which window of the track to play, and how long it runs.
 
-    `start_near`: the bar a planned set wants the track to start around. A window loses
-    START_NEAR_PENALTY per bar its start sits away from it, so the cue-in still lands on a
-    phrase line and can still take a section boundary a few bars off.
+    `start_near`: the bar a planned set wants the track to start around. Only starts within one
+    phrase of it are scored, so the cue-in still lands on a phrase line and can take a section
+    boundary a few bars off. A score penalty of 0.03 per bar was tried first (2026-11-18) and lost
+    to the energy match, which runs on bar-energy z-scores: 2 of 15 planned starts landed at bar 0.
 
     `quiet_tail`: the NEXT slot is low-energy, so prefer a cue-out whose tail
     (what plays under the incoming record) is a breakdown, outro or intro.
@@ -1177,7 +1188,9 @@ def _choose_window(
     best, best_score = None, -np.inf
     for length in lengths:
         drift = LENGTH_PENALTY * abs(length - target_bars) / target_bars
-        for start in range(lo_start, last_ok - length + 1, phrase):
+        starts = range(lo_start, last_ok - length + 1, phrase)
+        near = [s for s in starts if start_near is not None and abs(s - start_near) <= phrase]
+        for start in near or starts:  # no start that near fits this length: any start
             end = start + length
             score = -float(np.abs(be[start:end] - target).mean())
             # The cue-out earns more than the cue-in: it is where the record
@@ -1185,8 +1198,6 @@ def _choose_window(
             score += CUE_IN_BONUS * (start in bounds) + CUE_OUT_BONUS * (end in bounds) - drift
             if quiet_tail and _section_at(info["sections"], end) in QUIET_SECTIONS:
                 score += TAIL_QUIET_BONUS
-            if start_near is not None:
-                score -= START_NEAR_PENALTY * abs(start - start_near)
             if score > best_score:
                 best, best_score = (start, end), score
     return best if best else (lo_start, last_ok)
@@ -1928,7 +1939,8 @@ def render_mix(
         slot = seam_plan[i - 1] if seam_plan and not force_type else None
         plan_check = None
         if slot:
-            planned, plan_check = planned_type(slot["type"], measured)
+            grids = min(prev["downbeat_confidence"], cur["downbeat_confidence"])
+            planned, plan_check = planned_type(slot["type"], measured, grids)
             log.info("  transition %d: planned %s → %s (%s)", i, slot["type"], planned, plan_check)
             if planned is None:
                 slot = None  # vetoed: the rules' own type and length stand
@@ -2370,6 +2382,10 @@ def render_plan(
 
     if plan.get("seams") and not missing:  # a dropped track would shift every slot
         kwargs.setdefault("seam_plan", plan["seams"])
+        # A planned set's windows follow the plan's start bars and play times on the mixer's default
+        # energy target. The plan's slot energies say how loud a track is among its genre; read as
+        # window targets they made the mixer prefer the calm part of every track (2026-11-23).
+        targets = [None]
 
     if any(t is None for t in targets):
         # Plans written before energy_target01 existed. Better to lose the

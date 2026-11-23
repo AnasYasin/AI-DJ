@@ -79,7 +79,7 @@ def set_plan(group: str, n_tracks: int, dj: str | None = None, seed: int = 0) ->
     return plan
 
 
-def slot_fit(structure: pd.DataFrame, seam: dict) -> np.ndarray:
+def slot_fit(structure: pd.DataFrame, seam: dict, leaves_by: dict | None = None) -> np.ndarray:
     """0 to 1 per track of `structure`: can it carry the slot this seam opens. Half for room (it is
     long enough to start at the planned bar and play the planned time), half for the place (the planned
     start is inside its intro when the group enters tracks in their intro, past its first drop when the
@@ -95,6 +95,10 @@ def slot_fit(structure: pd.DataFrame, seam: dict) -> np.ndarray:
     else:
         place = structure["first_drop_bar"] <= seam["enters_bar"]
     fit = 0.5 * room + 0.5 * place
+    # the mixer vetoes a cut when either track's bar grid is this unsure, so a track that comes in
+    # or goes out (`leaves_by`, the next seam) on a cut needs a sure one
+    if "cut" in (seam["type"], (leaves_by or {}).get("type")):
+        fit = fit.where(structure["downbeat_confidence"] >= 0.5, 0.0)
     return fit.where(structure["n_bars"].notna(), 0.5).to_numpy(dtype=float)
 
 
@@ -102,14 +106,24 @@ def demo():
     tracks = pd.DataFrame(
         {
             "n_bars": [200, 100, None],
+            "downbeat_confidence": [0.9, 0.2, None],
             "bar_s": 2.0,
             "intro_bars": [16, 0, None],
             "first_drop_bar": [32, 0, None],
         }
     )
-    seam = {"enters_bar": 8, "play_min": 5.0, "entry_section": "intro"}  # 150 bars from bar 8
+    seam = {
+        "type": "tension",
+        "enters_bar": 8,
+        "play_min": 5.0,
+        "entry_section": "intro",
+    }  # 150 bars from bar 8
     assert slot_fit(tracks, seam).tolist() == [1.0, 0.0, 0.5]
     assert slot_fit(tracks, seam | {"entry_section": "drop"}).tolist() == [0.5, 0.5, 0.5]
+    assert slot_fit(tracks, seam, leaves_by={"type": "cut"}).tolist() == [1.0, 0.0, 0.5]
+    assert (
+        slot_fit(tracks, seam | {"type": "cut"})[0] == 1.0
+    )  # a sure grid keeps its fit in a cut slot
     shares = pd.Series({"centre swap": 0.54, "tension": 0.18, "end swap": 0.12, "cut": 0.07})
     # 7 seams: 4.15, 1.38, 0.92 and 0.54 exact, so the two spare seams go to end swap and cut
     assert type_counts(shares, 7) == {"centre swap": 4, "tension": 1, "end swap": 1, "cut": 1}

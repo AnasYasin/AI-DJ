@@ -200,6 +200,12 @@ def plan_mix(
         bpm_range = bpm_range or (round(card["bpm_low"]), round(card["bpm_high"]))
         seams = set_plan(group, n_tracks, style_dj, seed)
         pool_dj = dj or list(card["djs"])
+        # Tracks emptier than three quarters of what the group's DJs really play are left out. Heard
+        # 2026-11-23 (Anas): "many buildups, they lack kick and main beats". A `techno cut` set had no
+        # bass for 33 % of its time, the group's real plays for 11 % (middle half 5 to 22 %).
+        structure = load_structure()
+        too_empty = set(structure.loc[structure["no_bass"] > card["no_bass_high"], "track_id"])
+        exclude_ids = (exclude_ids or set()) | too_empty
     if bpm_range is None:
         raise ValueError(
             f"no BPM range given and {dj or 'nobody'} is not a profiled DJ in {genre}"
@@ -221,11 +227,23 @@ def plan_mix(
     )
 
     scorer = PairScorer(A)
-    structure = load_structure().set_index("track_id").reindex(A.tid) if seams else None
+    structure = structure.set_index("track_id").reindex(A.tid) if seams else None
 
     # energy targets from the pool's own distribution
     shape = CURVES[curve](np.arange(n_tracks) / max(n_tracks - 1, 1))
     e_lo, e_hi = np.quantile(A.energy, 0.15), np.quantile(A.energy, 0.85)
+    e01 = shape
+    if group:
+        # A group's set moves inside the energy band its own sets sit in (10th to 90th percentile of
+        # the group's mixes, on the genre's percentile scale), so it no longer opens on the quietest
+        # tracks of the pool. Heard 2026-11-23 (Anas): sets planned on the pool's 15th to 85th
+        # percentile "seem slow", their first tracks sat at the genre's 7th to 15th percentile. Real
+        # sets do not build: end minus start energy has a median of 0.00 over 3,413 mixes.
+        every = load_tracks(audio="full", columns=["genre", "audio", "energy_mean"])
+        e01 = card["energy_low"] + shape * (card["energy_high"] - card["energy_low"])
+        e_lo, e_hi = np.quantile(
+            every.loc[every["genre"] == genre, "energy_mean"], [e01.min(), e01.max()]
+        )
     targets = e_lo + shape * (e_hi - e_lo)
     e_scale = A.energy.std() + 1e-9
 
@@ -254,7 +272,8 @@ def plan_mix(
             e_fit = 1.0 - np.abs(A.energy[cand] - targets[step]) / (2 * e_scale)
             total = W_PAIR * _z(scorer.score(last, tracks, cand)) + W_ENERGY * e_fit
             if seams:
-                total = total + W_SLOT * slot_fit(structure.iloc[cand], seams[step - 1])
+                leaves_by = seams[step] if step < len(seams) else None
+                total = total + W_SLOT * slot_fit(structure.iloc[cand], seams[step - 1], leaves_by)
             if compat_weight:
                 total = total + compat_weight * compatibility(
                     0.0,  # key is the pair model's to weigh, not a compatibility veto
@@ -312,7 +331,7 @@ def plan_mix(
             # the track to play; `target_energy` above is in absolute energy
             # units and is for display only. Passing that one to the mixer
             # silently flattens the curve.
-            "energy_target01": round(float(shape[i]), 3),
+            "energy_target01": round(float(e01[i]), 3),
         }
         if i > 0:
             prev = tracks[i - 1]
