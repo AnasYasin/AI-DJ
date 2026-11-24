@@ -25,19 +25,28 @@ import re
 import numpy as np
 
 from src.audio.key_shift import CLASH_DISTANCE
-from src.data.dataset import dj_key, load_groups, load_plays, load_structure, load_tracks
+from src.data.dataset import (
+    dj_key,
+    load_djs,
+    load_groups,
+    load_plays,
+    load_structure,
+    load_tracks,
+)
 from src.data.preprocess_tracklist import is_unidentified
 from src.features.compatibility import compatibility
 from src.models.pair_model import PairScorer
-from src.models.set_plan import join_fit, set_plan, style_of
+from src.models.set_plan import join_fit, pick_styles, set_plan
 from src.models.track_arrays import TrackArrays, camelot_distance
 
 log = logging.getLogger(__name__)
 
 BEAM_WIDTH = 8
 MAX_BPM_LOG_RATIO = 0.05  # ≈ ±5% — pyrubberband stretches this cleanly
+STYLE_BPM_SPAN = 0.04  # a styled set's pool stays this far either side of the style's median tempo
 W_PAIR, W_ENERGY = 1.0, 0.7
 W_SLOT = 0.7  # weight of "this seam suits this join" (set_plan.join_fit); never tuned
+W_PLAYED = 0.7  # weight of "the style's DJs play this track in many sets"; never tuned
 
 # Weight on pair compatibility, which is what decides how LONG the mixer is
 # allowed to hold two records together. The default is 0: without it the planner
@@ -164,9 +173,11 @@ def plan_mix(
     min_energy_pct: float | None = None,
     compat_weight: float = W_COMPAT_DEFAULT,
     audio: str | None = None,
-    dj: str | None = None,
-    group: str | None = None,
+    dj: str | list[str] | None = None,
+    group: str | list[str] | None = None,
     seed: int = 0,
+    style: list[str] | None = None,
+    energy: float | None = None,
 ) -> dict:
     """
     Plan a set.
@@ -174,10 +185,13 @@ def plan_mix(
     `audio="full"` plans only from records whose full audio is held; `dj` only from records that
     DJ has played (see `_load_pool`).
 
-    `group` plans in the style of a style group (`load_groups()`), and a profiled `dj` in that DJ's
-    own style inside their group. The set then gets a budget of seams (`set_plan`), the pool is what
-    the group's DJs play (the named DJ's own records when there are enough), `bpm_range` defaults to
-    the range of the group's sets and the audio has to be held. At every step each candidate takes
+    `group`, a profiled `dj` and `style` plan in the style of real DJs (`pick_styles`): one or more
+    style groups by name, one or more DJs in their own style, or `style` words, where "auto" takes
+    every group of the genre by weight. Several styles share the set by weight. `energy` (0 to 1)
+    says where in the styles' own energy band the set sits, 1 for a peak-time set. The set then
+    gets a budget of seams (`set_plan`), the pool is what the styles' DJs play (the named DJs' own
+    records when there are enough), `bpm_range` defaults to the range of the styles' sets and the
+    audio has to be held. At every step each candidate takes
     the seam left in the budget that suits its join best (`join_fit`), so a cut lands where the two
     tracks can carry one and the long blends where the tempos are close. The budget is used up by
     the last join. `seams` in the result is in set order. `seed` draws the play times.
@@ -194,20 +208,53 @@ def plan_mix(
     overlap length by that same measure, so a set planned without it will be
     rendered with short transitions however smooth the ordering looks.
     """
-    group, style_dj = style_of(genre, group, dj) if group or dj else (None, None)
-    seams, pool_dj = None, dj
-    if group:
-        card = load_groups().set_index("group").loc[group]
-        genre, audio = card["genre"], "full"  # a slot fit needs the track's segment file
-        bpm_range = bpm_range or (round(card["bpm_low"]), round(card["bpm_high"]))
-        seams = set_plan(group, n_tracks, style_dj, seed)
-        pool_dj = dj or list(card["djs"])
-        # Tracks emptier than three quarters of what the group's DJs really play are left out. Heard
+    as_list = lambda x: [x] if isinstance(x, str) else list(x or [])  # noqa: E731
+    styles, seams, pool_dj = [], None, dj
+    if group or dj or style is not None:
+        genre, styles = pick_styles(genre, as_list(dj), style, as_list(group), bpm_range)
+    if styles:
+        cards = load_groups().set_index("group").loc[[s["group"] for s in styles]].reset_index()
+        # a named DJ is matched against their own tempo, energy and bass-free limits
+        own = load_djs().set_index(["group", "dj_key"])
+        for i, s in enumerate(styles):
+            if (s["group"], s["dj"]) in own.index:
+                mine = own.loc[(s["group"], s["dj"])].dropna()
+                cards.loc[i, mine.index] = mine.to_numpy()
+        weight = np.array([s["weight"] for s in styles])
+        audio = "full"  # a slot fit needs the track's segment file
+        # The mixer stretches every track to the set's median tempo and refuses more than 8 %, and
+        # the planner's own tempo rule only joins neighbours. A style's sets can span more (house
+        # cut 122 to 138 BPM), so the pool is the style's range cut to a span around its median.
+        mid = float(cards["bpm"] @ weight)
+        low = max(float(cards["bpm_low"].min()), mid * (1 - STYLE_BPM_SPAN))
+        high = min(float(cards["bpm_high"].max()), mid * (1 + STYLE_BPM_SPAN))
+        bpm_range = bpm_range or (round(low), round(high))
+        seams = set_plan(styles, n_tracks, seed)
+        group_djs = sorted({d for djs in cards["djs"] for d in djs})
+        # a named DJ's own records, a group's DJs for a style that names none
+        pool_dj = sorted(
+            {d for s, djs in zip(styles, cards["djs"]) for d in ([s["dj"]] if s["dj"] else djs)}
+        )
+        # Tracks emptier than three quarters of what the styles' DJs really play are left out. Heard
         # 2026-11-23 (Anas): "many buildups, they lack kick and main beats". A `techno cut` set had no
         # bass for 33 % of its time, the group's real plays for 11 % (middle half 5 to 22 %).
         structure = load_structure()
-        too_empty = set(structure.loc[structure["no_bass"] > card["no_bass_high"], "track_id"])
-        exclude_ids = (exclude_ids or set()) | too_empty
+        limit = float(cards["no_bass_high"] @ weight)
+        exclude_ids = (exclude_ids or set()) | set(
+            structure.loc[structure["no_bass"] > limit, "track_id"]
+        )
+        band = [float(cards["energy_low"] @ weight), float(cards["energy_high"] @ weight)]
+        if energy is not None:  # half the band, centred where the request says
+            centre, half = band[0] + energy * (band[1] - band[0]), (band[1] - band[0]) / 4
+            band = [max(centre - half, 0.0), min(centre + half, 1.0)]
+            # An asked energy is a floor on the tracks, not one more score: a peak-time house set
+            # scored on it alone got tracks at the genre's 0th to 32nd percentile (2026-11-24).
+            every = load_tracks(
+                audio="full", columns=["track_id", "genre", "audio", "energy_mean"]
+            )
+            every = every[every["genre"] == genre]
+            too_calm = every["energy_mean"] < every["energy_mean"].quantile(band[0])
+            exclude_ids = exclude_ids | set(every.loc[too_calm, "track_id"])
     if bpm_range is None:
         raise ValueError(
             f"no BPM range given and {dj or 'nobody'} is not a profiled DJ in {genre}"
@@ -216,10 +263,10 @@ def plan_mix(
     try:
         pool = _load_pool(*args, pool_dj)
     except ValueError:
-        if not (group and dj):
+        if not styles or pool_dj == group_djs:
             raise
-        pool_dj = list(card["djs"])  # the named DJ plays too few held records in this range
-        log.info("dj %s alone is too small a pool, using the group's DJs", dj)
+        pool_dj = group_djs  # the named DJs play too few held records in this range
+        log.info("the named DJs alone are too small a pool, using their groups' DJs")
         pool = _load_pool(*args, pool_dj)
     meta, A, artist_sets, artist_tracks = (
         pool["meta"],
@@ -230,19 +277,27 @@ def plan_mix(
 
     scorer = PairScorer(A)
     structure = structure.set_index("track_id").reindex(A.tid) if seams else None
+    played = None
+    if styles:
+        # How many sets of the style's DJs a track is in. Without it a named DJ's set was built from
+        # tracks played once: Fred again gave Darude and Dr. Alban (1 set each) where his own tracks
+        # sit in 6 to 11 of his 29 sets, and 182 of his 234 held tracks were played in one set only.
+        mine = load_plays(columns=["mix_id", "track_id", "dj_key"])
+        mine = mine[mine["dj_key"].isin(pool_dj)].groupby("track_id")["mix_id"].nunique()
+        played = np.log1p(mine.reindex(A.tid).fillna(0).to_numpy(dtype=float))
 
     # energy targets from the pool's own distribution
     shape = CURVES[curve](np.arange(n_tracks) / max(n_tracks - 1, 1))
     e_lo, e_hi = np.quantile(A.energy, 0.15), np.quantile(A.energy, 0.85)
     e01 = shape
-    if group:
+    if styles:
         # A group's set moves inside the energy band its own sets sit in (10th to 90th percentile of
         # the group's mixes, on the genre's percentile scale), so it no longer opens on the quietest
         # tracks of the pool. Heard 2026-11-23 (Anas): sets planned on the pool's 15th to 85th
         # percentile "seem slow", their first tracks sat at the genre's 7th to 15th percentile. Real
         # sets do not build: end minus start energy has a median of 0.00 over 3,413 mixes.
         every = load_tracks(audio="full", columns=["genre", "audio", "energy_mean"])
-        e01 = card["energy_low"] + shape * (card["energy_high"] - card["energy_low"])
+        e01 = band[0] + shape * (band[1] - band[0])
         e_lo, e_hi = np.quantile(
             every.loc[every["genre"] == genre, "energy_mean"], [e01.min(), e01.max()]
         )
@@ -273,8 +328,14 @@ def plan_mix(
             if len(cand) == 0:
                 continue
             e_fit = 1.0 - np.abs(A.energy[cand] - targets[step]) / (2 * e_scale)
-            total = W_PAIR * _z(scorer.score(last, tracks, cand)) + W_ENERGY * e_fit
+            # In a styled plan every term is standardised within the candidates, so the weights
+            # compare. Left raw, the energy fit spans about 0 to 1 against several units of a z-score
+            # and lost every time: a techno blend set took tracks at the genre's 9th percentile.
+            total = W_PAIR * _z(scorer.score(last, tracks, cand))
+            total = total + W_ENERGY * (_z(e_fit) if styles else e_fit)
             chosen = np.zeros(len(cand), dtype=int)
+            if played is not None:
+                total = total + W_PLAYED * _z(played[cand])
             if seams:
                 # one seam of each type still in the budget; each candidate takes the one that fits
                 left = {seams[k]["type"]: k for k in reversed(range(len(seams))) if k not in used}
@@ -286,7 +347,7 @@ def plan_mix(
                     ]
                 )
                 chosen = np.array(list(left.values()))[fits.argmax(axis=0)]
-                total = total + W_SLOT * fits.max(axis=0)
+                total = total + W_SLOT * _z(fits.max(axis=0))
             if compat_weight:
                 total = total + compat_weight * compatibility(
                     0.0,  # key is the pair model's to weigh, not a compatibility veto
@@ -318,8 +379,7 @@ def plan_mix(
         "audio": audio,
         "dj": pool_dj,  # the pool, for a slot repair: one DJ, or the group's DJs
         "bpm_range": list(bpm_range),
-        "group": group,
-        "style_dj": style_dj,
+        "styles": styles,
         "seams": seams,
         "score": round(score, 2),
         "n_clashes": int((np.array(_join_distances(A, tracks)) > CLASH_DISTANCE).sum()),
@@ -516,7 +576,9 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Plan a DJ set from intent.")
     p.add_argument("--genre", default=None, help="needed unless --group is given")
     p.add_argument("--bpm", nargs=2, type=float, default=None, metavar=("LO", "HI"))
-    p.add_argument("--group", default=None, help='style group to mix like, e.g. "techno blend"')
+    p.add_argument("--group", nargs="*", default=None, help='style groups, e.g. "techno blend"')
+    p.add_argument("--style", nargs="*", default=None, help='"auto", or words: blend cut fast ...')
+    p.add_argument("--energy", type=float, default=None, help="0 to 1 inside the styles' own band")
     p.add_argument("--n", type=int, default=10)
     p.add_argument("--curve", choices=list(CURVES), default="build")
     p.add_argument("--seed-track", default=None)
@@ -532,11 +594,11 @@ if __name__ == "__main__":
     p.add_argument(
         "--audio", choices=["full"], default=None, help="only records whose full audio is held"
     )
-    p.add_argument("--dj", default=None, help="this DJ's records, and their style if profiled")
+    p.add_argument(
+        "--dj", nargs="*", default=None, help="DJs: their records, and style if profiled"
+    )
     p.add_argument("--json", default=None, help="write full plan to this path")
     args = p.parse_args()
-    if not (args.group or (args.genre and (args.bpm or args.dj))):
-        p.error("give --group, or --genre with --bpm, or --genre with a profiled --dj")
 
     plan = plan_mix(
         args.genre,
@@ -549,10 +611,14 @@ if __name__ == "__main__":
         audio=args.audio,
         dj=args.dj,
         group=args.group,
+        style=args.style,
+        energy=args.energy,
     )
     print(f"\n{plan['genre']} | curve={plan['curve']} | beam score {plan['score']}")
+    for s in plan["styles"]:
+        print(f"  {s['weight']:.0%} {s['group']}" + (f", as {s['dj']}" if s["dj"] else ""))
     if plan["seams"]:
-        print(f"  group {plan['group']}: " + ", ".join(s["type"] for s in plan["seams"]))
+        print("  " + ", ".join(f"{s['type']} ({s['group']})" for s in plan["seams"]))
     for t in plan["tracks"]:
         trans = f"  Δbpm {t['d_bpm']:+.1f} cam {t['cam_dist']:.1f}" if t["n"] > 1 else ""
         print(

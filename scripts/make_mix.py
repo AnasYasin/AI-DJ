@@ -38,8 +38,10 @@ def make_mix(
     min_energy_pct: float | None = None,
     compat_weight: float = 0.0,
     audio: str | None = None,
-    dj: str | None = None,
-    group: str | None = None,
+    dj: str | list[str] | None = None,
+    group: str | list[str] | None = None,
+    style: list[str] | None = None,
+    energy: float | None = None,
 ) -> dict:
     """`group` mixes in the style of a style group and `dj` in a profiled DJ's own style: the plan
     then carries a seam plan the mixer follows, and genre and BPM default to the group's."""
@@ -92,6 +94,8 @@ def make_mix(
         audio=audio,
         dj=dj,
         group=group,
+        style=style,
+        energy=energy,
     )
     # the group's genre and tempo range when none were given
     genre, bpm = plan.get("genre", genre), tuple(plan.get("bpm_range") or bpm)
@@ -134,6 +138,8 @@ def make_mix(
             audio=audio,
             dj=dj,
             group=group,
+            style=style,
+            energy=energy,
         )
         write_plan(plan)
     else:
@@ -191,7 +197,9 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Plan, fetch and render a mix in one go.")
     p.add_argument("--genre", default=None, help="needed unless --group is given")
     p.add_argument("--bpm", nargs=2, type=float, default=None, metavar=("LO", "HI"))
-    p.add_argument("--group", default=None, help='style group to mix like, e.g. "techno blend"')
+    p.add_argument("--group", nargs="*", default=None, help='style groups, e.g. "techno blend"')
+    p.add_argument("--style", nargs="*", default=None, help='"auto", or words: blend cut fast ...')
+    p.add_argument("--energy", type=float, default=None, help="0 to 1 inside the styles' own band")
     p.add_argument("--out", required=True)
     p.add_argument("--n", type=int, default=3)
     p.add_argument("--curve", choices=list(CURVES), default="build")
@@ -206,10 +214,10 @@ if __name__ == "__main__":
     p.add_argument(
         "--audio", choices=["full"], default=None, help="only records whose full audio is held"
     )
-    p.add_argument("--dj", default=None, help="this DJ's records, and their style if profiled")
+    p.add_argument(
+        "--dj", nargs="*", default=None, help="DJs: their records, and style if profiled"
+    )
     args = p.parse_args()
-    if not (args.group or (args.genre and (args.bpm or args.dj))):
-        p.error("give --group, or --genre with --bpm, or --genre with a profiled --dj")
 
     rep = make_mix(
         args.genre,
@@ -224,6 +232,8 @@ if __name__ == "__main__":
         audio=args.audio,
         dj=args.dj,
         group=args.group,
+        style=args.style,
+        energy=args.energy,
     )
     print(
         f"\n{rep['out']}  {rep['duration_s'] / 60:.1f} min @ {rep['target_bpm']:.0f} bpm"

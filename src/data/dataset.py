@@ -103,6 +103,11 @@ def load_dj_types(date: str | None = None, root: Path = DATASET_DIR) -> pd.DataF
     return _load("dj_types", date, root, None, None)
 
 
+def load_djs(date: str | None = None, root: Path = DATASET_DIR) -> pd.DataFrame:
+    """One row per style group and DJ with that DJ's own tempo, energy and bass-free limits."""
+    return _load("djs", date, root, None, None)
+
+
 def load_structure(date: str | None = None, root: Path = DATASET_DIR) -> pd.DataFrame:
     """One row per held track with a segment file, written by `python -m src.data.profiles`."""
     return _load("structure", date, root, None, None)

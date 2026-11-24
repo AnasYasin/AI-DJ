@@ -6,6 +6,7 @@ Profiles built from the dataset: what kind of set each mix is, and which DJs sha
                                                                      group_types.parquet   load_group_types()
                                                                      dj_types.parquet      load_dj_types()
                                                                      structure.parquet     load_structure()
+                                                                     djs.parquet           load_djs()
 
 Both are computed from plays, tracks and seams alone, so new DJ data needs only `djdata export-dataset`
 and this command again.
@@ -34,6 +35,11 @@ the mean of each STYLE column over its DJs, and what a prompt can be matched aga
 90th percentile of BPM and energy over the group's mixes (`bpm_low`, `bpm_high`, `energy_low`, `energy_high`).
 `no_bass` and `no_bass_high` are the median and 75th percentile, over the group's real plays, of the share
 of the played part of a track that has no bass; the planner leaves out tracks emptier than `no_bass_high`.
+`bpm` is the median tempo of the group's sets.
+
+djs.parquet, the same card (`mixes`, the `bpm` and `energy` columns, `no_bass`, `no_bass_high`) per group
+and DJ, for a request that names the DJ: Fred again's own tracks run from 116 to 146 BPM with a median
+0.41 of their length without bass, and his group's limits (122 to 138 BPM, 0.39) left 19 of his 107.
 A group is named by its genre and one word from WORDS: its most used transition type, or, when another group
 of the genre has that word, the STYLE column where it stands furthest above the genre's other groups. A type
 word needs NAMED of the group's seams to be of that type, so the name never claims a rare move. A group
@@ -202,8 +208,9 @@ def measured_seams(mixes: pd.DataFrame) -> pd.DataFrame:
     return seams.merge(mixes[[c for c in beside if c in mixes]], on="mix_id")
 
 
-def group_table(mixes: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(groups, units): one row per group, and one row per DJ and genre with its group."""
+def group_table(mixes: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """(groups, units, djs): one row per group, one row per DJ and genre with its group, and the
+    same card as a group's per DJ inside it."""
     seams = measured_seams(mixes)
     picked = set(seams.loc[seams["source"] == "djs", "dj_key"])
     seams = seams.groupby(["genre", "dj_key"]).filter(
@@ -228,20 +235,26 @@ def group_table(mixes: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     groups = groups.reset_index()
     names = group_names(groups)
     units["group"], groups["group"] = units["group"].map(names), groups["group"].map(names)
-    played = mixes.merge(units[["genre", "dj_key", "group"]], on=["genre", "dj_key"]).groupby(
-        "group"
-    )
-    card = played.agg(
-        mixes=("mix_id", "size"),
-        bpm_low=("bpm", lambda b: b.quantile(0.1)),
-        bpm_high=("bpm", lambda b: b.quantile(0.9)),
-        energy_low=("energy", lambda e: e.quantile(0.1)),
-        energy_high=("energy", lambda e: e.quantile(0.9)),
-    )
+    played = mixes.merge(units[["genre", "dj_key", "group"]], on=["genre", "dj_key"])
     seams = seams.merge(units[["genre", "dj_key", "group"]], on=["genre", "dj_key"])
-    empty = played_bass_free(seams).groupby(seams["group"])
-    card["no_bass"], card["no_bass_high"] = empty.median(), empty.quantile(0.75)
-    return groups.join(card, on="group"), units
+    seams["no_bass"] = played_bass_free(seams)
+
+    def cards(by: list[str]) -> pd.DataFrame:
+        """What a request is matched against, per group or per group and DJ."""
+        card = played.groupby(by).agg(
+            mixes=("mix_id", "size"),
+            bpm_low=("bpm", lambda b: b.quantile(0.1)),
+            bpm=("bpm", "median"),
+            bpm_high=("bpm", lambda b: b.quantile(0.9)),
+            energy_low=("energy", lambda e: e.quantile(0.1)),
+            energy_high=("energy", lambda e: e.quantile(0.9)),
+        )
+        empty = seams.groupby(by)["no_bass"]
+        card["no_bass"], card["no_bass_high"] = empty.median(), empty.quantile(0.75)
+        return card
+
+    groups = groups.drop(columns="bpm").join(cards(["group"]), on="group")
+    return groups, units, cards(["group", "dj_key"]).reset_index()
 
 
 def type_table(mixes: pd.DataFrame, by: list[str]) -> pd.DataFrame:
@@ -403,7 +416,8 @@ if __name__ == "__main__":
     demo()
     out = latest() / "mixes.parquet"
     table = mix_table()
-    groups, units = group_table(table)
+    groups, units, djs = group_table(table)
+    djs.to_parquet(latest() / "djs.parquet", index=False)
     table = table.merge(units[["genre", "dj_key", "group"]], on=["genre", "dj_key"], how="left")
     table["group"] = table["group"].fillna("")
     groups.to_parquet(latest() / "groups.parquet", index=False)

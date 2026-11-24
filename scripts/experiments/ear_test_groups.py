@@ -37,7 +37,8 @@ def main(out_dir: Path, work: Path, groups: list[str]) -> None:
     )
     rows = []
     for name in ["rules", *groups]:
-        plan = None if name == "rules" else set_plan(name, n_tracks)
+        style = [{"group": name, "dj": None, "weight": 1.0}]
+        plan = None if name == "rules" else set_plan(style, n_tracks)
         out = out_dir / f"{name.replace(' ', '_')}.flac"
         report = render_plan(plan_path, work / "tracks", out, seam_plan=plan)
         for i, seam in enumerate(report["transitions"]):
