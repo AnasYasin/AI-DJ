@@ -1676,3 +1676,14 @@ def test_a_planned_start_moves_the_window_towards_it():
     early, _ = _choose_window(_boundary_info(), 48, 16, None, start_range=(0, 8))
     late, _ = _choose_window(_boundary_info(), 48, 16, None, start_range=(36, 44))
     assert early <= 8 and 36 <= late <= 44
+
+
+def test_layers_split_half_a_beat_apart_follow_the_low_ones():
+    from src.audio.audio_mixer import _layer_consensus
+
+    # Muita into Better Off Alone at 134.5 BPM: the highs sit on the off-beat
+    split = {"lowmid": 0.0108, "mid": 0.0089, "high": -0.2124, "full": -0.2127}
+    assert abs(_layer_consensus(split, 134.5) - 0.00985) < 1e-4
+    # a quarter beat apart is no pattern: the plain median stands
+    assert _layer_consensus({"lowmid": 0.0, "mid": 0.1, "high": 0.1}, 134.5) == 0.1
+    assert _layer_consensus({"mid": 0.02}, 134.5) is None

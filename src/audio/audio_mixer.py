@@ -1619,6 +1619,28 @@ def kick_hit_residual(tail: np.ndarray, head: np.ndarray, bpm: float) -> tuple[f
     return residual, detail
 
 
+def _layer_consensus(offsets: dict[str, float], bpm: float) -> float | None:
+    """One offset from the readable layers other than the kick, None under two of them.
+
+    Their median, unless they split into two camps half a beat apart: then the camp of the lowest
+    readable layer decides, because off-beat hats sit half a beat from the beat and the median of
+    the two camps is right for neither. Measured 2026-11-25 on Yo Speed – Muita into Alice Deejay –
+    Better Off Alone, no kick readable: low-mid +11 ms, mid +9 ms, highs -212 ms, full -213 ms at
+    134.5 BPM (half a beat is 223 ms). The median said -102 ms and the seam was shifted by 93 ms.
+    """
+    if len(offsets) < 2:
+        return None
+    half = 0.5 * 60.0 / bpm
+    low = offsets[next(b for b in ("lowmid", "mid", "high", "full") if b in offsets)]
+    with_low = [o for o in offsets.values() if abs(o - low) <= SEAM_AGREE_S]
+    off_beat = [
+        o for o in offsets.values() if abs(abs(o - low) - half) <= SEAM_HALF_BEAT_TOL * half
+    ]
+    if off_beat and len(with_low) + len(off_beat) == len(offsets):
+        return float(np.median(with_low))
+    return float(np.median(list(offsets.values())))
+
+
 def seam_decision(tail: np.ndarray, head: np.ndarray, bpm: float) -> tuple[float, str, dict]:
     """
     Seam offset (seconds the head must move earlier) and which reading decided.
@@ -1657,7 +1679,7 @@ def seam_decision(tail: np.ndarray, head: np.ndarray, bpm: float) -> tuple[float
         "kick": kick,
         "others": {b: (round(o * 1000, 1), round(c, 2)) for b, (o, c) in others.items()},
     }
-    consensus = float(np.median([o for o, _ in others.values()])) if len(others) >= 2 else None
+    consensus = _layer_consensus({b: o for b, (o, _) in others.items()}, bpm)
     if kick is None and consensus is None:
         return 0.0, "none", detail
     if kick is None:
@@ -1972,6 +1994,10 @@ def render_mix(
             and ttype == "rise"
             and cur["drop_bar"] is not None
             and cur["drop_bar"] - bars_table["drop"] >= 0
+            # In a planned set the track still has to start inside the style's range. Aiming at a
+            # late drop started a track so far in that nothing of it was left after the overlap:
+            # it was heard for 32 s (Kamilo Sanclemente – Parallel Moon, 2026-11-25).
+            and (not slot or cur["drop_bar"] - bars_table["drop"] <= slot["enters_high"] + phrase)
         ):
             log.info("  transition %d: rise → drop (aligning to the incoming drop)", i)
             ttype = "drop"
@@ -2187,7 +2213,15 @@ def render_mix(
             window_offsets.append(o)
             periodic.append(ok)
         window_offsets = window_offsets or [after]
-        judged = [o for o, ok in zip(window_offsets, periodic) if ok]
+        # A window that reads half a beat out is an off-beat layer (hats over a passage with no
+        # kick), not drift: two tracks at one tempo cannot be half a beat apart in one window and
+        # aligned in the next. It is left out of the drift median.
+        half_beat = 0.5 * 60.0 / target_bpm
+        judged = [
+            o
+            for o, ok in zip(window_offsets, periodic)
+            if ok and abs(abs(o) - half_beat) > SEAM_HALF_BEAT_TOL * half_beat
+        ]
         # a median of one window is that window; two is the least that can
         # say anything about a trend
         seam_drift = float(np.median(np.abs(judged))) if len(judged) >= 2 else None

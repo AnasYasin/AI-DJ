@@ -44,6 +44,9 @@ log = logging.getLogger(__name__)
 BEAM_WIDTH = 8
 MAX_BPM_LOG_RATIO = 0.05  # ≈ ±5% — pyrubberband stretches this cleanly
 STYLE_BPM_SPAN = 0.04  # a styled set's pool stays this far either side of the style's median tempo
+SIGNATURE_SETS = (
+    3  # a named DJ's track played in this many of their sets is one of their own sound
+)
 W_PAIR, W_ENERGY = 1.0, 0.7
 W_SLOT = 0.7  # weight of "this seam suits this join" (set_plan.join_fit); never tuned
 W_PLAYED = 0.7  # weight of "the style's DJs play this track in many sets"; never tuned
@@ -228,7 +231,8 @@ def plan_mix(
         mid = float(cards["bpm"] @ weight)
         low = max(float(cards["bpm_low"].min()), mid * (1 - STYLE_BPM_SPAN))
         high = min(float(cards["bpm_high"].max()), mid * (1 + STYLE_BPM_SPAN))
-        bpm_range = bpm_range or (round(low), round(high))
+        # half a BPM of room: a track made at 140 measures 139.98 or 140.04
+        bpm_range = bpm_range or (round(low) - 0.5, round(high) + 0.5)
         seams = set_plan(styles, n_tracks, seed)
         group_djs = sorted({d for djs in cards["djs"] for d in djs})
         # a named DJ's own records, a group's DJs for a style that names none
@@ -242,6 +246,18 @@ def plan_mix(
         limit = float(cards["no_bass_high"] @ weight)
         exclude_ids = (exclude_ids or set()) | set(
             structure.loc[structure["no_bass"] > limit, "track_id"]
+        )
+        # A named DJ's signature tracks stay in whatever their bass-free share: the DJ makes them
+        # work. Fred again plays his own tracks on 53 % of his plays, and the limits left 20 of his
+        # 114 (63 over the bass-free limit, their loudness at 0.02 or 0.98 against a band of 0.42 to
+        # 0.77), so a set of his had one of them in six.
+        plays = load_plays(columns=["mix_id", "track_id", "dj_key"])
+        named = plays[plays["dj_key"].isin([s["dj"] for s in styles if s["dj"]])]
+        in_sets = named.groupby(["dj_key", "track_id"])["mix_id"].nunique()
+        signature = set(in_sets[in_sets >= SIGNATURE_SETS].index.get_level_values("track_id"))
+        exclude_ids -= signature
+        one_offs = set(in_sets[in_sets == 1].index.get_level_values("track_id")) - set(
+            in_sets[in_sets > 1].index.get_level_values("track_id")
         )
         band = [float(cards["energy_low"] @ weight), float(cards["energy_high"] @ weight)]
         if energy is not None:  # half the band, centred where the request says
@@ -259,15 +275,26 @@ def plan_mix(
         raise ValueError(
             f"no BPM range given and {dj or 'nobody'} is not a profiled DJ in {genre}"
         )
-    args = (genre, bpm_range, n_tracks, track_ids, exclude_ids, min_energy_pct, audio)
-    try:
-        pool = _load_pool(*args, pool_dj)
-    except ValueError:
-        if not styles or pool_dj == group_djs:
-            raise
-        pool_dj = group_djs  # the named DJs play too few held records in this range
-        log.info("the named DJs alone are too small a pool, using their groups' DJs")
-        pool = _load_pool(*args, pool_dj)
+    # A named DJ's pool is what they play again: 182 of Fred again's 234 held tracks were in one set
+    # only, and with those in the pool a set of his held one of his own tracks in six. When what is
+    # left is too small the one-offs come back, and after that the DJs of the styles' groups.
+    tries = [(exclude_ids, pool_dj)]
+    if styles:
+        tries = [
+            (exclude_ids | one_offs, pool_dj),
+            (exclude_ids, pool_dj),
+            (exclude_ids, group_djs),
+        ]
+    for k, (leave_out, pool_dj) in enumerate(tries):
+        try:
+            pool = _load_pool(
+                genre, bpm_range, n_tracks, track_ids, leave_out, min_energy_pct, audio, pool_dj
+            )
+            break
+        except ValueError:
+            if k == len(tries) - 1:
+                raise
+            log.info("pool too small, widening it (%d of %d)", k + 1, len(tries) - 1)
     meta, A, artist_sets, artist_tracks = (
         pool["meta"],
         pool["A"],
@@ -277,14 +304,19 @@ def plan_mix(
 
     scorer = PairScorer(A)
     structure = structure.set_index("track_id").reindex(A.tid) if seams else None
+    # The artist rule does not hold a named DJ back from their own tracks. It let one Fred again
+    # track into a Fred again set, where he plays his own on 53 % of his plays: this, not the tempo
+    # or the bass-free limit, was why his sets came out as other people's tracks (2026-11-25).
+    named_keys = {s["dj"] for s in styles if s["dj"]}
+    own_names = {name for names in artist_sets for name in names if dj_key(name) in named_keys}
     played = None
     if styles:
         # How many sets of the style's DJs a track is in. Without it a named DJ's set was built from
         # tracks played once: Fred again gave Darude and Dr. Alban (1 set each) where his own tracks
         # sit in 6 to 11 of his 29 sets, and 182 of his 234 held tracks were played in one set only.
-        mine = load_plays(columns=["mix_id", "track_id", "dj_key"])
-        mine = mine[mine["dj_key"].isin(pool_dj)].groupby("track_id")["mix_id"].nunique()
+        mine = plays[plays["dj_key"].isin(pool_dj)].groupby("track_id")["mix_id"].nunique()
         played = np.log1p(mine.reindex(A.tid).fillna(0).to_numpy(dtype=float))
+        is_signature = np.isin(A.tid, list(signature))
 
     # energy targets from the pool's own distribution
     shape = CURVES[curve](np.arange(n_tracks) / max(n_tracks - 1, 1))
@@ -322,7 +354,7 @@ def plan_mix(
             mask = np.abs(np.log(A.bpm[last] / A.bpm)) <= MAX_BPM_LOG_RATIO
             mask[tracks] = False
             for t in tracks:  # one track per artist, collaborations included
-                for name in artist_sets[t]:
+                for name in artist_sets[t] - own_names:
                     mask[artist_tracks[name]] = False
             cand = np.flatnonzero(mask)
             if len(cand) == 0:
@@ -332,6 +364,8 @@ def plan_mix(
             # compare. Left raw, the energy fit spans about 0 to 1 against several units of a z-score
             # and lost every time: a techno blend set took tracks at the genre's 9th percentile.
             total = W_PAIR * _z(scorer.score(last, tracks, cand))
+            if styles:  # a signature track is never the wrong loudness for its own DJ
+                e_fit = np.where(is_signature[cand], e_fit.max(), e_fit)
             total = total + W_ENERGY * (_z(e_fit) if styles else e_fit)
             chosen = np.zeros(len(cand), dtype=int)
             if played is not None:
