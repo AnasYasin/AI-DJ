@@ -115,7 +115,7 @@ same idea for DJ names, with & and + spelled out and accents dropped (`dj_key()`
 
 `djdata export-dataset --date <date>` (`djdata_package/djdata/dataset.py`) reads every source and writes
 `data/dataset/<date>/`. About 9 s. Every row carries `source`. `python -m src.data.profiles` then adds the
-four profile tables to the newest folder, about 2 minutes. The newest folder is 2026-11-18.
+six profile tables to the newest folder, about 4 minutes. The newest folder is 2026-11-18.
 
 **tracks.parquet**, one row per record, 37,612. `track_id, record_key, source, audio (preview | full),
 source_ref, artist, title, genre, minutes, n_vectors, embedding (1,280 float32), bpm, bpm_source
@@ -187,6 +187,17 @@ the share and in every percentile (Anas, 2026-11-18), so the deepest DJ leads a 
 **dj_types.parquet**, the same columns per group, DJ and type, 380 rows for 87 DJs. A request that names
 a DJ reads this.
 
+**djs.parquet**, one row per group and DJ, 95 (`group_table()`). The card a group has, per DJ: `mixes`,
+`bpm_low`, `bpm`, `bpm_high`, `energy_low`, `energy_high`, `no_bass`, `no_bass_high`. A named DJ is
+matched against their own. Fred again's sets sit at a median 134 BPM where his group's sit at 125.
+
+**structure.parquet**, one row per held track with a segment file, 12,153 (`structure_table()`).
+`n_bars`, `bar_s`, `intro_bars`, `first_drop_bar`, `outro_bars`, `downbeat_confidence` (under 0.5 on
+19 % of tracks) and `no_bass`, the share of the track with its lows more than 10 dB under its own loud
+lows (median 0.27). The planner reads it for slot fit, for cut seams and to leave out tracks emptier than
+a style really plays. Groups carry `no_bass` and `no_bass_high` beside their tempo and energy columns, the
+median and 75th percentile over their real plays of the bass-free share of what was played of a track.
+
 **README.md** in the folder: counts per source, the validation mixes per genre and per source, the md5 of
 every input table.
 
@@ -209,9 +220,11 @@ first set it was listed in.
 
 ```
 src/data/dataset.py     load_tracks(date=, sources=, audio=)  load_plays  load_seams  load_layers
-                        load_mixes  load_groups  load_group_types  load_dj_types
+                        load_mixes  load_groups  load_group_types  load_dj_types  load_djs  load_structure
                         the newest date when none is given
-src/data/profiles.py           plays, tracks and seams; writes the four profile tables into the newest folder
+src/data/profiles.py           plays, tracks, seams, curves and segments; writes the six profile tables
+src/models/set_plan.py         groups, group_types, dj_types: the styles and the seam budget of a planned set
+src/models/predict_model.py    with a style: groups, djs, structure, plays (the style's pool, `join_fit`)
 src/models/pair_model.py       the pair model: tracks + plays, the `split` column (validation DJs never trained on)
 src/models/track_arrays.py     TrackArrays(df): a pool's column arrays for the planner and the pair model
 src/models/predict_model.py    the planner's pool: tracks (genre, BPM, energy floor, artist, title)
@@ -260,7 +273,7 @@ enrichment tables and `old_sample_full/` (867 MB of fetched old records, not on 
   Halliwell, Scuba, Boris. Left as tech house (Anas) until a genre from the audio decides all 242 by one
   measure; 10 clips for his ear is the fallback.
 - The archive is not on S3. The dataset is, since 2026-11-14 (`s3://aidj-telfy/dataset/<date>/`).
-- Nothing reads the profile tables yet. The planner and the mixer do not know the groups.
+- The profile tables are read only on the planned path (`--dj`, `--style`, `--group`).
 - Back-to-back sets and pairings are their own `dj_key` ("Adam Beyer b2b Ida Engberg"), so they count as
   separate DJs in the groups.
 - `raveform` plays carry no match rate; it is in the alignment files if a filter needs it.

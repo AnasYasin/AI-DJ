@@ -61,6 +61,21 @@ python -m scripts.make_mix --genre techno --bpm 134 142 --curve peak \
 plan → fetch + verify → replan around unfetchable tracks → render. Stages are also usable alone:
 `predict_model` (--json plan.json) → `track_fetcher` (--plan) → `audio_mixer` (--plan --tracks-dir).
 
+In the style of real DJs (2026-11-25, design, ear findings and what is open in `TRANSITION_EXPERIMENTS.md`,
+"The design that follows"):
+```bash
+python -m scripts.make_mix --dj "fred again" --n 6 --out mix.flac                    # his tracks, his style
+python -m scripts.make_mix --genre house --style auto --energy 0.9 --n 6 --out mix.flac   # the genre's groups
+python -m scripts.make_mix --genre techno --style blend cut --n 8 --out mix.flac     # two groups by weight
+```
+`--dj`, `--style` or `--group` switch the planned path on: `pick_styles` and `set_plan`
+(`src/models/set_plan.py`) → `plan_mix` (style pool, `join_fit`) → `render_mix(seam_plan=...)`. Without them
+the legacy planner and mixer run exactly as before. **Design changes go beside the legacy code, behind the
+plan flag, never by editing it** (Anas, 2026-11-25): legacy lines are marked `LEGACY` in `audio_mixer.py`,
+`_choose_planned_window` sits beside `_choose_window`, a test guards the split, and a legacy render is
+compared sample by sample with `data/external/ear_test/system_2026-11-18/rules_techno.flac` after any
+change to shared code.
+
 ## Implementation status
 ```
 Phase 0-6  ✅ scrape, previews, features, transition labels, Airflow DAG
@@ -79,10 +94,12 @@ learned cue points, overlays ("w/" tracks).
   `layers` parquet, every row with `source` (old, raveform, djs), tracks with `audio` (preview, full),
   `split` on plays and seams (train | validation, by whole DJ, 56 validation DJs since the 2026-11-18 export, 58 before). Built by `djdata export-dataset --date <date>` from
   the three sources; read only through `src/data/dataset.py` (`load_tracks`, `load_plays`, ...).
-  Layout, ids and rules: `DATA_ARCHITECTURE.md`. `python -m src.data.profiles` adds four profile tables to the
+  Layout, ids and rules: `DATA_ARCHITECTURE.md`. `python -m src.data.profiles` adds six profile tables to the
   newest folder: `mixes` (what kind of set), `groups` (15 style groups of DJs per genre), `group_types` and
-  `dj_types` (per transition type its share, how it is done, the track that goes there). Loaders
-  `load_mixes`, `load_groups`, `load_group_types`, `load_dj_types`. Nothing reads them yet.
+  `dj_types` (per transition type its share, how it is done, the track that goes there), `djs` (a DJ's own
+  tempo, energy and bass-free limits) and `structure` (bars, sections, grid confidence and bass-free share
+  per held track). Loaders `load_mixes`, `load_groups`, `load_group_types`, `load_dj_types`, `load_djs`,
+  `load_structure`. The planner reads them when a style is asked for.
 - `data/processed/tracklist_clean.csv`, `features.parquet` — the old source's tables (2,852 mixes,
   28,460 tracks from 30 s previews: `embedding`[1280 discogs-effnet], bpm, key, energy_mean,
   loudness_lufs, onset_strength (RAW — see below), mfcc_0..12).

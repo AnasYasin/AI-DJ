@@ -115,8 +115,23 @@ other genres would settle it, and they need their records pulled the same way.
 
 ## The design that follows, 2026-10-15
 
-Discussed with Anas. The data side was built on 2026-11-18 (`src/data/profiles.py`, tables in
-`DATA_ARCHITECTURE.md`). The planner and the mixer do not read it yet, and nothing has run end to end.
+Discussed with Anas and built between 2026-11-18 and 2026-11-25. One command now plans, fetches and mixes
+a set in the style of real DJs: `make_mix --dj "fred again"`, `--genre house --style auto --energy 0.9`,
+`--genre techno --style blend cut`, `--group "techno blend"`. Without `--dj`, `--style` or `--group` the
+legacy system runs, unchanged. Nothing reads a prompt yet. The arguments are the fields a model will fill.
+
+How it runs. `pick_styles` (`src/models/set_plan.py`) turns the request into one or more styles with
+weights. `set_plan` gives the set a budget of seams in the styles' shares, each seam whole from one style,
+with the style's ranges for overlap and start bar. `plan_mix` picks tracks from what the styles' DJs play
+and gives each join the seam of the budget that suits it (`join_fit`). The mixer renders each planned type
+with its own recipe (`seam_plan` in `render_mix`), inside the ranges, with its rules as the check.
+
+The legacy mixer is kept apart (Anas, 2026-11-25: design changes go beside the legacy code, by flags, and do
+not overwrite it). Planned-set behaviour runs only when a seam has a plan. The legacy lines are marked
+`LEGACY` in `src/audio/audio_mixer.py`, the window of a planned track is its own function
+(`_choose_planned_window`), and a test fails if the legacy path reaches a planned-set rule. Proof: a legacy
+techno set rendered on 2026-11-25 is sample-identical to the one of 2026-11-18 (106,872,186 samples, 0
+differ), checked three times that day.
 
 Decisions of 2026-11-18 (Anas):
 
@@ -140,9 +155,79 @@ Decisions of 2026-11-18 (Anas):
   one question to the user. The music asked for picks the group only where it is measured to differ:
   `techno fast` (Amelie Lens) plays sets at 134 to 145 BPM.
 
-The next pieces in order are the plan for a set from a group's rows, a type per seam into the mixer, a
-slot-fit term in the planner, the tension recipe, and then the same six techno tracks rendered as `techno
-blend`, as `techno cut` and with today's rules for the ear.
+Heard by Anas on the rendered sets, what was measured, and what it changed. Each rule is for planned sets.
+
+- 2026-11-23, "sets seem slow". The first tracks sat at the genre's 7th to 15th loudness percentile,
+  because the build curve starts at the bottom of the pool. Real sets do not build (end minus start
+  energy has a median of 0.00 over 3,413 mixes). A styled set now moves inside the energy band of its
+  style's own sets and holds its level unless `--curve` is given (`level` curve).
+- 2026-11-23, "many buildups, they lack kick and main beats". A `techno cut` set had no bass for 33 % of
+  its time, the group's real plays for 11 %, the legacy set for 11 %. The planner had picked tracks from
+  the emptiest quarter of the pool (whole-track share without bass 0.29 against a pool median of 0.15).
+  `structure.parquet` now carries `no_bass` per track and the planner leaves out tracks emptier than the
+  style's 75th percentile of real plays. The same set measured 7 % after. Two wrong explanations came
+  first (a loudness check, then a 48-bar bass check after each entry) and both matched real DJs.
+- 2026-11-23, the first cut "felt wrong". The incoming track's `downbeat_confidence` was 0.20. A planned
+  cut is vetoed under 0.5 on either track (`CUT_MIN_GRID_CONFIDENCE`, untuned) and the planner keeps such
+  tracks out of cut seams.
+- 2026-11-25, a Fred again set held one of his own tracks in six. The one-track-per-artist rule blocked
+  the rest. A named DJ's own name is now exempt, their pool is the tracks they play in more than one set
+  (182 of his 234 held tracks were one-offs), and they are matched against their own card (`djs.parquet`).
+  He plays his own tracks on 53 % of his plays. Three fixes were stacked before the artist rule was found.
+- 2026-11-25, "lyrics to cut and diff vibe", cuts mostly wrong. Cuts had been placed on the pairs
+  furthest apart in tempo. Three cuts in four now go to pairs alike in tempo and loudness
+  (`CUT_CONTRAST_SHARE` = 0.25 keeps the old way its room, Anas: "not 100 % every time").
+- 2026-11-25, a cut "a bit before" the drop, then "should have been here [2:54] or waited a bit more".
+  2:54 was the bar the outgoing track's main drop begins. A planned cut now ends the outgoing track on
+  the bar one of its drops begins, the main one when several are in reach, else where a drop ends, and
+  still exists when the track offers neither (Anas: "lets not make cut difficult to exist"). The slam
+  recipe also ran the outgoing track two bars past its end before cutting. In a planned set the cut now
+  lands on the end bar.
+- 2026-11-25, long blends over a breakdown and an intro "slow the music too much", unless wanted. A track
+  that leaves on a blend ends where its tail keeps a kick for three quarters of the overlap
+  (`TAIL_BEAT_SHARE`), unless the set's own curve makes the next slot calm (under `STRUCTURE_LOW`).
+- 2026-11-25, the end of a track. It is aimed at the style's bars left, counted from the track's own end,
+  and may move 16 bars to a section change. Tracks are heard longer since (techno cut 5 to 6 minutes
+  each, a six-track set 31 minutes against 24).
+- 2026-11-25, "add one long blend" to the Fred again set, then "both lyrics going on, not good". A named
+  DJ's own overlap length is used from 3 seams of a type (his centre swaps overlap 62 to 97 bars, his
+  group's 23 to 35). In a planned blend of 32 bars or more the supporting track's mids go down 18 dB and
+  swap at the handover (`VOICE_DIP_DB`, untuned). Of his 35 joins with 16 or more bars of overlap, 20 are
+  one song against its own remix or second version and 7 more are a related pair, so his long blend is
+  mostly a version pair. The planner does not pair versions yet.
+
+Tried and dropped.
+
+- A score penalty for missing the planned start bar (0.03 per bar). It lost to the energy match, which
+  runs on z-scores, and 2 of 15 tracks started at bar 0. Hard ranges and filters replaced soft terms:
+  the same lesson came up for the energy fit and for the played-in-many-sets term, which now sit on one
+  scale (`_z`).
+- Looking up the most similar real seam for a join. Ruled out by Anas (a seam was made for its two
+  tracks) and by Test 2 above (the situation does not predict the DJ's choice).
+- Reading the group from the music alone. Right on 0.11 to 0.68 of mixes by genre for unseen DJs.
+- Key distance and energy step as reasons for a type. On 3,646 real seams only the tempo gap differs by
+  type (cuts 1.63 %, centre swaps 0.97 %).
+
+Open, in the order agreed or proposed.
+
+1. Fred again's gaps. 53 of his 110 measured joins are a stop and a restart (median 22 bars apart). The
+   mixer has no such type and his shares are counted over the 31 typed joins, so his cuts are overstated
+   (39 % against 11 % of all joins).
+2. Version pairs for a named DJ's long blend.
+3. Vocals per bar for all held tracks (a vocal separator on the bigger VM), so two voices never overlap.
+4. The style's own bass-swap position (`new_bass_at`, `old_bass_out` are in the tables, the mixer uses
+   its fixed ones).
+5. Beat matching where one track has no kick yet. Styles start tracks around bars 9 to 18 and the mixer
+   aligns on kicks. For planned seams the low layers decide when the layers split half a beat apart
+   (`_layer_consensus`), measured on one seam.
+6. The opener and the closer follow no plan. A frozen test over genres, DJs and curves has not been run:
+   only techno, house, melodic house and two named DJs were rendered, each after a change.
+7. The request as JSON checked by a pydantic model, then a model that fills it from a prompt (Anas: no
+   LLM yet, arguments by hand). The critic of TODO item 7.
+
+Ear-test files: `data/external/ear_test/system_2026-11-18/` to `system_2026-11-25f/`, one folder per
+round, each with the set, its log and `work/<name>/plan.json`. Anas called `system_2026-11-23/
+techno_blend.flac` "nice".
 
 1. Per DJ and per genre, the measured shares of the five transition types, and per type the recipe from
    the same seams (overlap bars, bass swap bar, the bar each band of each record enters or leaves, bass

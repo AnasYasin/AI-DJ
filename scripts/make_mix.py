@@ -31,7 +31,7 @@ def make_mix(
     bpm: tuple[float, float] | None,
     out_path: str | Path,
     n_tracks: int = 3,
-    curve: str = "build",
+    curve: str | None = None,
     minutes: float | None = None,
     work_dir: str | Path = "data/interim/mixes",
     max_rounds: int = 4,
@@ -202,7 +202,9 @@ if __name__ == "__main__":
     p.add_argument("--energy", type=float, default=None, help="0 to 1 inside the styles' own band")
     p.add_argument("--out", required=True)
     p.add_argument("--n", type=int, default=3)
-    p.add_argument("--curve", choices=list(CURVES), default="build")
+    p.add_argument(
+        "--curve", choices=list(CURVES), default=None, help="build without a style, level with one"
+    )
     p.add_argument("--minutes", type=float, default=None, help="target mix length")
     p.add_argument("--work-dir", default="data/interim/mixes")
     p.add_argument(

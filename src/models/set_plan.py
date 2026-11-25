@@ -20,6 +20,10 @@ import pandas as pd
 from src.data.dataset import dj_key, load_dj_types, load_group_types, load_groups
 
 MIN_ROW_SEAMS = 15  # a type backed by fewer seams in the group is left out of the plan
+MIN_OWN_SEAMS = 3  # a named DJ's own overlap length is used from this many seams of a type
+CUT_CONTRAST_SHARE = (
+    0.25  # of a set's cuts, placed where the two tracks differ. Untuned, for the ear
+)
 
 
 def type_counts(shares: pd.Series, n_seams: int) -> dict[str, int]:
@@ -125,6 +129,14 @@ def set_plan(styles: list[dict], n_tracks: int, seed: int = 0) -> list[dict]:
                 deep = mine[mine["seams"] >= MIN_ROW_SEAMS]
                 rest = rows[~rows["type"].isin(deep["type"])].copy()
                 rest["share"] = rest["type"].map(mine.set_index("type")["share"]).fillna(0.0)
+                # How long a DJ blends is their own even on few seams: Fred again's five centre
+                # swaps overlap 62 to 97 bars where his group's overlap 23 to 35 (Anas, 2026-11-25:
+                # "add one long blend too"). Thin, so only the overlap and the bars left are taken.
+                few = mine[mine["seams"] >= MIN_OWN_SEAMS].set_index("type")
+                lengths = ["overlap_bars_low", "overlap_bars", "overlap_bars_high", "bars_left"]
+                for column in lengths:
+                    theirs = rest["type"].map(few[column])
+                    rest[column] = theirs.where(theirs.notna(), rest[column])
                 rows = pd.concat([deep, rest])
         ranges = ["play_min_low", "play_min_high", "enters_bar_low", "overlap_bars_low"]
         rows = rows[rows["seams"] >= MIN_ROW_SEAMS].dropna(subset=ranges)
@@ -142,6 +154,14 @@ def set_plan(styles: list[dict], n_tracks: int, seed: int = 0) -> list[dict]:
         seam = {"group": row["group"], "type": row["type"]}
         seam["bass_free_bars"] = round(float(row["bass_free_bars"]), 1)
         seam["entry_section"] = str(row["entry_section"])
+        seam["bars_left"] = (
+            None if pd.isna(row["bars_left"]) else round(float(row["bars_left"]), 1)
+        )
+        if row["type"] == "cut":
+            # Most cuts go where the two tracks match, some where they differ. Placed on the pairs
+            # furthest apart in tempo, as real cuts lean, they landed on the least similar tracks:
+            # "lyrics to cut and diff vibe" (Anas, 2026-11-25). The contrast cut keeps its room.
+            seam["cut_on"] = "contrast" if rng.random() < CUT_CONTRAST_SHARE else "match"
         seam["play_min"] = round(float(rng.uniform(row["play_min_low"], row["play_min_high"])), 1)
         for name, column in (("overlap", "overlap_bars"), ("enters", "enters_bar")):
             seam[f"{name}_low"] = round(float(row[f"{column}_low"]), 1)
@@ -151,7 +171,11 @@ def set_plan(styles: list[dict], n_tracks: int, seed: int = 0) -> list[dict]:
 
 
 def join_fit(
-    structure: pd.DataFrame, seam: dict, tempo_gap_pct: np.ndarray, last_grid: float
+    structure: pd.DataFrame,
+    seam: dict,
+    tempo_gap_pct: np.ndarray,
+    last_grid: float,
+    energy_gap: np.ndarray | float = 0.0,
 ) -> np.ndarray:
     """0 to 1 per candidate track: how well this seam suits the join from the last track to it.
     Half is `slot_fit`, half is the tempo gap between the two tracks (0 to 5 %): a cut scores
@@ -164,14 +188,18 @@ def join_fit(
     larger gain is that long blends land on pairs that drift less.
 
     A cut is 0 when either bar grid is too unsure for the mixer to cut on (`last_grid`, and the
-    candidate's own `downbeat_confidence`).
+    candidate's own `downbeat_confidence`). A cut planned as "match" (`cut_on`) wants the two tracks
+    alike in tempo and loudness (`energy_gap`, 0 to 1), since the mixer cannot pick the moment by ear
+    the way a DJ does; a "contrast" cut keeps the rule the data gave.
     """
     close = 1 - np.clip(np.asarray(tempo_gap_pct) / 5.0, 0, 1)
     slot = slot_fit(structure, seam)
     if seam["type"] != "cut":
         return 0.5 * slot + 0.5 * close
     sure = (structure["downbeat_confidence"].fillna(1.0) >= 0.5).to_numpy() & (last_grid >= 0.5)
-    return np.where(sure, 0.5 * slot + 0.5 * (1 - close), 0.0)
+    alike = 0.5 * close + 0.5 * (1 - np.clip(np.asarray(energy_gap), 0, 1))
+    pair = alike if seam.get("cut_on") == "match" else 1 - close
+    return np.where(sure, 0.5 * slot + 0.5 * pair, 0.0)
 
 
 def slot_fit(structure: pd.DataFrame, seam: dict) -> np.ndarray:
@@ -224,6 +252,12 @@ def demo():
         0.0,
         0.0,
     ]  # unsure grid before
+    match = cut | {"cut_on": "match"}  # alike in tempo and loudness scores highest
+    assert join_fit(tracks, match, gap, 0.9, np.array([0.0, 0.0, 1.0])).tolist() == [
+        1.0,
+        0.0,
+        0.25,
+    ]
     shares = pd.Series({"centre swap": 0.54, "tension": 0.18, "end swap": 0.12, "cut": 0.07})
     # 7 seams: 4.15, 1.38, 0.92 and 0.54 exact, so the two spare seams go to end swap and cut
     assert type_counts(shares, 7) == {"centre swap": 4, "tension": 1, "end swap": 1, "cut": 1}

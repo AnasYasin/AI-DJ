@@ -58,6 +58,7 @@ W_PLAYED = 0.7  # weight of "the style's DJs play this track in many sets"; neve
 W_COMPAT_DEFAULT = 0.0
 
 CURVES = {
+    "level": lambda t: np.full(np.shape(t), 0.5),  # what real sets do: end minus start is 0.00
     "build": lambda t: t,
     "peak": lambda t: np.where(t <= 0.85, np.minimum(t / 0.7, 1.0), 1 - (t - 0.85) / 0.3),
     "wave": lambda t: 0.5 + 0.5 * np.sin(2 * np.pi * t - np.pi / 2),
@@ -169,7 +170,7 @@ def plan_mix(
     genre: str | None,
     bpm_range: tuple[float, float] | None,
     n_tracks: int = 10,
-    curve: str = "build",
+    curve: str | None = None,
     seed_track: str | None = None,
     track_ids: list[str] | None = None,
     exclude_ids: set[str] | None = None,
@@ -271,6 +272,9 @@ def plan_mix(
             every = every[every["genre"] == genre]
             too_calm = every["energy_mean"] < every["energy_mean"].quantile(band[0])
             exclude_ids = exclude_ids | set(every.loc[too_calm, "track_id"])
+    # A styled set holds its level unless a curve is asked for; the planner without a style builds,
+    # as it always did.
+    curve = curve or ("level" if styles else "build")
     if bpm_range is None:
         raise ValueError(
             f"no BPM range given and {dj or 'nobody'} is not a profiled DJ in {genre}"
@@ -372,11 +376,17 @@ def plan_mix(
                 total = total + W_PLAYED * _z(played[cand])
             if seams:
                 # one seam of each type still in the budget; each candidate takes the one that fits
-                left = {seams[k]["type"]: k for k in reversed(range(len(seams))) if k not in used}
+                kinds = ("group", "type", "cut_on")  # what makes two seams of the budget differ
+                left = {
+                    tuple(seams[k].get(x) for x in kinds): k
+                    for k in reversed(range(len(seams)))
+                    if k not in used
+                }
                 gap = np.abs(np.log(A.bpm[last] / A.bpm[cand])) * 100
+                e_gap = np.abs(A.energy[last] - A.energy[cand]) / (2 * e_scale)
                 fits = np.stack(
                     [
-                        join_fit(structure.iloc[cand], seams[k], gap, grid[last])
+                        join_fit(structure.iloc[cand], seams[k], gap, grid[last], e_gap)
                         for k in left.values()
                     ]
                 )
@@ -440,6 +450,7 @@ def plan_mix(
             # units and is for display only. Passing that one to the mixer
             # silently flattens the curve.
             "energy_target01": round(float(e01[i]), 3),
+            "curve01": round(float(shape[i]), 3),  # the curve itself, for the mixer's calm slots
         }
         if i > 0:
             prev = tracks[i - 1]
@@ -614,7 +625,7 @@ if __name__ == "__main__":
     p.add_argument("--style", nargs="*", default=None, help='"auto", or words: blend cut fast ...')
     p.add_argument("--energy", type=float, default=None, help="0 to 1 inside the styles' own band")
     p.add_argument("--n", type=int, default=10)
-    p.add_argument("--curve", choices=list(CURVES), default="build")
+    p.add_argument("--curve", choices=list(CURVES), default=None)
     p.add_argument("--seed-track", default=None)
     p.add_argument(
         "--min-energy-pct", type=float, default=None, help="drop the quietest N%% of the pool"

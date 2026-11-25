@@ -37,10 +37,11 @@ records at the cue points adds nothing in techno and a signal across DJs in hous
 inside Claptone. Agreed shape: per-DJ and per-genre tables of type shares and recipe distributions
 (never medians), types drawn for the whole set and placed on seams that can carry them, the mixer's
 rules as the veto, the mixer's own rendering. Consecutive seams do not depend on each other (2026-11-13).
-Style groups of DJs per genre, with the share and recipe of each type, were built on 2026-11-18
-(`src/data/profiles.py`). Still to build are the plan for a set, the type per seam into the mixer, slot
-fit in the planner, the tension recipe and an end-to-end mix. Detail in `TRANSITION_EXPERIMENTS.md`, "The design
-that follows".
+Built between 2026-11-18 and 2026-11-25: style groups of DJs per genre, the plan for a set, track
+picking by style, the type per seam into the mixer, a tension recipe, all behind a flag beside the legacy
+mixer, run by `make_mix --dj`, `--style` or `--group`. What Anas heard, what it changed and the open list
+(his gaps, version pairs, vocals per bar, the bass-swap position, beat matching with no kick, a frozen
+test, the request as JSON) are in `TRANSITION_EXPERIMENTS.md`, "The design that follows".
 Tension is 20 % of measured seams and loop 63, so item 5's first question has an answer in the data.
 
 ## 4. DJ profiling

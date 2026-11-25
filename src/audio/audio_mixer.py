@@ -1124,16 +1124,9 @@ def _choose_window(
     e_target01: float | None,
     phrase_bars: int | None = None,
     quiet_tail: bool = False,
-    start_range: tuple[float, float] | None = None,
 ) -> tuple[int, int]:
     """
     Pick which window of the track to play, and how long it runs.
-
-    `start_range`: the bars a planned set's style starts tracks between (the middle half of what
-    its DJs do). Only phrase lines inside it are scored, so the plan says roughly where and the
-    scoring below, which knows this track's sections and energy, says exactly where. A score
-    penalty of 0.03 per bar was tried first (2026-11-18) and lost to the energy match, which runs
-    on bar-energy z-scores: 2 of 15 planned starts landed at bar 0.
 
     `quiet_tail`: the NEXT slot is low-energy, so prefer a cue-out whose tail
     (what plays under the incoming record) is a breakdown, outro or intro.
@@ -1165,8 +1158,6 @@ def _choose_window(
     labels = {s["label"]: s for s in info["sections"]}
     first_ok = labels["intro"]["bars"][1] if "intro" in labels else 0
     lo_start = max(first_ok - 8, 0)
-    if start_range is not None:  # a planned start may sit inside the intro
-        lo_start = min(lo_start, max(int(start_range[0]), 0))
     lo_start += (offset - lo_start) % phrase  # first phrase start at or after lo_start
     last_ok = n - 1 - tail_bars
     room = last_ok - lo_start
@@ -1187,39 +1178,141 @@ def _choose_window(
         if MIN_BODY_BARS <= target_bars + d <= room
     ]
     best, best_score = None, -np.inf
-    if (
-        start_range is None
-    ):  # LEGACY, as tuned by ear: every line below is the mixer before the styles
-        for length in lengths:
-            drift = LENGTH_PENALTY * abs(length - target_bars) / target_bars
-            for start in range(lo_start, last_ok - length + 1, phrase):
-                end = start + length
-                score = -float(np.abs(be[start:end] - target).mean())
-                # The cue-out earns more than the cue-in: it is where the record
-                # hands over, so a ragged end is the one the ear catches.
-                score += CUE_IN_BONUS * (start in bounds) + CUE_OUT_BONUS * (end in bounds) - drift
-                if quiet_tail and _section_at(info["sections"], end) in QUIET_SECTIONS:
-                    score += TAIL_QUIET_BONUS
-                if score > best_score:
-                    best, best_score = (start, end), score
-        return best if best else (lo_start, last_ok)
-    # A planned set. Over every length, so a long window that only fits from bar 0 cannot pull the
-    # start out of the range (2 of 15 did on 2026-11-23). No phrase line inside it: those nearest
-    # its middle.
-    windows = [(s, n) for n in lengths for s in range(lo_start, last_ok - n + 1, phrase)]
-    inside = [w for w in windows if start_range[0] <= w[0] <= start_range[1]]
-    nearest = min((abs(w[0] - sum(start_range) / 2) for w in windows), default=0)
-    windows = inside or [w for w in windows if abs(w[0] - sum(start_range) / 2) == nearest]
-    for start, length in windows:
-        end = start + length
+    for length in lengths:
         drift = LENGTH_PENALTY * abs(length - target_bars) / target_bars
+        for start in range(lo_start, last_ok - length + 1, phrase):
+            end = start + length
+            score = -float(np.abs(be[start:end] - target).mean())
+            # The cue-out earns more than the cue-in: it is where the record
+            # hands over, so a ragged end is the one the ear catches.
+            score += CUE_IN_BONUS * (start in bounds) + CUE_OUT_BONUS * (end in bounds) - drift
+            if quiet_tail and _section_at(info["sections"], end) in QUIET_SECTIONS:
+                score += TAIL_QUIET_BONUS
+            if score > best_score:
+                best, best_score = (start, end), score
+    return best if best else (lo_start, last_ok)
+
+
+LONG_BLEND_BARS = 32  # a planned blend this long keeps one voice at a time
+VOICE_DIP_DB = -18.0  # how far the supporting track's mids go down in it. Untuned, for the ear
+BEAT_SECTIONS = frozenset({"drop", "groove"})  # the sections that carry a kick
+TAIL_SECTIONS = BEAT_SECTIONS | {"outro"}  # what a blend can run over without going dead
+TAIL_BEAT_SHARE = 0.75  # of the overlap's bars, on the outgoing track
+
+
+def _choose_planned_window(
+    info: dict, target_bars: int, tail_bars: int, phrase_bars: int, planned: dict
+) -> tuple[int, int]:
+    """
+    The window of a track in a planned set. Beside `_choose_window`, which the mixer without a plan
+    uses and which is not touched.
+
+    `planned` is what the style says about this slot:
+      start_range   the bars the style starts tracks between, None for the opener
+      enters_by     the transition type that brings the track in
+      leaves_by     None for the last track, else {type, bars_left, overlap, calm_ok}: how it goes
+                    out, how many bars the style's DJs leave after a track is last heard, the
+                    overlap in bars, and whether the next slot is meant to be calm
+
+    The plan advises and the track decides. Inside the start range the cue-in is a phrase line of
+    this track; a track that comes in on a cut starts inside a part with a kick, and one that leaves
+    on a cut ends on the bar one of its drops begins (its main drop when it can), else where a drop ends. The end is aimed at
+    the style's bars left, counted from this track's own end, so a long track plays longer; it may
+    move LENGTH_FLEX_BARS either way to a section change. A track that leaves on a cut ends inside a
+    part with a kick. A track that leaves on a blend ends where its tail keeps a kick for most of
+    the overlap, so two tracks are not both without a beat, unless the next slot is meant to be calm.
+    Heard 2026-11-25 (Anas): cuts from lyrics into another vibe, and long blends over a breakdown
+    and an intro that slow the set down when nobody asked for it.
+    """
+    n = len(info["bars"])
+    be = np.array(info["bar_energy"], dtype=np.float32)
+    sections = info["sections"]
+    offset = int(info.get("phrase_offset", 0)) % phrase_bars
+    bounds = {s["bars"][0] for s in sections} | {s["bars"][1] for s in sections}
+    bounds -= {0, n, n - 1}
+    last_ok = n - 1 - tail_bars
+    lines = list(range(offset, max(last_ok, offset) + 1, phrase_bars))  # this track's phrase lines
+
+    labels = {s["label"]: s for s in sections}
+    first_ok = labels["intro"]["bars"][1] if "intro" in labels else 0
+    opener = max(first_ok - 8, 0)  # the opener starts where the mixer without a plan starts
+    lo, hi = planned.get("start_range") or (opener, opener + phrase_bars - 1)
+    starts = [s for s in lines if lo <= s <= hi]
+    starts = starts or [min(lines, key=lambda s: abs(s - (lo + hi) / 2))]
+    if planned.get("enters_by") == "cut":
+        on_a_beat = [s for s in starts if _section_at(sections, s) in BEAT_SECTIONS]
+        starts = on_a_beat or starts
+
+    leave = planned.get("leaves_by")
+    left = leave.get("bars_left") if leave else None
+
+    def end_target(start: int) -> float:
+        if left is None:
+            return start + target_bars
+        target = n - 1 - left - leave["overlap"]
+        if target - start < MIN_BODY_BARS:  # a long overlap on a short track: keep room for it
+            target = max(n - 1 - leave["overlap"], start + MIN_BODY_BARS)
+        return target
+
+    ends = lines
+    if leave and leave["type"] == "cut":  # a cut needs a few bars of tail, not a blend's worth
+        ends = list(range(offset, n - max(int(leave["overlap"]), 4), phrase_bars))
+    windows = [
+        (s, e)
+        for s in starts
+        for e in ends
+        if e - s >= MIN_BODY_BARS and abs(e - end_target(s)) <= LENGTH_FLEX_BARS
+    ]
+    if not windows:  # a short track: from the first start to the last line it can end on
+        s = starts[0]
+        return s, max(min(lines[-1], last_ok), s + 1)
+
+    if leave and not leave.get("calm_ok"):
+        if leave["type"] == "cut":
+            # Check for the drop and cut there. First choice: the bar one of this track's drops
+            # begins, after its build-up, so the next track slams in on the very beat the drop was
+            # due. Second: the bar a drop ends, the whole of it played. In its main drop when more
+            # than one is in reach. Heard on Beto's Horns, main drop at bar 113 (Anas, 2026-11-25):
+            # a cut 2 bars into the drop "did it a bit before", a cut 8 bars into it "should have
+            # been here [the drop] or waited a bit more". A preference, so a cut still exists on a
+            # track that offers no such spot.
+            starts_of = {s["bars"][0]: s for s in sections if s["label"] == "drop"}
+            ends_of = {s["bars"][1]: s for s in sections if s["label"] == "drop"}
+
+            def loudest(found: dict) -> list:
+                main = max(
+                    found.values(), key=lambda d: float(be[d["bars"][0] : d["bars"][1]].mean())
+                )
+                return [w for w, d in found.items() if d is main]
+
+            on_drop = {w: starts_of[w[1]] for w in windows if w[1] in starts_of}
+            after_drop = {w: ends_of[w[1]] for w in windows if w[1] in ends_of}
+            if on_drop:
+                good = loudest(on_drop)
+            elif after_drop:
+                good = loudest(after_drop)
+            else:
+                good = [w for w in windows if _section_at(sections, w[1] - 1) in BEAT_SECTIONS]
+        else:
+            tail = max(int(leave["overlap"]), 1)
+
+            def keeps_a_beat(end: int) -> bool:
+                bars = range(end, min(end + tail, n))
+                on = sum(_section_at(sections, b) in TAIL_SECTIONS for b in bars)
+                return on >= TAIL_BEAT_SHARE * max(len(bars), 1)
+
+            good = [w for w in windows if keeps_a_beat(w[1])]
+        windows = good or windows
+
+    target = np.quantile(be, 0.65)  # the mixer's default: energetic but not only the drop
+    best, best_score = None, -np.inf
+    for start, end in windows:
+        drift = LENGTH_PENALTY * abs(end - end_target(start)) / max(end - start, 1)
         score = -float(np.abs(be[start:end] - target).mean())
         score += CUE_IN_BONUS * (start in bounds) + CUE_OUT_BONUS * (end in bounds) - drift
-        if quiet_tail and _section_at(info["sections"], end) in QUIET_SECTIONS:
-            score += TAIL_QUIET_BONUS
         if score > best_score:
             best, best_score = (start, end), score
-    return best if best else (lo_start, last_ok)
+    return best
 
 
 PHRASE_BARS = 8  # windows snap to 8-bar phrases
@@ -1734,7 +1827,7 @@ def _prepare_track(
     phrase_bars: int = DEFAULT_PHRASE_BARS,
     quiet_tail: bool = False,
     cue: tuple[int | None, int | None] | None = None,
-    start_range: tuple[float, float] | None = None,
+    planned: dict | None = None,
 ) -> dict:
     info = segment(path)
     y = load_audio(path)  # (samples, channels)
@@ -1745,9 +1838,14 @@ def _prepare_track(
     y = _stretch(y, rate).astype(np.float32)
     bars = np.array(info["bars"], dtype=np.float64) / rate
 
-    cue_in_bar, cue_out_bar = _choose_window(
-        info, target_bars, max_tail_bars, e_target01, phrase_bars, quiet_tail, start_range
-    )
+    if planned is None:  # LEGACY: the mixer without a plan
+        cue_in_bar, cue_out_bar = _choose_window(
+            info, target_bars, max_tail_bars, e_target01, phrase_bars, quiet_tail
+        )
+    else:
+        cue_in_bar, cue_out_bar = _choose_planned_window(
+            info, target_bars, max_tail_bars, phrase_bars, planned
+        )
     if cue is not None:  # test hook: the regression set pins the window on a chosen part
         cue_in_bar = cue_in_bar if cue[0] is None else int(cue[0])
         cue_out_bar = cue_out_bar if cue[1] is None else int(cue[1])
@@ -1844,8 +1942,11 @@ def render_mix(
     force_bars: int | None = None,
     cue_overrides: list | None = None,
     seam_plan: list[dict] | None = None,
+    slot_curve: list[float] | None = None,
 ) -> dict:
     """
+    slot_curve: with a seam plan, the set's energy curve per track, 0 to 1. A slot under
+    STRUCTURE_LOW is meant to be calm, and the blend into it may run with no kick from either track.
     seam_plan: one dict per seam from `src.models.set_plan.set_plan`, seam i joining tracks i
     and i + 1: `type` (the measured type), `bass_free_bars`, the style's ranges `overlap_low`
     to `overlap_high` and, for the incoming track, `enters_low` to `enters_high`, and its
@@ -1923,17 +2024,30 @@ def render_mix(
         next_et = energy_targets[i + 1] if energy_targets and i + 1 < len(track_paths) else None
         quiet_tail = structure_regime(next_et) == "low"
         cue = cue_overrides[i] if cue_overrides and i < len(cue_overrides) else None
-        want_bars, start_range = target_bars, None
-        if seam_plan and i > 0:  # the seam that brings this track in says where and how long
-            slot = seam_plan[i - 1]
-            start_range = (slot["enters_low"], slot["enters_high"])
-            # the plan's play time is first heard to last heard, so it holds the next overlap
-            nxt = seam_plan[i] if i < len(seam_plan) else None
-            after = (nxt["overlap_low"] + nxt["overlap_high"]) / 2 if nxt else 0
-            heard = slot["play_min"] * 60 / bar_dur_t
-            want_bars = max(_whole_phrases(int(heard - after), phrase), MIN_BODY_BARS)
+        want_bars, planned = target_bars, None
+        if seam_plan:  # the seams either side of this track say how it comes in and goes out
+            came, goes = (
+                (seam_plan[i - 1] if i else None),
+                (seam_plan[i] if i < len(seam_plan) else None),
+            )
+            after = (goes["overlap_low"] + goes["overlap_high"]) / 2 if goes else 0
+            if came:  # the play time is first heard to last heard, so it holds the next overlap
+                heard = came["play_min"] * 60 / bar_dur_t
+                want_bars = max(_whole_phrases(int(heard - after), phrase), MIN_BODY_BARS)
+            planned = {
+                "start_range": (came["enters_low"], came["enters_high"]) if came else None,
+                "enters_by": came["type"] if came else None,
+                "leaves_by": goes
+                and {
+                    "type": goes["type"],
+                    "bars_left": goes.get("bars_left"),
+                    "overlap": after,
+                    # a calm slot next, by the set's own curve: the blend may run without a beat
+                    "calm_ok": bool(slot_curve) and slot_curve[i + 1] < STRUCTURE_LOW,
+                },
+            }
         t = _prepare_track(
-            p, target_bpm, max_tail, want_bars, et, phrase, quiet_tail, cue, start_range
+            p, target_bpm, max_tail, want_bars, et, phrase, quiet_tail, cue, planned
         )
         played_bars = t["cue_out_bar"] - t["cue_in_bar"]
         log.info(
@@ -2121,7 +2235,16 @@ def render_mix(
         # left is per-seam: beat trackers drift, and a track's tempo is not
         # perfectly constant, so the residual at this particular cut is
         # measured against the audio and removed.
-        a0 = max(int(prev["bars"][prev["cue_out_bar"]] * SR), 0)
+        out_bar = prev["cue_out_bar"]
+        if slot and ttype == "slam":
+            # A planned cut lands ON the outgoing track's end bar. The slam cuts at the centre of
+            # its bars, and the mixer without a plan starts those bars at the cue-out, so the
+            # outgoing track runs half of them past its end: two bars of the drop it was cut on.
+            # Here the slam starts that half early and the track's body gives the bars back.
+            out_bar = max(out_bar - n_bars // 2, prev["cue_in_bar"] + 1)
+            given_back = int((prev["bars"][prev["cue_out_bar"]] - prev["bars"][out_bar]) * SR)
+            mix = mix[: len(mix) - given_back]
+        a0 = max(int(prev["bars"][out_bar] * SR), 0)
         b0 = max(int(cur["bars"][in_bar] * SR), 0)
         tail = prev["audio"][a0 : a0 + n_ov]
         head = cur["audio"][b0 : b0 + n_ov]
@@ -2262,6 +2385,11 @@ def render_mix(
         a_bands = _snap_bands(recipe["A_bands"], n_bars, half_phrase)
         b_bands = _snap_bands(recipe["B_bands"], n_bars, half_phrase)
         lead_cfg = LEAD.get(ttype)
+        if slot and lead_cfg and n_bars >= LONG_BLEND_BARS:
+            # One voice at a time in a planned long blend: the supporting track's mids, where a
+            # voice sits, go far down, and the two swap at the handover. With the usual dip of 3 to
+            # 4 dB a 56-bar blend of two vocal tracks had "both lyrics going on" (Anas, 2026-11-25).
+            lead_cfg = lead_cfg | {"mid_dip_db": VOICE_DIP_DB}
         if lands_on_drop and ttype != "drop":
             a_low, b_low = _end_anchored_swap(n_bars)
             a_bands = {**(a_bands or {}), "low": a_low}
@@ -2448,6 +2576,7 @@ def render_plan(
 
     if plan.get("seams") and not missing:  # a dropped track would shift every slot
         kwargs.setdefault("seam_plan", plan["seams"])
+        kwargs.setdefault("slot_curve", [t.get("curve01", 0.5) for t in plan["tracks"]])
         # A planned set's windows follow the plan's start bars and play times on the mixer's default
         # energy target. The plan's slot energies say how loud a track is among its genre; read as
         # window targets they made the mixer prefer the calm part of every track (2026-11-23).

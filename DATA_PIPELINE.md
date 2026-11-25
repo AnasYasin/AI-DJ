@@ -44,8 +44,8 @@ Three files per source say where in a track a seam happens. They are built in th
 4. `djdata export-dataset --date <date>` joins `seam_cues.csv` onto the seams table by `seam_id`. The cue
    script reads seam ids from the newest dataset, so a newly measured seam gets its cue columns on the
    second export.
-5. `python -m src.data.profiles` reads the newest dataset and writes `mixes.parquet`, `groups.parquet`,
-   `group_types.parquet` and `dj_types.parquet` into it, about 2 minutes. Run it after every export. When
+5. `python -m src.data.profiles` reads the newest dataset, the curves and the segments and writes
+   `mixes`, `groups`, `group_types`, `dj_types`, `djs` and `structure` (parquet) into it, about 4 minutes. Run it after every export. When
    DJ data is added, measure the floors again (the comment above `FLOOR` in the module says how they were
    chosen), because more deep DJs let a floor rise.
 

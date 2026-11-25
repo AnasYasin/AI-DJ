@@ -1673,9 +1673,44 @@ def test_tension_recipe_leaves_the_planned_bars_without_bass():
 
 
 def test_a_planned_start_moves_the_window_towards_it():
-    early, _ = _choose_window(_boundary_info(), 48, 16, None, start_range=(0, 8))
-    late, _ = _choose_window(_boundary_info(), 48, 16, None, start_range=(36, 44))
+    from src.audio.audio_mixer import _choose_planned_window
+
+    early, _ = _choose_planned_window(_boundary_info(), 48, 16, 8, {"start_range": (0, 8)})
+    late, _ = _choose_planned_window(_boundary_info(), 48, 16, 8, {"start_range": (36, 44)})
     assert early <= 8 and 36 <= late <= 44
+
+
+def test_a_planned_track_ends_by_how_it_leaves():
+    """Drop to bar 72, a breakdown to 104, a drop to 168, an outro to 200. The style leaves 20 bars."""
+    from src.audio.audio_mixer import _choose_planned_window
+
+    info = _fake_info(
+        n_bars=200,
+        sections=[
+            {"label": "drop", "bars": [0, 72]},
+            {"label": "breakdown", "bars": [72, 104]},
+            {"label": "drop", "bars": [104, 168]},
+            {"label": "outro", "bars": [168, 200]},
+        ],
+        energy=np.zeros(200),
+    )
+    leave = {"type": "cut", "bars_left": 20, "overlap": 4, "calm_ok": False}
+    _, end = _choose_planned_window(info, 48, 16, 8, {"start_range": (0, 8), "leaves_by": leave})
+    assert (
+        104 < end <= 168
+    )  # a cut leaves from inside a part with a kick, near the style's bars left
+    # aimed at bar 104, where the second drop begins after its build-up: the cut waits for the drop
+    before = {"type": "cut", "bars_left": 91, "overlap": 4, "calm_ok": False}
+    _, end = _choose_planned_window(info, 48, 16, 8, {"start_range": (0, 8), "leaves_by": before})
+    assert end == 104  # on the bar the drop begins: the next track slams in where it was due
+    # a blend aimed at bar 80: ends from 64 to 88 put the 32-bar tail over the breakdown
+    blend = {"type": "centre swap", "bars_left": 87, "overlap": 32, "calm_ok": False}
+    _, end = _choose_planned_window(info, 48, 16, 8, {"start_range": (0, 8), "leaves_by": blend})
+    assert end == 96  # the one end whose tail keeps a kick for three quarters of the overlap
+    _, end = _choose_planned_window(
+        info, 48, 16, 8, {"start_range": (0, 8), "leaves_by": blend | {"calm_ok": True}}
+    )
+    assert end == 72  # a calm slot next: out at the section change, over the breakdown
 
 
 def test_layers_split_half_a_beat_apart_follow_the_low_ones():
@@ -1706,6 +1741,6 @@ def test_the_mixer_without_a_plan_keeps_its_legacy_seam_decision(monkeypatch):
     audio_mixer.seam_decision(clicks, clicks, bpm)  # no flag: must not raise
     with pytest.raises(AssertionError):
         audio_mixer.seam_decision(clicks, clicks, bpm, low_layers_decide=True)
-    # the window search without a plan still runs the loop marked as legacy
-    source = " ".join(inspect.getsource(audio_mixer._choose_window).split())
-    assert "start_range is None" in source and "LEGACY" in source
+    # the window search without a plan knows nothing of a plan: that lives in its own function
+    assert "planned" not in inspect.getsource(audio_mixer._choose_window)
+    assert "start_range" not in inspect.signature(audio_mixer._choose_window).parameters
