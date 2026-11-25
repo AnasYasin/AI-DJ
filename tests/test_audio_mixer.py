@@ -1687,3 +1687,25 @@ def test_layers_split_half_a_beat_apart_follow_the_low_ones():
     # a quarter beat apart is no pattern: the plain median stands
     assert _layer_consensus({"lowmid": 0.0, "mid": 0.1, "high": 0.1}, 134.5) == 0.1
     assert _layer_consensus({"mid": 0.02}, 134.5) is None
+
+
+def test_the_mixer_without_a_plan_keeps_its_legacy_seam_decision(monkeypatch):
+    """The low-layers rule is for planned sets only. Without the flag `seam_decision` settles a
+    disagreement the way it did before the styles, and never reaches the new rule."""
+    import inspect
+
+    from src.audio import audio_mixer
+
+    def never(*_):
+        raise AssertionError("the legacy path reached the planned-set rule")
+
+    monkeypatch.setattr(audio_mixer, "_layer_consensus", never)
+    bpm, secs = 120.0, 8
+    clicks = np.zeros((secs * SR, 2), dtype=np.float32)
+    clicks[:: int(SR * 60 / bpm)] = 1.0
+    audio_mixer.seam_decision(clicks, clicks, bpm)  # no flag: must not raise
+    with pytest.raises(AssertionError):
+        audio_mixer.seam_decision(clicks, clicks, bpm, low_layers_decide=True)
+    # the window search without a plan still runs the loop marked as legacy
+    source = " ".join(inspect.getsource(audio_mixer._choose_window).split())
+    assert "start_range is None" in source and "LEGACY" in source

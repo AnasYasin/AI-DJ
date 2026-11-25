@@ -1186,20 +1186,34 @@ def _choose_window(
         for d in range(-LENGTH_FLEX_BARS, LENGTH_FLEX_BARS + 1, phrase)
         if MIN_BODY_BARS <= target_bars + d <= room
     ]
-    windows = [(s, n) for n in lengths for s in range(lo_start, last_ok - n + 1, phrase)]
-    if start_range is not None and windows:
-        # Over every length, so a long window that only fits from bar 0 cannot pull the start out of
-        # the range (2 of 15 did on 2026-11-23). No phrase line inside it: those nearest its middle.
-        inside = [w for w in windows if start_range[0] <= w[0] <= start_range[1]]
-        nearest = min(abs(w[0] - sum(start_range) / 2) for w in windows)
-        windows = inside or [w for w in windows if abs(w[0] - sum(start_range) / 2) == nearest]
     best, best_score = None, -np.inf
+    if (
+        start_range is None
+    ):  # LEGACY, as tuned by ear: every line below is the mixer before the styles
+        for length in lengths:
+            drift = LENGTH_PENALTY * abs(length - target_bars) / target_bars
+            for start in range(lo_start, last_ok - length + 1, phrase):
+                end = start + length
+                score = -float(np.abs(be[start:end] - target).mean())
+                # The cue-out earns more than the cue-in: it is where the record
+                # hands over, so a ragged end is the one the ear catches.
+                score += CUE_IN_BONUS * (start in bounds) + CUE_OUT_BONUS * (end in bounds) - drift
+                if quiet_tail and _section_at(info["sections"], end) in QUIET_SECTIONS:
+                    score += TAIL_QUIET_BONUS
+                if score > best_score:
+                    best, best_score = (start, end), score
+        return best if best else (lo_start, last_ok)
+    # A planned set. Over every length, so a long window that only fits from bar 0 cannot pull the
+    # start out of the range (2 of 15 did on 2026-11-23). No phrase line inside it: those nearest
+    # its middle.
+    windows = [(s, n) for n in lengths for s in range(lo_start, last_ok - n + 1, phrase)]
+    inside = [w for w in windows if start_range[0] <= w[0] <= start_range[1]]
+    nearest = min((abs(w[0] - sum(start_range) / 2) for w in windows), default=0)
+    windows = inside or [w for w in windows if abs(w[0] - sum(start_range) / 2) == nearest]
     for start, length in windows:
         end = start + length
         drift = LENGTH_PENALTY * abs(length - target_bars) / target_bars
         score = -float(np.abs(be[start:end] - target).mean())
-        # The cue-out earns more than the cue-in: it is where the record
-        # hands over, so a ragged end is the one the ear catches.
         score += CUE_IN_BONUS * (start in bounds) + CUE_OUT_BONUS * (end in bounds) - drift
         if quiet_tail and _section_at(info["sections"], end) in QUIET_SECTIONS:
             score += TAIL_QUIET_BONUS
@@ -1641,7 +1655,9 @@ def _layer_consensus(offsets: dict[str, float], bpm: float) -> float | None:
     return float(np.median(list(offsets.values())))
 
 
-def seam_decision(tail: np.ndarray, head: np.ndarray, bpm: float) -> tuple[float, str, dict]:
+def seam_decision(
+    tail: np.ndarray, head: np.ndarray, bpm: float, low_layers_decide: bool = False
+) -> tuple[float, str, dict]:
     """
     Seam offset (seconds the head must move earlier) and which reading decided.
 
@@ -1679,7 +1695,12 @@ def seam_decision(tail: np.ndarray, head: np.ndarray, bpm: float) -> tuple[float
         "kick": kick,
         "others": {b: (round(o * 1000, 1), round(c, 2)) for b, (o, c) in others.items()},
     }
-    consensus = _layer_consensus({b: o for b, (o, _) in others.items()}, bpm)
+    # LEGACY unless asked: the plain median of the layers, as settled by two A/B listens. A planned
+    # set passes `low_layers_decide` (see `_layer_consensus`); the mixer without a plan never does.
+    if low_layers_decide:
+        consensus = _layer_consensus({b: o for b, (o, _) in others.items()}, bpm)
+    else:
+        consensus = float(np.median([o for o, _ in others.values()])) if len(others) >= 2 else None
     if kick is None and consensus is None:
         return 0.0, "none", detail
     if kick is None:
@@ -2117,7 +2138,7 @@ def render_mix(
                     str(v[2]) if v else "none" for v in (det["tail"], det["head"])
                 )
                 return off, band
-            off, label, _ = seam_decision(tail_, head_, target_bpm)
+            off, label, _ = seam_decision(tail_, head_, target_bpm, bool(slot))
             return off, label
 
         before, seam_band = seam_measure(tail, head, b0)
@@ -2208,20 +2229,22 @@ def render_mix(
                 )  # residuals ignore the cut, so remove the shift already applied
                 ok = det["tail"] is not None and det["head"] is not None
             else:
-                o, label_k, _ = seam_decision(tail[k : k + win], head[k : k + win], target_bpm)
+                o, label_k, _ = seam_decision(
+                    tail[k : k + win], head[k : k + win], target_bpm, bool(slot)
+                )
                 ok = label_k != "none"
             window_offsets.append(o)
             periodic.append(ok)
         window_offsets = window_offsets or [after]
-        # A window that reads half a beat out is an off-beat layer (hats over a passage with no
-        # kick), not drift: two tracks at one tempo cannot be half a beat apart in one window and
-        # aligned in the next. It is left out of the drift median.
-        half_beat = 0.5 * 60.0 / target_bpm
-        judged = [
-            o
-            for o, ok in zip(window_offsets, periodic)
-            if ok and abs(abs(o) - half_beat) > SEAM_HALF_BEAT_TOL * half_beat
-        ]
+        judged = [o for o, ok in zip(window_offsets, periodic) if ok]  # LEGACY
+        if slot:
+            # A planned seam: a window that reads half a beat out is an off-beat layer (hats over a
+            # passage with no kick), not drift. Two tracks at one tempo cannot be half a beat apart
+            # in one window and aligned in the next, so it is left out of the drift median.
+            half_beat = 0.5 * 60.0 / target_bpm
+            judged = [
+                o for o in judged if abs(abs(o) - half_beat) > SEAM_HALF_BEAT_TOL * half_beat
+            ]
         # a median of one window is that window; two is the least that can
         # say anything about a trend
         seam_drift = float(np.median(np.abs(judged))) if len(judged) >= 2 else None
