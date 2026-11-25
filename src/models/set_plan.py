@@ -117,6 +117,7 @@ def set_plan(styles: list[dict], n_tracks: int, seed: int = 0) -> list[dict]:
     every, own = load_group_types(), load_dj_types()
     parts = []
     for style in styles:
+        used = set()  # the types a named DJ has done MIN_OWN_SEAMS times themselves
         rows = every[every["group"] == style["group"]]
         if rows.empty:
             raise ValueError(f"no group {style['group']!r}; see load_groups()")
@@ -133,13 +134,19 @@ def set_plan(styles: list[dict], n_tracks: int, seed: int = 0) -> list[dict]:
                 # swaps overlap 62 to 97 bars where his group's overlap 23 to 35 (Anas, 2026-11-25:
                 # "add one long blend too"). Thin, so only the overlap and the bars left are taken.
                 few = mine[mine["seams"] >= MIN_OWN_SEAMS].set_index("type")
+                # A type the DJ does stays in their plan when the group's row is thin: end swap is
+                # 10 % of Fred again's joins (3 seams) and `house cut` holds 10, under the floor, so
+                # his sets had no rise or drop (Anas, 2026-11-25). The recipe is the group's.
+                used = set(few.index)
                 lengths = ["overlap_bars_low", "overlap_bars", "overlap_bars_high", "bars_left"]
                 for column in lengths:
                     theirs = rest["type"].map(few[column])
                     rest[column] = theirs.where(theirs.notna(), rest[column])
                 rows = pd.concat([deep, rest])
         ranges = ["play_min_low", "play_min_high", "enters_bar_low", "overlap_bars_low"]
-        rows = rows[rows["seams"] >= MIN_ROW_SEAMS].dropna(subset=ranges)
+        rows = rows[(rows["seams"] >= MIN_ROW_SEAMS) | rows["type"].isin(used)].dropna(
+            subset=ranges
+        )
         if not rows["share"].sum():
             raise ValueError(
                 f"style {style} has no transition type backed by {MIN_ROW_SEAMS} seams"
