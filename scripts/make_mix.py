@@ -27,19 +27,24 @@ log = logging.getLogger(__name__)
 
 
 def make_mix(
-    genre: str,
-    bpm: tuple[float, float],
+    genre: str | None,
+    bpm: tuple[float, float] | None,
     out_path: str | Path,
     n_tracks: int = 3,
-    curve: str = "build",
+    curve: str | None = None,
     minutes: float | None = None,
     work_dir: str | Path = "data/interim/mixes",
     max_rounds: int = 4,
     min_energy_pct: float | None = None,
     compat_weight: float = 0.0,
     audio: str | None = None,
-    dj: str | None = None,
+    dj: str | list[str] | None = None,
+    group: str | list[str] | None = None,
+    style: list[str] | None = None,
+    energy: float | None = None,
 ) -> dict:
+    """`group` mixes in the style of a style group and `dj` in a profiled DJ's own style: the plan
+    then carries a seam plan the mixer follows, and genre and BPM default to the group's."""
     out_path = Path(out_path)
     work_dir = Path(work_dir) / out_path.stem
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -88,7 +93,12 @@ def make_mix(
         compat_weight=compat_weight,
         audio=audio,
         dj=dj,
+        group=group,
+        style=style,
+        energy=energy,
     )
+    # the group's genre and tempo range when none were given
+    genre, bpm = plan.get("genre", genre), tuple(plan.get("bpm_range") or bpm)
     write_plan(plan)
     for attempt in range(1, max_rounds + 1):
         log.info(
@@ -127,6 +137,9 @@ def make_mix(
             compat_weight=compat_weight,
             audio=audio,
             dj=dj,
+            group=group,
+            style=style,
+            energy=energy,
         )
         write_plan(plan)
     else:
@@ -134,7 +147,8 @@ def make_mix(
 
     # Each track contributes its own window to the mix, so the target length
     # divides across the set.
-    play_minutes = minutes / n_tracks if minutes else None
+    # A planned set takes each track's play time from its style group, so only the total is passed.
+    play_minutes = minutes / n_tracks if minutes and not plan.get("seams") else None
     report = render_plan(
         plan_path, work_dir / "tracks", out_path, play_minutes=play_minutes, total_minutes=minutes
     )
@@ -181,11 +195,16 @@ def add_times(plan: dict, report: dict) -> dict:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     p = argparse.ArgumentParser(description="Plan, fetch and render a mix in one go.")
-    p.add_argument("--genre", required=True)
-    p.add_argument("--bpm", nargs=2, type=float, required=True, metavar=("LO", "HI"))
+    p.add_argument("--genre", default=None, help="needed unless --group is given")
+    p.add_argument("--bpm", nargs=2, type=float, default=None, metavar=("LO", "HI"))
+    p.add_argument("--group", nargs="*", default=None, help='style groups, e.g. "techno blend"')
+    p.add_argument("--style", nargs="*", default=None, help='"auto", or words: blend cut fast ...')
+    p.add_argument("--energy", type=float, default=None, help="0 to 1 inside the styles' own band")
     p.add_argument("--out", required=True)
     p.add_argument("--n", type=int, default=3)
-    p.add_argument("--curve", choices=list(CURVES), default="build")
+    p.add_argument(
+        "--curve", choices=list(CURVES), default=None, help="build without a style, level with one"
+    )
     p.add_argument("--minutes", type=float, default=None, help="target mix length")
     p.add_argument("--work-dir", default="data/interim/mixes")
     p.add_argument(
@@ -197,12 +216,14 @@ if __name__ == "__main__":
     p.add_argument(
         "--audio", choices=["full"], default=None, help="only records whose full audio is held"
     )
-    p.add_argument("--dj", default=None, help="only records this DJ has played")
+    p.add_argument(
+        "--dj", nargs="*", default=None, help="DJs: their records, and style if profiled"
+    )
     args = p.parse_args()
 
     rep = make_mix(
         args.genre,
-        tuple(args.bpm),
+        tuple(args.bpm) if args.bpm else None,
         args.out,
         args.n,
         args.curve,
@@ -212,6 +233,9 @@ if __name__ == "__main__":
         compat_weight=args.compat_weight,
         audio=args.audio,
         dj=args.dj,
+        group=args.group,
+        style=args.style,
+        energy=args.energy,
     )
     print(
         f"\n{rep['out']}  {rep['duration_s'] / 60:.1f} min @ {rep['target_bpm']:.0f} bpm"

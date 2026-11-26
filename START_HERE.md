@@ -23,9 +23,9 @@ Detail never lives here.
 | track features and embeddings for the seam corpora: the plan, the checks, the numbers as they land | **`EMBEDDINGS.md`** |
 | the DJ data report notebook: what was decided, the chapters, the style, how to build it | **`DJ_DATA_REPORT.md`** |
 | every pairing model tried (which record follows which), what it saw, its numbers on the validation DJs | **`PAIRING_EXPERIMENTS.md`** |
-| what decides the transition type: the tests on the measured seams, the ear test of 2026-10-15, club against radio | **`TRANSITION_EXPERIMENTS.md`** |
+| what decides the transition type and the cue points: the tests on the measured seams, the ear test of 2026-10-15, club against radio, the style groups of DJs and the design built on them | **`TRANSITION_EXPERIMENTS.md`** |
 | how to set the VM up, cookies, yt-dlp, the token server, the changing address | **`djdata_package/VM_SETUP.md`** |
-| ssh to the VM whatever its address is today | `scripts/vm/vmssh` |
+| ssh to the VM whatever its address is today (holds the instance id; set it to the new VM's) | `scripts/vm/vmssh` |
 | how to run the mixer end to end, the product side | **`README.md`** |
 | old session records and superseded notes, kept whole with their dates | `docs/notes-archive/` |
 
@@ -37,12 +37,12 @@ Both seam runs are done. The DJ profiling run: 285 mixes, 3,365 seams, 2,459 cut
 labelled, layer tables for the stacking DJs (`DATASET_STATE.md` 2026-09-29). The Raveform run: 5,060
 seams cut, measured, tempo'd and labelled, 4,639 with both records clear (`DATASET_STATE.md`
 2026-09-30, which also has the webm start fix it needed). `DATA_PIPELINE.md` has how each runs. The
-tables are on the laptop in `data/djdata/djs/out/` and `data/djdata/raveform/out/`, on the VM, and on
-S3 at `s3://aidj-1/djdata_djs/out/` and `s3://aidj-1/djdata/out/`. The old untracked `scripts/diag`
+tables are on the laptop in `data/djdata/djs/out/` and `data/djdata/raveform/out/` and on
+S3 at `s3://aidj-telfy/djdata_djs/out/` and `s3://aidj-telfy/djdata/out/`. The old untracked `scripts/diag`
 code is deleted and archived on S3. Raveform's tempos were checked against its beat annotations on
 2026-10-07 and 1,056 seams relabelled (`DATASET_STATE.md`). Track features and embeddings for both seam
 corpora are extracted from the full tracks (2026-10-07, 12,211 tracks, `data/djdata/<corpus>/out/
-track_features.parquet` and `embeddings/`, laptop, VM and S3; plan, checks and numbers in
+track_features.parquet` and `embeddings/`, laptop and S3; plan, checks and numbers in
 `EMBEDDINGS.md`); every track has a measured BPM except 146 that stay null. How the old and the new
 data are used from here is the top section of `DATASET_STATE.md`, with the data layout as an open
 proposal. The Raveform `dj` column held dates until 2026-10-08 and is fixed. 2026-10-09: the DJ corpus placement
@@ -51,7 +51,7 @@ mixer renders; the nine type names are gone, replaced by measured moves plus a s
 recipe (`djdata types`). Both corpora were re-run on the VM with the new placement and types (2026-10-09 to 11; the run was OOM-killed twice
 and finished at 20:38 German time on 2026-10-11, how in the memory note `vm-run-restart-2026-10-10`): DJ corpus 2,617 seams
 measured and typed, 21 windows over 50 minutes left out as not transitions (`data/djdata/djs/out/measure_big_windows_2026-10-11.csv`),
-Raveform 5,060. The tables are on the laptop, the VM and S3; the old ones in `out/before_2026-10-09/`. The VM is OFF. Current work: the
+Raveform 5,060. The tables are on the laptop and S3; the run before the fix is in `s3://aidj-telfy/archive/2026-10-09_old_placement/`. There is no VM: `aidj-data` is terminated, every file is on S3 (`DATA_ARCHITECTURE.md`, "S3, what is there"), and the next one is set up from `djdata_package/VM_SETUP.md` and pulls the corpora from S3. Current work: the
 DJ data report notebook (`DJ_DATA_REPORT.md`, read its "State, 2026-10-13" section first): rebuilt on 2026-10-13 around
 eight findings, chapters 1 to 7 drafted, the appendix not written; two enrichment passes (Spotify release years, Last.fm
 listeners) fill two charts in the background; training decisions wait for the analysis. `SYSTEM_OVERVIEW.md` holds the
@@ -70,6 +70,6 @@ old dataset "the catalog". Raveform's tier 1 and tier 2 are one dataset; the spl
 - Report results in chat. He writes PLAN.md himself unless he asks for a section.
 - Plain words in everything he reads: column names, files, variables. No `rf_b_in_s`. Times as 1:45.
 - His ear is ground truth. No automatic check counts as proof.
-- Bulk audio work runs on the VM where the files are, not over his home connection.
+- Bulk audio work runs on a VM that pulls the files from S3, not over his home connection.
 - Do not lose data: the sets were already trimmed once, so anything skipped gets written down and a list
   saved.

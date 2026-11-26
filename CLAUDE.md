@@ -61,6 +61,21 @@ python -m scripts.make_mix --genre techno --bpm 134 142 --curve peak \
 plan → fetch + verify → replan around unfetchable tracks → render. Stages are also usable alone:
 `predict_model` (--json plan.json) → `track_fetcher` (--plan) → `audio_mixer` (--plan --tracks-dir).
 
+In the style of real DJs (2026-11-25, design, ear findings and what is open in `TRANSITION_EXPERIMENTS.md`,
+"The design that follows"):
+```bash
+python -m scripts.make_mix --dj "fred again" --n 6 --out mix.flac                    # his tracks, his style
+python -m scripts.make_mix --genre house --style auto --energy 0.9 --n 6 --out mix.flac   # the genre's groups
+python -m scripts.make_mix --genre techno --style blend cut --n 8 --out mix.flac     # two groups by weight
+```
+`--dj`, `--style` or `--group` switch the planned path on: `pick_styles` and `set_plan`
+(`src/models/set_plan.py`) → `plan_mix` (style pool, `join_fit`) → `render_mix(seam_plan=...)`. Without them
+the legacy planner and mixer run exactly as before. **Design changes go beside the legacy code, behind the
+plan flag, never by editing it** (Anas, 2026-11-25): legacy lines are marked `LEGACY` in `audio_mixer.py`,
+`_choose_planned_window` sits beside `_choose_window`, a test guards the split, and a legacy render is
+compared sample by sample with `data/external/ear_test/system_2026-11-18/rules_techno.flac` after any
+change to shared code.
+
 ## Implementation status
 ```
 Phase 0-6  ✅ scrape, previews, features, transition labels, Airflow DAG
@@ -77,13 +92,22 @@ learned cue points, overlays ("w/" tracks).
 ## Key data files
 - `data/dataset/<date>/` — what every model and the planner read: `tracks`, `plays`, `seams`,
   `layers` parquet, every row with `source` (old, raveform, djs), tracks with `audio` (preview, full),
-  `split` on plays and seams (train | validation, by whole DJ, 58 validation DJs). Built by `djdata export-dataset --date <date>` from
+  `split` on plays and seams (train | validation, by whole DJ, 56 validation DJs since the 2026-11-18 export, 58 before). Built by `djdata export-dataset --date <date>` from
   the three sources; read only through `src/data/dataset.py` (`load_tracks`, `load_plays`, ...).
-  Layout, ids and rules: `DATA_ARCHITECTURE.md`.
+  Layout, ids and rules: `DATA_ARCHITECTURE.md`. `python -m src.data.profiles` adds six profile tables to the
+  newest folder: `mixes` (what kind of set), `groups` (15 style groups of DJs per genre), `group_types` and
+  `dj_types` (per transition type its share, how it is done, the track that goes there), `djs` (a DJ's own
+  tempo, energy and bass-free limits) and `structure` (bars, sections, grid confidence and bass-free share
+  per held track). Loaders `load_mixes`, `load_groups`, `load_group_types`, `load_dj_types`, `load_djs`,
+  `load_structure`. The planner reads them when a style is asked for.
 - `data/processed/tracklist_clean.csv`, `features.parquet` — the old source's tables (2,852 mixes,
   28,460 tracks from 30 s previews: `embedding`[1280 discogs-effnet], bpm, key, energy_mean,
   loudness_lufs, onset_strength (RAW — see below), mfcc_0..12).
 - `data/djdata/<source>/out/` — the measured sources' tables (`DATA_PIPELINE.md`).
+- `data/djdata/<source>/curves/` and `segments/` hold one file per held track (12,211, measured 2026-11-13),
+  which are level curves on a 0.25 s grid and the segmenter's bars, sections and downbeats. `out/seam_cues.csv` says where
+  in each track a measured seam happens, and the dataset from 2026-11-14 on carries it as 37 seam columns
+  (`b_in_bar`, `a_bars_left`, sections, levels). Columns in `DATA_ARCHITECTURE.md`, limits in `DATASET_STATE.md`.
 - `data/raw/previews/` — 28,460 × 30 s iTunes m4a. Ground truth for fetch verification.
 - `data/interim/segments/` — segment JSON cache, keyed on path+size+mtime (20.1 s cold → 0 s warm)
 - `models/` — pair_model.pt, the planner's one learned score (gitignored; `python -m src.models.pair_model` rebuilds it in about 6 h)
@@ -301,10 +325,10 @@ body 1.5 s. A 15.6 min mix = 192 s with everything local. Stretch is 80% and dep
 (track, target_bpm) so it is cacheable; `_prepare_track` is serial but independent so parallelisable.
 
 ## Services
-MLflow :5000 · Airflow :8080 (airflow/airflow) · W&B · S3 `aidj-1` (us-east-1, account talhanonstatic; the old ai-dj-data bucket was deleted 2026-09-12)
+MLflow :5000 · Airflow :8080 (airflow/airflow) · W&B · S3 `aidj-telfy` (us-east-1, account telfy, use `AWS_PROFILE=telfy`; moved from `aidj-1` in the talhanonstatic account on 2026-11-12; the old ai-dj-data bucket was deleted 2026-09-12)
 
 ## Notes
 - `starting_time` rolls over hourly: if time_B < time_A → gap = (60−time_A)+time_B; skip pairs > 15 min
 - `tests/conftest.py` — `tmp_audio_file` fixture (sine wave WAV). 265 tests in tests/, 115 in djdata_package/tests/ (2026-10-15), ruff clean.
 - `test_stretch_uses_the_r3_engine` fails on the laptop only: `data/interim/stretch/` holds a cached stretch of the test's own input, so `_stretch` returns it and never calls the mocked rubberband. CI has no cache. Checked 2026-09-28.
-- S3 sync: `aws s3 sync data/processed/ s3://aidj-1/processed/`; the dataset and the archive go to `s3://aidj-1/dataset/<date>/` and `archive/<date>/`
+- S3 sync: `aws s3 sync data/processed/ s3://aidj-telfy/processed/`; the dataset and the archive go to `s3://aidj-telfy/dataset/<date>/` and `archive/<date>/`

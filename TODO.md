@@ -36,7 +36,12 @@ DJ's real choice on 0.25 of seams, and the DJ's own most common type gives 0.51.
 records at the cue points adds nothing in techno and a signal across DJs in house that does not hold
 inside Claptone. Agreed shape: per-DJ and per-genre tables of type shares and recipe distributions
 (never medians), types drawn for the whole set and placed on seams that can carry them, the mixer's
-rules as the veto, the mixer's own rendering. Open: whether consecutive seams depend on each other.
+rules as the veto, the mixer's own rendering. Consecutive seams do not depend on each other (2026-11-13).
+Built between 2026-11-18 and 2026-11-25: style groups of DJs per genre, the plan for a set, track
+picking by style, the type per seam into the mixer, a tension recipe, all behind a flag beside the legacy
+mixer, run by `make_mix --dj`, `--style` or `--group`. What Anas heard, what it changed and the open list
+(his gaps, version pairs, vocals per bar, the bass-swap position, beat matching with no kick, a frozen
+test, the request as JSON) are in `TRANSITION_EXPERIMENTS.md`, "The design that follows".
 Tension is 20 % of measured seams and loop 63, so item 5's first question has an answer in the data.
 
 ## 4. DJ profiling
@@ -64,6 +69,23 @@ the block gate with cookies and the player client (`fetch/yt.py`) that got the V
 datacenter block. The held and link paths in the planner's fetcher stay. The search branch of
 `fetch_track` calls `download_by_name` with the pipeline's config, and the fetcher's own search,
 rank and download code goes.
+
+## 7. A critic that judges rendered transitions
+
+Anas, 2026-11-23: this will be built, so the design has to leave room for it. For each join the mixer
+renders a few short versions (another type, another part of either track), a critic scores them, and
+the best one the set's budget of types allows is kept. The critic is a model trained to tell real DJ
+transitions from the mixer's own. The 6,731 measured seams with their windows on S3 are the real side,
+and renders of the same pairs are the other side. It judges the sound, where every check today judges
+numbers.
+
+What it needs from the rest, so nothing built before it blocks it:
+
+- The mixer can render one join alone as a short clip, given the two tracks, a type, an overlap and the
+  two cue bars. Today a join is only rendered inside a whole set.
+- The plan keeps more than one candidate per join until the critic has chosen.
+- The budget of types is a limit on the whole set, so a join can change its type when another join
+  takes that type over.
 
 ## Ear test 2026-10-15: the cases items 1 and 3 must get right
 

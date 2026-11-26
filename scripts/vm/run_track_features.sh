@@ -15,7 +15,7 @@ for C in raveform djs; do
   echo "=== $C end $(date -u +%T)" | tee -a $L
 done
 kill $MEM
-B=s3://aidj-1/djdata; D=s3://aidj-1/djdata_djs
+B=s3://aidj-telfy/djdata; D=s3://aidj-telfy/djdata_djs
 aws s3 cp data/djdata/raveform/out/track_features.parquet $B/out/track_features.parquet --only-show-errors
 aws s3 sync data/djdata/raveform/embeddings/ $B/embeddings/ --only-show-errors
 aws s3 cp data/djdata/djs/out/track_features.parquet $D/out/track_features.parquet --only-show-errors

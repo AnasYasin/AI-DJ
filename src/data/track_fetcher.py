@@ -59,9 +59,9 @@ log = logging.getLogger(__name__)
 
 MANIFEST_PATH = Path("data/raw/preview_manifest.csv")
 HELD = {  # source -> (local tracks folder, S3 prefix)
-    "raveform": (Path("data/djdata/raveform/tracks"), "s3://aidj-1/djdata/tracks/"),
-    "djs": (Path("data/djdata/djs/tracks"), "s3://aidj-1/djdata_djs/tracks/"),
-    "old": (Path("data/djdata/old/tracks"), "s3://aidj-1/djdata_old/tracks/"),
+    "raveform": (Path("data/djdata/raveform/tracks"), "s3://aidj-telfy/djdata/tracks/"),
+    "djs": (Path("data/djdata/djs/tracks"), "s3://aidj-telfy/djdata_djs/tracks/"),
+    "old": (Path("data/djdata/old/tracks"), "s3://aidj-telfy/djdata_old/tracks/"),
 }
 
 # ── Gates ──────────────────────────────────────────────────────────────────────

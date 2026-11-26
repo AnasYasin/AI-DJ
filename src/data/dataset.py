@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import unicodedata
 
 import pandas as pd
 
@@ -22,8 +23,10 @@ VALIDATION = "validation"  # the value of the `split` column on plays and seams
 
 def dj_key(name: str) -> str:
     """One DJ, one key: letters and digits only, & and + spelled as the 1001 slugs spell them
-    (Aly & Fila -> alyandfila). The `dj_key` column of plays is this."""
-    return re.sub(r"[^a-z0-9]", "", str(name).lower().replace("&", "and").replace("+", "plus"))
+    (Aly & Fila -> alyandfila), accents dropped (Roman Flügel -> romanflugel, his 1001 slug).
+    The `dj_key` column of plays is this."""
+    plain = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode()  # ü -> u
+    return re.sub(r"[^a-z0-9]", "", plain.lower().replace("&", "and").replace("+", "plus"))
 
 
 def latest(root: Path = DATASET_DIR) -> Path:
@@ -76,6 +79,38 @@ def load_seams(
     root: Path = DATASET_DIR,
 ) -> pd.DataFrame:
     return _load("seams", date, root, sources, columns)
+
+
+def load_mixes(
+    date: str | None = None, sources: list[str] | None = None, root: Path = DATASET_DIR
+) -> pd.DataFrame:
+    """One row per mix with its kind of set, written by `python -m src.data.profiles`."""
+    return _load("mixes", date, root, sources, None)
+
+
+def load_groups(date: str | None = None, root: Path = DATASET_DIR) -> pd.DataFrame:
+    """One row per style group of DJs, written by `python -m src.data.profiles`."""
+    return _load("groups", date, root, None, None)
+
+
+def load_group_types(date: str | None = None, root: Path = DATASET_DIR) -> pd.DataFrame:
+    """One row per style group and transition type, written by `python -m src.data.profiles`."""
+    return _load("group_types", date, root, None, None)
+
+
+def load_dj_types(date: str | None = None, root: Path = DATASET_DIR) -> pd.DataFrame:
+    """One row per style group, DJ and transition type, written by `python -m src.data.profiles`."""
+    return _load("dj_types", date, root, None, None)
+
+
+def load_djs(date: str | None = None, root: Path = DATASET_DIR) -> pd.DataFrame:
+    """One row per style group and DJ with that DJ's own tempo, energy and bass-free limits."""
+    return _load("djs", date, root, None, None)
+
+
+def load_structure(date: str | None = None, root: Path = DATASET_DIR) -> pd.DataFrame:
+    """One row per held track with a segment file, written by `python -m src.data.profiles`."""
+    return _load("structure", date, root, None, None)
 
 
 def load_layers(

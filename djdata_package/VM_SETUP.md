@@ -69,6 +69,27 @@ wc -l raveform/mixes.jsonl        # must print 4911
 cd ~/AI-DJ
 ```
 
+## 4b. The measured corpora from S3
+
+Both corpora live only on S3 between VMs (layout in `DATA_ARCHITECTURE.md`, "S3, what is there"). The two
+prefixes map onto the two config roots. Pull what the run needs; everything is about 145 GB and needs the
+200 GB disk.
+
+```
+cd ~/AI-DJ
+aws s3 sync s3://aidj-telfy/djdata/      data/djdata/raveform/     # config.yaml root
+aws s3 sync s3://aidj-telfy/djdata_djs/  data/djdata/djs/          # config_djs.yaml root
+for s in data/djdata/djs/fred/segments/fred_*.m4a; do ln -sfn ../fred/segments/$(basename $s) data/djdata/djs/mixes_tmp/usb_$(basename $s); done
+ls data/djdata/raveform/tracks | wc -l    # 6917
+ls data/djdata/raveform/windows | wc -l   # 6218
+ls data/djdata/djs/tracks | wc -l         # 5314
+ls data/djdata/djs/windows | wc -l        # 2617, one per row of data/djdata/djs/out/cuts.csv
+```
+
+The instance role can write to `aidj-telfy` and cannot delete from it. New tables and windows go up to a dated
+prefix first and are counted before anything live is replaced; the replacing and any delete run from the
+laptop (`DATA_PIPELINE.md`, first section).
+
 ## 5. Config for this machine
 
 Edit `djdata_package/config.yaml`:
@@ -169,8 +190,9 @@ same account kept working from a home connection. The runner now handles this:
   address drops, so reconnect on the new one:
   `aws ec2 describe-instances --profile talhanonstatic --region us-east-1 --instance-ids
   i-023e6cd5518feff75 --query 'Reservations[].Instances[].PublicIpAddress' --output text`.
-  Needs `pip install boto3` and an instance role. Role `aidj-eip` is attached to the VM and allows
-  only DescribeAddresses, AllocateAddress, AssociateAddress and ReleaseAddress.
+  Needs `pip install boto3` and an instance role. Role `aidj-eip` is the one to attach to a new VM; it
+  allows DescribeAddresses, AllocateAddress, AssociateAddress and ReleaseAddress, and on S3 `aidj-telfy`
+  list, read, copy and write but not delete (and not GetBucketVersioning).
   A dead cookie session looks identical to a blocked address from the probe, so after
   `download.max_failed_rotations` new addresses in a row fail to help (3), rotation switches off for
   the rest of the run and the gate only waits. There is no total cap: one would only stall a run whose
@@ -219,3 +241,26 @@ rewrites the `aidj` entry, and then runs ssh with whatever arguments it was give
 for anything that might run across a rotation. `scripts/vm/stop_run.sh`, `start_run.sh` and `watch_djrun3.sh` are
 the pieces used to run the fetch unattended (the watcher judges idle by the last "track done" event, not by
 the log file's age, which the run's progress line keeps fresh).
+
+## The compute VM for per-track runs, 2026-11-13
+
+A second instance was used for CPU-only jobs over the held tracks, the curves and segments run
+(`DATA_PIPELINE.md`, "Added 2026-11-13"). It was terminated on 2026-11-14 on Anas's word, after the results
+were counted on S3 and on the laptop. The next one is to be bigger. These facts are the recipe for it.
+
+- Account telfy (309255278474), profile `telfy`, us-east-1a. It was an m7i.8xlarge, 32 vCPU, 123 GB,
+  gp3 150 GB, 1.61 USD an hour, Ubuntu, shutdown behaviour stop. The run used 75 GB of disk and about
+  0.9 GB of memory per worker, so the CPU was the limit.
+- Still in the account for the next VM: key pair `aidj-compute` (`~/.ssh/aidj-compute.pem`, user `ubuntu`),
+  security group `aidj-compute-ssh`, which opens port 22 to one address and has to be updated when the
+  laptop's public address changes, and role `aidj-compute-s3`, which can list, read and write on
+  `aidj-telfy` and nothing else.
+- Without an Elastic IP the public address changes on every start. Read it with
+  `aws ec2 describe-instances`. `scripts/vm/vmssh` points at an instance in the talhanonstatic account that
+  no longer exists.
+- Setup on it: the repo in `~/AI-DJ`, the `aidj` env in `~/miniconda3`, the packages named in
+  `DATA_PIPELINE.md`, then `scripts/vm/run_track_structure.sh` pulls `tracks/` of both sources (72 GB).
+- The vCPU quota in us-east-1 was raised from 32 to 96 on 2026-11-13. A start as a 96-vCPU type
+  (c7i.24xlarge, m7i.24xlarge) was refused the same evening with `VcpuLimitExceeded`, limit 96. The cause
+  was not found. A t3.large runs in ap-south-1 in the same account. A 64-vCPU type was not tried, and a
+  launch of one is the cheap test before planning a run on more than 32 vCPUs.

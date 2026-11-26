@@ -174,8 +174,8 @@ transitions, so the cast below cannot be chosen until their moves are known. At 
 stage had placed 28 of 286 mixes at about 72 minutes per mix on 16 workers, so the whole run ends late on 2026-10-09 at the
 earliest. After that, in order:
 
-1. Pull the tables. `aws s3 sync s3://aidj-1/djdata_djs/out/ data/djdata/djs/out/` and
-   `aws s3 sync s3://aidj-1/djdata/out/ data/djdata/raveform/out/`. Then stop the VM.
+1. Pull the tables. `aws s3 sync s3://aidj-telfy/djdata_djs/out/ data/djdata/djs/out/` and
+   `aws s3 sync s3://aidj-telfy/djdata/out/ data/djdata/raveform/out/`. Then stop the VM.
 2. Verify, before any chart. DJ-corpus beat-match mismatch on blends (record BPM times speed must agree on both sides of a
    blend; target a median under 0.1 %, the old run read 0.82 %), the `mode` share in `plays.csv` (how many records matched
    key-locked), the Raveform signature counts against the provisional ones in the section above (centre swap 2,001, tension

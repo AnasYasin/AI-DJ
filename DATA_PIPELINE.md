@@ -1,5 +1,63 @@
 # DATA_PIPELINE, how to run the seam pipeline and use its tables
 
+## Where the data is, and how a new VM gets it
+
+Every file of both corpora is on S3, laid out in `DATA_ARCHITECTURE.md` under "S3, what is there". No VM
+exists between runs. A run starts a fresh instance (`djdata_package/VM_SETUP.md`, 200 GB disk, both corpora
+are about 145 GB), pulls what the run needs, and the instance is terminated after its new files are counted
+on S3. The corpus roots in the configs map to the prefixes one to one:
+
+```
+aws s3 sync s3://aidj-telfy/djdata/      data/djdata/raveform/      # config.yaml      root; 63 GB with tracks, windows, embeddings
+aws s3 sync s3://aidj-telfy/djdata_djs/  data/djdata/djs/           # config_djs.yaml  root; 79 GB with tracks, mixes_tmp, windows, embeddings
+for s in data/djdata/djs/fred/segments/fred_*.m4a; do ln -sfn ../fred/segments/$(basename $s) data/djdata/djs/mixes_tmp/usb_$(basename $s); done
+sudo swapon /swapfile                                           # or make one; locate at 16 workers was OOM-killed without it
+```
+
+The loop links all 43 segments; the 17 the corpus uses are the `usb_fred_*` rows in `out/mixes.csv`. Pull only the
+subfolders a stage reads (`measure` needs `windows/` and `tracks/`, not `mixes_tmp/`) when disk is short.
+
+Going back up: the role on the instance can write and copy on `aidj-telfy` and cannot delete, and the bucket
+has no versioning, so a new run's tables and windows go to a dated prefix first, are counted against the
+local folder by name and size, and only then replace the live prefix, with the previous live files moved
+to one archive prefix under `archive/`. Deletes run from the laptop. The run scripts sync `out/` only;
+`windows/` has to be synced by hand or S3 keeps the previous cut under the new tables.
+
+## Added 2026-11-13: curves and segments for every held track, and the cue table
+
+Three files per source say where in a track a seam happens. They are built in this order.
+
+1. `scripts/vm/track_structure.py --workers N` writes `curves/<id>.npz` and `segments/<id>.json` for every
+   file under `data/djdata/<source>/tracks/`, both sources. The curves come from `curves()` in
+   `scripts/experiments/seam_situation.py`. The segments come from `_segment_uncached()` in
+   `src/data/audio_segmenter.py`, the mixer's segmenter, with Beat This! downbeats and the DeepRhythm BPM.
+   One worker per vCPU, one thread per worker. A track with both files is skipped, so a rerun continues.
+   A row per track goes to `out/track_structure_log.csv` (status, seconds, downbeat source).
+2. `scripts/vm/run_track_structure.sh` is the whole VM job. It pulls `tracks/` of both sources from S3,
+   runs step 1, syncs `curves/`, `segments/` and the log to S3 and stops the instance.
+   `scripts/vm/watch_track_structure.sh` runs beside it in a second tmux session. It restarts the job with
+   8 fewer workers when available memory drops under 8 GB, restarts it after 15 minutes without a new
+   segment file, and gives up after 3 restarts.
+3. `PYTHONPATH=. python scripts/experiments/seam_cues.py` on the laptop reads the newest dataset's measured
+   seams and the two folders and writes `out/seam_cues.csv` per source, about 2 minutes. The columns are
+   listed in `DATA_ARCHITECTURE.md` under seams.parquet.
+4. `djdata export-dataset --date <date>` joins `seam_cues.csv` onto the seams table by `seam_id`. The cue
+   script reads seam ids from the newest dataset, so a newly measured seam gets its cue columns on the
+   second export.
+5. `python -m src.data.profiles` reads the newest dataset, the curves and the segments and writes
+   `mixes`, `groups`, `group_types`, `dj_types`, `djs` and `structure` (parquet) into it, about 4 minutes. Run it after every export. When
+   DJ data is added, measure the floors again (the comment above `FLOOR` in the module says how they were
+   chosen), because more deep DJs let a floor rise.
+
+What the machine needs beyond `VM_SETUP.md`: `beat-this==1.1.0`, `deeprhythm==0.0.13`, `nnAudio==0.3.3`.
+The segmenter falls back to librosa for BPM without a message when DeepRhythm is missing, so the driver
+loads both models once before the pool and stops if either fails. Workers that download the DeepRhythm
+checkpoint at the same time corrupt it (2 of 8 on 2026-11-13), which the same warm-up prevents.
+
+The 2026-11-13 run: 12,211 tracks on one m7i.8xlarge (32 vCPU, 123 GB) in the telfy account, 26 tracks per
+minute, about 8 hours, about 14 USD, 0 failed. A track takes 50 to 110 s on one core and a worker holds
+about 0.9 GB, so the CPU is the limit. The numbers and checks are in `DATASET_STATE.md`.
+
 ## Added 2026-10-09: tempo-refined placement, the types stage, the re-run
 
 `locate` refines each record's speed from the tempo the mix plays it at (`seam/locate.py::tempo_refine`, numbers
@@ -9,8 +67,9 @@ corpus, or it warns and the old resampling search alone decides. It needs `rubbe
 `types` does (`seam/types.py`), after `label`. The nine old names (long_blend, short_blend, cut, sweep_out,
 sweep_in, tension, loop, layer, edit_or_talk) are gone from every table; `ear-test --label` takes a signature or a
 recipe name. The re-run of both corpora is `scripts/vm/rerun_placement_2026-10-09.sh` (DJ corpus from locate, with
-the windows cut again; Raveform from measure); it moves the old tables to `out/before_2026-10-09/` and syncs `out/`
-to S3 at the end. The DJ mix audio and Fred's segments had been removed from the VM and were pulled back from S3
+the windows cut again; Raveform from measure); it moves the old tables to a dated folder beside `out/` and syncs `out/`
+to S3 at the end, not `windows/`. The previous run's tables and windows now live in
+`s3://aidj-telfy/archive/2026-10-09_old_placement/`. The DJ mix audio and Fred's segments had been removed from the VM and were pulled back from S3
 (`djdata_djs/mixes_tmp/`, `djdata_djs/fred/`; the `usb_<segment>.m4a` links in `mixes_tmp` are recreated by hand,
 `ln -sfn ../fred/segments/<segment>.m4a`). Disk is the limit: 18 GB free at the start with the embedding copies
 deleted (they are on S3 and the laptop).
@@ -34,7 +93,7 @@ PYTHONPATH=djdata_package:. python -m djdata.cli export-seams --config $C
 ```
 
 The run script is `data/djdata/raveform/run_full_2026-09-30.sh` on the VM (copy in
-`s3://aidj-1/djdata/logs/`): stops at the first stage with a failure, logs memory every 30 s, no S3 sync,
+`s3://aidj-telfy/djdata/logs/`): stops at the first stage with a failure, logs memory every 30 s, no S3 sync,
 leaves the VM on. `layers` and `layer-bands` do not apply, since Raveform has no full mix audio.
 
 **Watch list, added 2026-09-30.**
@@ -255,7 +314,7 @@ corpus is a config with its own `root`. A proved Fred segment is a link in
 co-author line. `main` is protected (no force-push, PR with lint-and-test required), so its 25 old
 commits keep their lines until the rule is relaxed once; the new work reaches main by a PR from dev.
 `data/interim/tracklist.csv` (34.5 MB) is still versioned and should be untracked in a later commit;
-the pipeline reads it from disk and the VM and S3 have copies.
+the pipeline reads it from disk and S3 has a copy.
 
 **Watch list for the VM run, noted while building.**
 
@@ -293,7 +352,7 @@ the pipeline reads it from disk and the VM and S3 have copies.
 - Fred on the VM needs the same links as the laptop: `data/djdata/fred/mixes_tmp/<mix_id>.m4a` to each
   proved segment and `data/djdata/fred/tracks` to `../djs/tracks`.
 - The old untracked `scripts/diag` code was deleted on 2026-09-30 and archived at
-  `s3://aidj-1/archive/scripts_diag_untracked_2026-09-30.tar.gz`. `fetch/mix.py` still imports the
+  `s3://aidj-telfy/archive/scripts_diag_untracked_2026-09-30.tar.gz`. `fetch/mix.py` still imports the
   legacy locate.
 
 **What is next.** Fred's segments proved by locate on the VM, then the full run over the 281 DJ mixes

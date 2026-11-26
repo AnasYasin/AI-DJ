@@ -8,13 +8,73 @@ configs and READMEs, never the parquet. The previous layout and what was wrong w
 ```
 data/raw/                      inputs as received, never edited: the 1001 scrape, the Raveform zip, the previews
 data/djdata/<source>/          old | raveform | djs            one folder per source, the same inside
-  tracks/ windows/ mixes_tmp/    audio named by id (the laptop holds little; the VM and S3 hold all)
+  tracks/ windows/ mixes_tmp/    audio named by id (the laptop holds little; S3 holds all of it; no VM exists between runs)
+  curves/ segments/              one file per held track, named by the same id: level curves and bar grid with sections
   out/                           the tables that source's pipeline writes, one live copy
 data/dataset/<date>/           tracks, plays, seams, layers (parquet) + README     what the models read
+                               mixes, groups, group_types, dj_types (parquet)      the profiles built from those four
 data/archive/<date>/           superseded files moved whole, with MOVED.md         never read by code
 models/                        the saved models; a model's README names the dataset date it trained on
-S3 aidj-1/                     djdata/ djdata_djs/ dataset/<date>/ archive/<date>/ models/ processed/ raw/previews/
+S3 aidj-telfy/                     one prefix per source, the archive, the previews; the full layout is the next section
 ```
+
+## S3, what is there
+
+The bucket is the one complete copy of the audio and the tables. A VM is started when a run needs one, pulls
+from here, and is terminated after; the laptop holds the tables and a sample of the audio.
+
+```
+s3://aidj-telfy/
+  djdata/                        Raveform source            = data/djdata/raveform/
+    tracks/                      6,917 full records, 41 GB
+    windows/                     6,218 cut seam windows from the Raveform manifest, 15 GB
+    embeddings/                  float16 patch embeddings, 6.5 GB
+    curves/                      6,917 files, 211 MB, <id>.npz: rms_db, low_db (under 150 Hz), mid_db, high_db
+                                 (over 2 kHz) and onset on a 0.25 s grid over the whole track (2026-11-13)
+    segments/                    6,917 files, 69 MB, <id>.json: beats, bars, bpm, phrase_offset, sections,
+                                 bar_energy, downbeat_source, downbeat_confidence, what the mixer's segmenter
+                                 returns (2026-11-13)
+    out/                         the live tables: cuts, measures, labels, types, seams, seams_index, plays,
+                                 tempos, track_features.parquet; old_gainfit_2026-09-14/ is an earlier run's tables;
+                                 seam_cues.csv, one row per measured seam, where in each track it happens;
+                                 track_structure_log.csv, one row per track of the curves and segments run
+    logs/                        djdata.log per run under a dated name, run scripts, memory and stderr logs
+  djdata_djs/                    DJ corpus                  = data/djdata/djs/
+    tracks/                      5,314 full records, 31 GB
+    mixes_tmp/                   the full mix recordings, one file per mix id, 31 GB; the usb_<segment>.m4a
+                                 names are links to fred/segments/ on disk and are not objects here
+    fred/                        Fred again: segments/ (43 recordings), lists/, checks/, 5 YouTube mixes
+    windows/                     2,617 cut seam windows of the current placement, 12 GB, one per row of
+                                 out/cuts.csv, same names and sizes as the folder the measures were read from
+    embeddings/                  4.9 GB
+    curves/  segments/           5,294 files each, 159 MB and 50 MB, same content as under djdata/
+    out/                         live tables, plus seam_cues.csv, track_structure_log.csv, layers, layer_bands, presence, mixes,
+                                 measure_big_windows_2026-10-11.csv (35 windows over 25 min and the decision on each)
+    logs/
+  archive/2026-10-09_old_placement/   the run before the key-lock placement fix, the only backup of it
+    djs/out/  raveform/out/      its tables
+    djs/windows/                 1,694 of its 2,459 windows; the other 771 are gone (overwritten) and are
+                                 re-cut from mixes_tmp/ with djs/out/cuts.csv if ever needed
+    README.txt                   names the 1,694
+  archive/scripts_diag_untracked_2026-09-30.tar.gz
+  dataset/<date>/                the dataset folder with its README and the profile tables  = data/dataset/<date>/
+                                 2026-11-14 and 2026-11-18 are there
+  raw/previews/                  30,146 iTunes 30 s previews, 31 GB      = data/raw/previews/
+  seam_previews/                 audio/ 5,989 and played_part/ 594 clips for the seam ear tests
+  processed/                     the old source's tables (features, embeddings, tracklist_clean)
+  models/  interim/  tmp/
+```
+
+Rules that come from the bucket itself:
+
+- No versioning. An overwrite is final. A new run writes to a dated prefix first; the switch to the live
+  prefix is a separate step after the counts match.
+- The VM role `aidj-eip` can list, read, copy and write on `aidj-telfy` and cannot delete. Deletes run from
+  the laptop with the `talhanonstatic` profile.
+- `aws s3 sync` follows symlinks, so a dry run from a corpus folder lists the Fred links as missing
+  files; they are not.
+- The run scripts sync `out/` only. `windows/` is synced by hand after a cut, or S3 holds the previous
+  cut under the new tables.
 
 The old source has no audio stages, so its `out/` is `data/processed/` as it always was:
 `tracklist_clean.csv` (the plays) and `features.parquet` (the preview features). `data/interim/tracklist.csv`
@@ -47,12 +107,15 @@ re-hashed by the export from the title (after the `[Label]` suffix) and the mixe
 original is kept in `source_ref`, which is also how the audio file is found. So one record played by
 two DJs in two sources is one id. `record_key` (letters and digits only) sits beside the id for joins
 where punctuation differs ("vs" against "vs.": 49 of 732 old matches on 2026-10-13). `dj_key` is the
-same idea for DJ names, with & and + spelled out.
+same idea for DJ names, with & and + spelled out and accents dropped (`dj_key()` in the loader). Until
+2026-11-18 an accented letter was removed whole, so Roman Flügel was `romanflgel` in Raveform and
+`romanflugel` in the DJ data and counted as two DJs. Nine names changed key and only his two merged.
 
 ## The dataset
 
 `djdata export-dataset --date <date>` (`djdata_package/djdata/dataset.py`) reads every source and writes
-`data/dataset/<date>/`. About 9 s. Every row carries `source`.
+`data/dataset/<date>/`. About 9 s. Every row carries `source`. `python -m src.data.profiles` then adds the
+six profile tables to the newest folder, about 4 minutes. The newest folder is 2026-11-18.
 
 **tracks.parquet**, one row per record, 37,612. `track_id, record_key, source, audio (preview | full),
 source_ref, artist, title, genre, minutes, n_vectors, embedding (1,280 float32), bpm, bpm_source
@@ -75,10 +138,65 @@ and separations, carried dB, bass swap and bass words, presence and loop, bars a
 signature, nearest recipe, distance) plus `a_mode, b_mode`. The old data's pairs carry the identity
 columns only. `measured == 1` on 6,731 rows; filter on the per-band separations before trusting a
 number. The 867 overlay rows are the old data's "w/" records (parent as `track_a`).
+Since the 2026-11-14 export the measured seams also carry the 37 columns of `out/seam_cues.csv`
+(`scripts/experiments/seam_cues.py`), joined by `seam_id`. They say where in each track the seam happens.
+`b_in_*` is where the incoming track is first heard, `a_out_*` where the outgoing track is last heard,
+`a_swap_*` and `b_swap_*` where each track is at the bass swap. Each comes as `_s` (track seconds),
+`_bar` (bar index on the track's own downbeats, negative before the first bar), `_phrase_pos` (bar inside
+the 8-bar phrase), `_section` (the segmenter's label there), `_edge_bars` (bars to the nearest section
+boundary), `_rms_rel_db` and `_low_rel_db` (level over 8 s after the entry, before the exit or around the
+swap, minus the track's own 90th percentile). `a_bars_left` is the bars of the outgoing track after its
+exit. Per track there are `_n_bars`, `_duration_s`, `_downbeat_source` and `_downbeat_confidence`.
+Mix time is the seam window reading (`window_t0 + in_s`, `out_s`, `bass_swap_s`) and track time is
+(mix time - `time_zero_s`) * `rate`. Limits, measured 2026-11-14, are in `DATASET_STATE.md`.
 
 **layers.parquet**, one row per record and band in a span where records stack, 3,705, DJ data only.
 The per-window `presence.csv` and the per-beat curves stay in the source's `out/`; they are
 intermediates of the measurement, joinable by mix id and time.
+
+**mixes.parquet**, one row per mix, 3,937, every source (`mix_table()` in `src/data/profiles.py`). `mix_id,
+source, dj, dj_key, genre, mix_title, mix_url, n_tracks, n_featured, seams`, the mix's `bpm` (median of its
+tracks), `energy, loudness, brightness, density` (mean over its tracks of each track's percentile inside its
+genre and audio kind), `energy_rise` (last third minus first third), `shape` (the old mix profiler's curve
+shape), `change_min` (median minutes from one track's entry to the next, measured mixes), `setting`
+(festival, club or radio from words in the title, empty on 2,710), `set_kind` and `group`. `set_kind`
+(warm-up, middle, peak-time) is the third of the genre's mixes the mix's energy falls in, on the 3,413 mixes
+with 8 tracks with features. It is unproven: energy is close to loudness here (correlation 0.94), no title
+says warm-up, and inside one DJ it changes nothing consistent about the transitions.
+
+**groups.parquet**, one row per style group, 15 (`group_table()`). A unit is one DJ in one genre with the
+genre's floor of measured seams (`FLOOR` in the module, with the numbers behind each floor: house 10, drum
+and bass 10, tech house 12, trance 12, techno 15). The units of a genre are clustered on twelve style
+numbers. They are the share of each of the five transition types, median overlap, share of entries before
+bar 8 and past bar 32, share of exits in the last 8 bars, `change_min`, energy and BPM. A DJ nearer another
+group than their own is left out, unless the DJ has 50 seams or is one of the seven of the DJ data, who
+then forms a group alone. The row holds the group's `djs`, `seams`, the mean of each style number, and
+what a request is matched against: `mixes`, `bpm_low`, `bpm_high`, `energy_low`, `energy_high` (10th and
+90th percentile over the group's mixes). A group is named by its genre and one word, for example
+`techno blend`, `techno cut`, `techno fast`. 95 units, 5,043 of the 6,731 measured seams. A DJ's held-out
+half of mixes lands in their own group on 0.87 to 0.97 of tries by genre, against 0.26 to 0.50 by chance.
+
+**group_types.parquet**, one row per group and transition type, 73 (`type_table()`). `share` and `seams`,
+then how the type is done (`overlap_bars`, `bass_free_bars`, `new_bass_at`, `old_bass_out`, `sweep`) and
+what the incoming track is like in that place (`enters_bar`, `entry_level_db`, `entry_section`,
+`bars_left`, `play_min`, `energy_step`). `overlap_bars`, `enters_bar` and `play_min` also come as `_low`
+and `_high`, the 25th and 75th percentile. A DJ counts by the square root of their seams in the group, in
+the share and in every percentile (Anas, 2026-11-18), so the deepest DJ leads a group without owning it.
+20 rows rest on under 15 seams.
+
+**dj_types.parquet**, the same columns per group, DJ and type, 380 rows for 87 DJs. A request that names
+a DJ reads this.
+
+**djs.parquet**, one row per group and DJ, 95 (`group_table()`). The card a group has, per DJ: `mixes`,
+`bpm_low`, `bpm`, `bpm_high`, `energy_low`, `energy_high`, `no_bass`, `no_bass_high`. A named DJ is
+matched against their own. Fred again's sets sit at a median 134 BPM where his group's sit at 125.
+
+**structure.parquet**, one row per held track with a segment file, 12,153 (`structure_table()`).
+`n_bars`, `bar_s`, `intro_bars`, `first_drop_bar`, `outro_bars`, `downbeat_confidence` (under 0.5 on
+19 % of tracks) and `no_bass`, the share of the track with its lows more than 10 dB under its own loud
+lows (median 0.27). The planner reads it for slot fit, for cut seams and to leave out tracks emptier than
+a style really plays. Groups carry `no_bass` and `no_bass_high` beside their tempo and energy columns, the
+median and 75th percentile over their real plays of the bass-free share of what was played of a track.
 
 **README.md** in the folder: counts per source, the validation mixes per genre and per source, the md5 of
 every input table.
@@ -88,7 +206,9 @@ mix, by whole DJ, so no validation DJ is ever trained on (`validation_split()` i
 `djdata_package/djdata/dataset.py`, `VALIDATION` in the loader). DJs with 3 to 40 mixes are
 eligible; at least three per genre are taken first, then more while every genre stays under 15 % of its
 mixes. On 2026-10-14: 561 mixes (14.2 %) from 58 DJs, every genre and every source represented (old 291,
-Raveform 234, DJ data 36), 1,370 of the 6,731 measured seams. It replaced a `md5(dj_key) % 5` fold whose
+Raveform 234, DJ data 36), 1,370 of the 6,731 measured seams. The 2026-11-18 export has 561
+validation mixes again, from 56 DJs. The merged key for Roman Flügel moved two of his Raveform mixes into
+validation and two Above & Beyond radio shows out of it. The pair model was trained on the earlier split. It replaced a `md5(dj_key) % 5` fold whose
 validation fold held no DJ-data mix. The old fold text is in `docs/notes-archive/`.
 
 **Genre.** `genre_of` in `dataset.py` is the one mapping from a source's label to the seven genres
@@ -100,7 +220,11 @@ first set it was listed in.
 
 ```
 src/data/dataset.py     load_tracks(date=, sources=, audio=)  load_plays  load_seams  load_layers
+                        load_mixes  load_groups  load_group_types  load_dj_types  load_djs  load_structure
                         the newest date when none is given
+src/data/profiles.py           plays, tracks, seams, curves and segments; writes the six profile tables
+src/models/set_plan.py         groups, group_types, dj_types: the styles and the seam budget of a planned set
+src/models/predict_model.py    with a style: groups, djs, structure, plays (the style's pool, `join_fit`)
 src/models/pair_model.py       the pair model: tracks + plays, the `split` column (validation DJs never trained on)
 src/models/track_arrays.py     TrackArrays(df): a pool's column arrays for the planner and the pair model
 src/models/predict_model.py    the planner's pool: tracks (genre, BPM, energy floor, artist, title)
@@ -130,13 +254,14 @@ milliseconds; the hard-negative search in Model A is a matrix product per genre.
 6. **Adding data.** A new DJ is rows in the tracklist and audio on disk, then the source's stages. A new
    source is a config and a folder. Either ends with one export.
 
-## Where things are, 2026-10-13
+## Where things are
 
-Laptop: the sources' `out/` tables, the dataset, the archive (1.4 GB, not yet on S3), `data/raw/previews`
-(28 GB), the DJ-data tracks and windows, the Raveform windows and tracks. VM: all audio of both measured
-sources, off when not in use. S3: everything above except the archive and the dataset. `data/interim`
-holds the raw scrape, the caches (`segments/`, `stretch/`), the preview stores, the enrichment tables
-and `old_sample_full/` (867 MB of fetched old records, not yet on S3).
+Laptop: the sources' `out/` tables, the dataset, the archive (1.4 GB, not on S3), `data/raw/previews`
+(28 GB), a sample of the DJ-data and Raveform tracks and windows. S3: all audio and tables of both measured
+sources, the previews, the old source's tables, the archive of the previous placement run (section above).
+No VM exists between runs; `djdata_package/VM_SETUP.md` sets one up and pulls the corpora from S3.
+`data/interim` holds the raw scrape, the caches (`segments/`, `stretch/`), the preview stores, the
+enrichment tables and `old_sample_full/` (867 MB of fetched old records, not on S3).
 
 ## Open
 
@@ -147,5 +272,8 @@ and `old_sample_full/` (867 MB of fetched old records, not yet on S3).
   old data knows from them are techno twice as often (64 against 32), the DJs are Adam Beyer, Eddie
   Halliwell, Scuba, Boris. Left as tech house (Anas) until a genre from the audio decides all 242 by one
   measure; 10 clips for his ear is the fallback.
-- The archive and the dataset are not on S3.
+- The archive is not on S3. The dataset is, since 2026-11-14 (`s3://aidj-telfy/dataset/<date>/`).
+- The profile tables are read only on the planned path (`--dj`, `--style`, `--group`).
+- Back-to-back sets and pairings are their own `dj_key` ("Adam Beyer b2b Ida Engberg"), so they count as
+  separate DJs in the groups.
 - `raveform` plays carry no match rate; it is in the alignment files if a filter needs it.
